@@ -40,6 +40,21 @@ Add-Content C:\Windows\System32\drivers\etc\hosts "192.168.17.1 soc-gateway.your
 Test-NetConnection soc-gateway.yourcorporate.com -Port 443
 ```
 
+## Restore Vector binary before building installer
+
+`VectorBuild/vector.exe` is intentionally not committed because the binary is about 122 MB, which exceeds GitHub's normal 100 MB file limit. After cloning the repository, restore it with:
+
+```powershell
+cd VectorBuild
+powershell -ExecutionPolicy Bypass -File .\fetch-vector.ps1
+```
+
+The script downloads Vector `0.55.0` from the official Timber package endpoint and places it at:
+
+```text
+VectorBuild\vector.exe
+```
+
 ## ClickHouse checks
 
 ```powershell
