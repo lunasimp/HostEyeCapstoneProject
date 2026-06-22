@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  # ===========================================================================
+  # 1. TẦNG CÂN BẰNG TẢI & CHỐT CHẶN BIÊN BIÊN MẠNG (LOAD BALANCER LAYER)
+  # ===========================================================================
+  nginx-lb:
+    image: nginx:alpine
+    container_name: nginx-load-balancer
+    ports:
+      - "80:80"   # Hứng luồng chuyển hướng (HTTP Redirect)
+      - "443:443" # 🔐 SỬA LỖI CHÍ MẠNG: Mở cổng HTTPS công cộng đón nhận luồng mTLS từ Agent
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro # Phân phối chứng chỉ mTLS an toàn vào Nginx
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - soc-network
+
+  # ===========================================================================
+  # 2. TẦNG TIẾP NHẬN PHI TRẠNG THÁI & LÀM SẠCH PII (VECTOR GATEWAY CLUSTER)
+  # ===========================================================================
+  vector-gateway-1:
+    image: timberio/vector:0.35.0-alpine
+    container_name: vector-gateway-1
+    volumes:
+      - ./vector-gateway.toml:/etc/vector/vector.toml:ro
+      - ./soc_vault:/var/log/soc_vault # 🔐 VÁ LỖ HỔNG VẤN ĐỀ 6: Ánh xạ kho log thô gốc (Cold Storage) an toàn xuống đĩa cứng vật lý
+    command: ["--config", "/etc/vector/vector.toml"]
+    networks:
+      - soc-network
+
+  vector-gateway-2:
+    image: timberio/vector:0.35.0-alpine
+    container_name: vector-gateway-2
+    volumes:
+      - ./vector-gateway.toml:/etc/vector/vector.toml:ro
+      - ./soc_vault:/var/log/soc_vault # Đảm bảo tính sẵn sàng cao đồng bộ đĩa lưu trữ pháp chứng
+    command: ["--config", "/etc/vector/vector.toml"]
+    networks:
+      - soc-network
+
+  # ===========================================================================
+  # 3. TẦNG ĐỆM TRUNG GIAN GIẢM CHẤN XUNG LỰC (MESSAGE BROKER LAYER)
+  # ===========================================================================
+  redpanda-broker:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+    container_name: redpanda-broker
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda-broker:9092,external://localhost:19092
+    ports:
+      - "19092:19092"
+    volumes:
+      - ./redpanda_data:/var/lib/redpanda/data # Đảm bảo hàng đợi không bị mất cấu trúc khi reset hạ tầng
+    networks:
+      - soc-network
+
+  # ===========================================================================
+  # 4. STORAGE & DASHBOARD LAYER
+  # ===========================================================================
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: local-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse-config/users.d/default-user.xml:/etc/clickhouse-server/users.d/default-user.xml:ro
+    networks:
+      - soc-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: soc-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - ./grafana_data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - clickhouse
+    networks:
+      - soc-network
+
+networks:
+  soc-network:
+    driver: bridge
+
+volumes:
+  clickhouse_data:

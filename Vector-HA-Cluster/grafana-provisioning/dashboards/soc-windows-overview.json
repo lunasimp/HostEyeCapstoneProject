@@ -1,0 +1,89 @@
+{
+  "uid": "soc-windows-overview",
+  "title": "SOC Windows Logs Overview",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Events Over Time",
+      "type": "timeseries",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+          "rawSql": "SELECT toStartOfMinute(kafka_timestamp) AS time, count() AS events FROM default.windows_system_logs WHERE kafka_timestamp >= now() - INTERVAL 24 HOUR GROUP BY time ORDER BY time",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Events By Host",
+      "type": "barchart",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+          "rawSql": "SELECT computer, count() AS events FROM default.windows_system_logs WHERE kafka_timestamp >= now() - INTERVAL 24 HOUR GROUP BY computer ORDER BY events DESC LIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Events By Channel",
+      "type": "piechart",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+          "rawSql": "SELECT channel, count() AS events FROM default.windows_system_logs WHERE kafka_timestamp >= now() - INTERVAL 24 HOUR GROUP BY channel ORDER BY events DESC LIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Top Event IDs",
+      "type": "table",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+          "rawSql": "SELECT event_id, provider_name, count() AS events FROM default.windows_system_logs WHERE kafka_timestamp >= now() - INTERVAL 24 HOUR GROUP BY event_id, provider_name ORDER BY events DESC LIMIT 20",
+          "format": 1
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Latest Events",
+      "type": "table",
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-clickhouse-datasource", "uid": "soc-clickhouse" },
+          "rawSql": "SELECT kafka_timestamp AS received_at, timestamp AS event_time, computer, channel, event_id, provider_name, message FROM default.windows_system_logs ORDER BY kafka_timestamp DESC LIMIT 100",
+          "format": 1
+        }
+      ]
+    }
+  ]
+}

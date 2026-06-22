@@ -1,0 +1,155 @@
+data_dir = "/var/lib/vector"
+
+[acknowledgements]
+enabled = true
+
+[sources.from_nginx_lb]
+type = "http_server"
+address = "0.0.0.0:8686"
+
+
+[transforms.prepare_batch]
+type = "remap"
+inputs = ["from_nginx_lb"]
+source = '''
+batch_payload = null
+if exists(.message) && is_string(.message) {
+    batch_payload = parse_json(.message) ?? null
+}
+
+if is_array(batch_payload) {
+    .batch_events = batch_payload
+} else if is_object(batch_payload) {
+    .batch_events = [batch_payload]
+} else {
+    .batch_events = [.] 
+}
+'''
+
+[transforms.split_batch]
+type = "lua"
+version = "2"
+inputs = ["prepare_batch"]
+
+[transforms.split_batch.hooks]
+process = '''
+function(event, emit)
+  local batch = event.log.batch_events
+  if type(batch) == "table" then
+    for _, item in pairs(batch) do
+      if type(item) == "table" then
+        local out = { log = item }
+        emit(out)
+      end
+    end
+  else
+    emit(event)
+  end
+end
+'''
+
+[transforms.pii_scrubber]
+type = "remap"
+inputs = ["split_batch"]
+source = '''
+if exists(.command_line) && is_string(.command_line) {
+    .command_line = replace!(.command_line, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\s]*', "[REDACTED_SECRET]")
+}
+
+if exists(.script_block_text) && is_string(.script_block_text) {
+    .script_block_text = replace!(.script_block_text, r'(?i)(token|auth|key|secret|password|passwd|pwd)\s*=\s*[\x22\x27]?[^\s\x22\x27]+[\x22\x27]?', "[REDACTED_SECRET]")
+}
+
+if exists(.user_name) && is_string(.user_name) {
+    if .user_name != "SYSTEM" && .user_name != "Administrator" && .user_name != "LOCAL SERVICE" && .user_name != "NT AUTHORITY\\SYSTEM" {
+        .user_name_hash = sha2(string!(.user_name), "SHA-256")
+        .user_name = "[REDACTED_USER]"
+    }
+}
+'''
+
+[transforms.prepare_clickhouse]
+type = "remap"
+inputs = ["pii_scrubber"]
+source = '''
+.kafka_timestamp = now()
+.event_data_json = if exists(.event_data) { encode_json(.event_data) } else { "" }
+
+.agent_id = to_string(.agent_id) ?? ""
+.host_id = to_string(.host_id) ?? ""
+.os = to_string(.os) ?? ""
+.source_platform = to_string(.source_platform) ?? ""
+.computer = to_string(.computer) ?? ""
+.channel = to_string(.channel) ?? ""
+.event_id = to_int(.event_id) ?? 0
+.record_id = to_int(.record_id) ?? 0
+.provider_name = to_string(.provider_name) ?? ""
+.level = to_string(.level) ?? ""
+.raw_log = to_string(.raw_log) ?? encode_json(.)
+.message = to_string(.message) ?? ""
+.path = to_string(.path) ?? ""
+.method = to_string(.method) ?? ""
+.source_type = to_string(.source_type) ?? ""
+.user_name = to_string(.user_name) ?? to_string(.event_data.User) ?? to_string(.event_data.SubjectUserName) ?? ""
+.user_id = to_string(.user_id) ?? to_string(.event_data.UserID) ?? to_string(.event_data.SubjectUserSid) ?? ""
+.rule_name = to_string(.rule_name) ?? to_string(.event_data.RuleName) ?? ""
+.process_guid = to_string(.process_guid) ?? to_string(.event_data.ProcessGuid) ?? ""
+.parent_process_guid = to_string(.parent_process_guid) ?? to_string(.event_data.ParentProcessGuid) ?? ""
+.process_id = to_int(.process_id) ?? to_int(.event_data.ProcessId) ?? to_int(.event_data.ProcessID) ?? to_int(.event_data.NewProcessId) ?? 0
+.parent_process_id = to_int(.parent_process_id) ?? to_int(.event_data.ParentProcessId) ?? to_int(.event_data.ParentProcessID) ?? 0
+.target_process_id = to_int(.target_process_id) ?? to_int(.event_data.TargetProcessId) ?? to_int(.event_data.TargetProcessID) ?? 0
+.process_path = to_string(.process_path) ?? to_string(.event_data.Image) ?? to_string(.event_data.NewProcessName) ?? ""
+.parent_process_path = to_string(.parent_process_path) ?? to_string(.event_data.ParentImage) ?? to_string(.event_data.ParentProcessName) ?? ""
+.target_image = to_string(.target_image) ?? to_string(.event_data.TargetImage) ?? ""
+.current_directory = to_string(.current_directory) ?? to_string(.event_data.CurrentDirectory) ?? ""
+.command_line = to_string(.command_line) ?? to_string(.event_data.CommandLine) ?? ""
+.parent_command_line = to_string(.parent_command_line) ?? to_string(.event_data.ParentCommandLine) ?? ""
+.script_block_text = to_string(.script_block_text) ?? to_string(.event_data.ScriptBlockText) ?? ""
+.hashes = to_string(.hashes) ?? to_string(.event_data.Hashes) ?? ""
+.imphash = to_string(.imphash) ?? to_string(.event_data.Imphash) ?? to_string(.event_data.ImpHash) ?? ""
+.source_ip = to_string(.source_ip) ?? to_string(.event_data.SourceIp) ?? to_string(.event_data.SourceAddress) ?? ""
+.source_port = to_int(.source_port) ?? to_int(.event_data.SourcePort) ?? 0
+.destination_ip = to_string(.destination_ip) ?? to_string(.event_data.DestinationIp) ?? to_string(.event_data.DestAddress) ?? ""
+.destination_port = to_int(.destination_port) ?? to_int(.event_data.DestinationPort) ?? to_int(.event_data.DestPort) ?? 0
+.protocol = to_string(.protocol) ?? to_string(.event_data.Protocol) ?? ""
+.initiated = to_string(.initiated) ?? to_string(.event_data.Initiated) ?? ""
+.dns_query = to_string(.dns_query) ?? to_string(.event_data.QueryName) ?? to_string(.event_data.Query) ?? ""
+.query_status = to_string(.query_status) ?? to_string(.event_data.QueryStatus) ?? ""
+.target_filename = to_string(.target_filename) ?? to_string(.event_data.TargetFilename) ?? ""
+.target_object = to_string(.target_object) ?? to_string(.event_data.TargetObject) ?? ""
+.target_process_guid = to_string(.target_process_guid) ?? to_string(.event_data.TargetProcessGuid) ?? ""
+.granted_access = to_string(.granted_access) ?? to_string(.event_data.GrantedAccess) ?? ""
+.call_trace = to_string(.call_trace) ?? to_string(.event_data.CallTrace) ?? ""
+.idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
+'''
+
+[sinks.raw_forensic_vault]
+type = "file"
+inputs = ["from_nginx_lb"]
+path = "/var/log/soc_vault/raw-%Y-%m-%d.log"
+compression = "gzip"
+
+[sinks.raw_forensic_vault.encoding]
+codec = "json"
+
+[sinks.push_to_broker]
+type = "kafka"
+inputs = ["pii_scrubber"]
+bootstrap_servers = "redpanda-broker:9092"
+topic = "windows-logs-pool"
+
+[sinks.push_to_broker.librdkafka_options]
+"acks" = "all"
+
+[sinks.push_to_broker.encoding]
+codec = "json"
+
+[sinks.persist_to_clickhouse]
+type = "clickhouse"
+inputs = ["prepare_clickhouse"]
+endpoint = "http://clickhouse:8123"
+database = "default"
+table = "windows_system_logs"
+compression = "gzip"
+skip_unknown_fields = true
+

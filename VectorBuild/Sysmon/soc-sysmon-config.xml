@@ -1,0 +1,19 @@
+<Sysmon schemaversion="4.91">
+  <HashAlgorithms>SHA256,IMPHASH</HashAlgorithms>
+  <CheckRevocation>False</CheckRevocation>
+  <EventFiltering>
+    <ProcessCreate onmatch="include">
+      <Image condition="is not">-</Image>
+    </ProcessCreate>
+    <NetworkConnect onmatch="include">
+      <Image condition="is not">-</Image>
+    </NetworkConnect>
+    <DnsQuery onmatch="include">
+      <Image condition="is not">-</Image>
+    </DnsQuery>
+    <ProcessTerminate onmatch="exclude" />
+    <FileCreate onmatch="exclude" />
+    <ProcessAccess onmatch="exclude" />
+    <RegistryEvent onmatch="exclude" />
+  </EventFiltering>
+</Sysmon>

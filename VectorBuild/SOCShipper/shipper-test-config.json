@@ -1,0 +1,16 @@
+﻿{
+    "GatewayUri":  "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+    "SpoolDirectory":  "C:\\ProgramData\\Vector\\spool",
+    "StateDirectory":  "C:\\ProgramData\\Vector\\shipper_state_test",
+    "LogDirectory":  "C:\\ProgramData\\Vector\\logs",
+    "ClientCertificateFile":  "C:\\VectorBuild\\certs\\client.crt",
+    "ClientKeyFile":  "C:\\VectorBuild\\certs\\client.key",
+    "CaCertificateFile":  "C:\\VectorBuild\\certs\\company_ca.crt",
+    "MaxEvents":  3,
+    "MaxBytes":  65536,
+    "NormalJitterWindowSeconds":  0,
+    "RecoveryJitterWindowSeconds":  0,
+    "BaseBackoffSeconds":  1,
+    "MaxBackoffSeconds":  10,
+    "RunOnce":  true
+}

@@ -1,0 +1,9 @@
+{
+    "version":  "1.1.0",
+    "file":  "vector.toml",
+    "sha256":  "20bed12d2401530e0fe0a56faa573beee54fca955871edf4833bffe8694484d5",
+    "created_at":  "2026-06-14T04:34:34Z",
+    "signature":  "manifest.json.sig",
+    "config_signature":  "vector.toml.sig",
+    "minimum_agent_version":  "1.0.0"
+}

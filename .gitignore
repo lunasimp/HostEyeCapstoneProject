@@ -1,0 +1,46 @@
+# Runtime data / state
+Vector-HA-Cluster/redpanda_data/
+Vector-HA-Cluster/clickhouse_data/
+Vector-HA-Cluster/grafana_data/
+Vector-HA-Cluster/soc_vault/
+Vector-HA-Cluster/*.log
+Vector-HA-Cluster/**/*.log
+
+# Certificates and private material
+**/*.key
+**/*.pfx
+**/*private*.pem
+**/company_ca.crt
+**/client.crt
+**/soc_server.crt
+Vector-HA-Cluster/certs/
+VectorBuild/certs/
+VectorServer/certs/
+VectorServer/issued_clients/
+VectorServer/company_ca.key
+VectorServer/organization_private.pem
+
+# Build outputs / generated binaries
+**/bin/
+**/obj/
+**/publish/
+**/publish-self-contained/
+VectorBuild/Output/
+*.exe
+*.msi
+*.zip
+*.7z
+
+# Local IDE / OS files
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+
+# Temporary and generated analysis outputs
+outputs/
+work/
+*.tmp
+*.bak
