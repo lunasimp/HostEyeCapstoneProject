@@ -1,0 +1,29 @@
+﻿{
+  "LabName": "HostEyeDemoLab",
+  "TemplateVmName": "HostEye-Win11-Template",
+  "TemplateSnapshotName": "clean-hosteye-template",
+  "VmNamePrefix": "HostEye-Endpoint",
+  "VmCount": 5,
+  "VmMemoryMB": 4096,
+  "VmCpuCount": 2,
+  "NetworkMode": "bridged",
+  "BridgeAdapterName": "",
+  "GuestUsername": "demo",
+  "GuestPassword": "",
+  "GuestReadyTimeoutSeconds": 600,
+  "UseVBoxGuestControl": true,
+  "UseWinRM": false,
+  "GatewayHostName": "soc-gateway.yourcorporate.com",
+  "GatewayIp": "",
+  "InstallerRelativePath": "../VectorBuild/Output/HostEye_Endpoint_Installer.exe",
+  "InstallerFallbackPath": "C:/VectorBuild/Output/HostEye_Endpoint_Installer.exe",
+  "InstallerArguments": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
+  "DockerComposeDirectory": "../Vector-HA-Cluster",
+  "DockerComposeFile": "docker-compose.yml",
+  "DashboardApiDirectory": "../HostEyeDashboardApi",
+  "DashboardWebDirectory": "../HostEyeDashboard",
+  "DashboardApiPort": 5055,
+  "DashboardWebPort": 5174
+}
+
+
