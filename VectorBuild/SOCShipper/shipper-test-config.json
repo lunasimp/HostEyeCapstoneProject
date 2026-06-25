@@ -1,8 +1,8 @@
 ﻿{
     "GatewayUri":  "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
-    "SpoolDirectory":  "C:\\ProgramData\\Vector\\spool",
-    "StateDirectory":  "C:\\ProgramData\\Vector\\shipper_state_test",
-    "LogDirectory":  "C:\\ProgramData\\Vector\\logs",
+    "SpoolDirectory":  "C:\\ProgramData\\HostEye\\spool",
+    "StateDirectory":  "C:\\ProgramData\\HostEye\\shipper_state_test",
+    "LogDirectory":  "C:\\ProgramData\\HostEye\\logs",
     "ClientCertificateFile":  "C:\\VectorBuild\\certs\\client.crt",
     "ClientKeyFile":  "C:\\VectorBuild\\certs\\client.key",
     "CaCertificateFile":  "C:\\VectorBuild\\certs\\company_ca.crt",

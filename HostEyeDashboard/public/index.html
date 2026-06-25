@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>HostEye Dashboard</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="./assets/hosteye-logo.png" alt="HostEye">
+        </div>
+        <nav class="nav-list" aria-label="Các khu vực dashboard">
+          <a href="#overview" class="nav-item active">Tổng quan</a>
+          <a href="#process" class="nav-item">Tiến trình</a>
+          <a href="#network" class="nav-item">Mạng & DNS</a>
+          <a href="#registry" class="nav-item">Registry & File</a>
+          <a href="#powershell" class="nav-item">PowerShell</a>
+          <a href="#heatmap" class="nav-item">Heatmap máy trạm</a>
+        </nav>
+        <div class="connection-card">
+          <span class="status-dot" id="statusDot"></span>
+          <div>
+            <strong id="statusText">Connecting</strong>
+            <small id="rowCount">ClickHouse</small>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="breadcrumb">Dashboards / HostEye</p>
+            <h1>Dashboard giám sát HostEye</h1>
+          </div>
+          <div class="toolbar">
+            <label>
+              <span>Khoảng thời gian</span>
+              <select id="rangeSelect">
+                <option value="1h">1 giờ gần nhất</option>
+                <option value="6h">6 giờ gần nhất</option>
+                <option value="24h">24 giờ gần nhất</option>
+                <option value="30d" selected>30 ngày gần nhất</option>
+              </select>
+            </label>
+            <label>
+              <span>Máy trạm</span>
+              <select id="hostFilter">
+                <option value="">Tất cả máy trạm</option>
+              </select>
+            </label>
+            <button id="refreshBtn" type="button">Làm mới</button>
+          </div>
+        </header>
+
+        <section class="kpi-grid" id="kpis">
+          <article class="kpi"><span>Tổng số sự kiện</span><strong id="kpiEvents">-</strong></article>
+          <article class="kpi"><span>Tổng số máy trạm</span><strong id="kpiHosts">-</strong></article>
+          <article class="kpi"><span>Mã sự kiện</span><strong id="kpiEventIds">-</strong></article>
+          <article class="kpi"><span>Lần cuối ghi nhận</span><strong id="kpiLastSeen">-</strong></article>
+        </section>
+
+        <section id="overview" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Tổng quan HostEye</h2></div>
+          <div class="grid two">
+            <article class="panel">
+              <div class="panel-title"><h3>Lưu lượng log theo giây</h3><span id="logVolumeMeta"></span></div>
+              <div id="logVolumeChart" class="chart"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Top máy trạm phát sinh log</h3></div>
+              <div id="topHostsPie" class="pie-wrap"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Log theo loại sự kiện</h3></div>
+              <div id="eventTypesTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Dòng thời gian bảo mật</h3></div>
+              <div id="securityTimeline" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="process" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Hoạt động tiến trình</h2></div>
+          <div class="grid two">
+            <article class="panel">
+              <div class="panel-title"><h3>Top tiến trình xuất hiện nhiều nhất</h3></div>
+              <div id="topProcessesTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Tạo tiến trình / dòng lệnh</h3></div>
+              <div id="processRecentTable" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="network" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Mạng & DNS</h2></div>
+          <div class="grid two">
+            <article class="panel">
+              <div class="panel-title"><h3>Top IP đích</h3></div>
+              <div id="topIpsTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Network connections gần nhất</h3></div>
+              <div id="networkRecentTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Top domain truy vấn</h3></div>
+              <div id="topDomainsTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>DNS query gần nhất</h3></div>
+              <div id="dnsRecentTable" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="registry" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Registry, File, Process Access</h2></div>
+          <div class="grid two">
+            <article class="panel">
+              <div class="panel-title"><h3>Hoạt động registry</h3></div>
+              <div id="registryRecentTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Hoạt động file</h3></div>
+              <div id="fileRecentTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Truy cập tiến trình</h3></div>
+              <div id="processAccessTable" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="powershell" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Giám sát PowerShell</h2></div>
+          <div class="grid two">
+            <article class="panel">
+              <div class="panel-title"><h3>Lưu lượng PowerShell</h3></div>
+              <div id="powershellVolumeChart" class="chart"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title"><h3>Log PowerShell</h3></div>
+              <div id="powershellRecentTable" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="heatmap" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Hoạt động máy trạm theo thời gian</h2></div>
+          <div class="heatmap-layout single">
+            <article class="panel heatmap-panel">
+              <div class="panel-title"><h3>Hoạt động máy trạm theo thời gian (C1-C10)</h3><span>Mỗi ô có thể bấm để phân tích</span></div>
+              <div id="hostHeatmap" class="heatmap"></div>
+            </article>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="./app.js"></script>
+  </body>
+</html>

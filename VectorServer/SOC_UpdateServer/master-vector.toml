@@ -1,4 +1,4 @@
-﻿data_dir = "C:\\ProgramData\\Vector\\data"
+﻿data_dir = "C:\\ProgramData\\HostEye\\data"
 
 # =============================================================================
 # 1. TÃ¡ÂºÂ¦NG THU THÃ¡ÂºÂ¬P SÃƒâ€šU (TELEMETRY SOURCES LAYER)
@@ -47,10 +47,10 @@ if exists(.event_data.HostApplication) && is_string(.event_data.HostApplication)
 .raw_log = encode_json(.)
 
 # 3. BÃ¡Â»â€¢ sung siÃƒÂªu dÃ¡Â»Â¯ liÃ¡Â»â€¡u Ã„â€˜Ã¡Â»â€¹nh danh Enterprise Baseline (HÃƒÂ m get_env_var cÃƒÂ³ thÃ¡Â»Æ’ trÃ¡Â»â€˜ng nÃƒÂªn giÃ¡Â»Â¯ lÃ¡ÂºÂ¡i ??)
-.agent_id = get_env_var("VECTOR_AGENT_ID") ?? "agent-uuid-unassigned"
-.host_id = get_env_var("VECTOR_HOST_ID") ?? "host-uuid-unassigned"
+.agent_id = get_env_var("HOSTEYE_AGENT_ID") ?? get_env_var("VECTOR_AGENT_ID") ?? "hosteye-agent-unassigned"
+.host_id = get_env_var("HOSTEYE_HOST_ID") ?? get_env_var("VECTOR_HOST_ID") ?? "hosteye-host-unassigned"
 .os = "windows"
-.source_platform = "windows_event_log"
+.source_platform = "hosteye_windows_endpoint"
 
 # 4. ChuÃ¡ÂºÂ©n hÃƒÂ³a cÃ¡ÂºÂ¥u trÃƒÂºc dÃ¡Â»Â¯ liÃ¡Â»â€¡u (XÃƒÂ³a hoÃƒÂ n toÃƒÂ n toÃƒÂ¡n tÃ¡Â»Â­ ?? Ã„â€˜Ã¡Â»â€˜i vÃ¡Â»â€ºi cÃƒÂ¡c trÃ†Â°Ã¡Â»Âng chÃ¡ÂºÂ¯c chÃ¡ÂºÂ¯n tÃ¡Â»â€œn tÃ¡ÂºÂ¡i)
 .computer = .computer
@@ -88,12 +88,12 @@ compression = "gzip"
 codec = "json"
 
 [sinks.emit_to_gateway_secure.request.headers]
-Authorization = "Bearer SOC_AGENT_SECRET_TOKEN_HASH_A1_G6"
+Authorization = "Bearer HOSTEYE_AGENT_SECRET_TOKEN_HASH_A1_G6"
 
 [sinks.emit_to_gateway_secure.tls]
-crt_file = "C:\\Program Files\\Vector\\certs\\client.crt"
-key_file = "C:\\Program Files\\Vector\\certs\\client.key"
-ca_file = "C:\\Program Files\\Vector\\certs\\company_ca.crt"
+crt_file = "C:\\Program Files\\HostEye\\certs\\client.crt"
+key_file = "C:\\Program Files\\HostEye\\certs\\client.key"
+ca_file = "C:\\Program Files\\HostEye\\certs\\company_ca.crt"
 
 verify_hostname = true
 verify_certificate = true # Xác thực server cert bằng company_ca.crt.

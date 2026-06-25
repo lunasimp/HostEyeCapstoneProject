@@ -1,0 +1,116 @@
+﻿data_dir = "C:\\ProgramData\\HostEye\\data"
+
+# =============================================================================
+# 1. TÃ¡ÂºÂ¦NG THU THÃ¡ÂºÂ¬P SÃƒâ€šU (TELEMETRY SOURCES LAYER)
+# =============================================================================
+[sources.windows_advanced_telemetry]
+type = "windows_event_log"
+channels = [
+  "Application",
+  "System",
+  "Security",
+  "Microsoft-Windows-Sysmon/Operational",
+  "Microsoft-Windows-PowerShell/Operational",
+  "Microsoft-Windows-WMI-Activity/Operational",
+  "Microsoft-Windows-DNS-Client/Operational",
+  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+]
+
+# =============================================================================
+# 2. TÃ¡ÂºÂ¦NG CHUÃ¡ÂºÂ¨N HÃƒâ€œA VÃƒâ‚¬ SINH KHÃƒâ€œA BÃ¡ÂºÂ¤T BIÃ¡ÂºÂ¾N (METADATA NORMALIZATION & VRL)
+# =============================================================================
+[transforms.normalize_and_enrich]
+type = "remap"
+inputs = ["windows_advanced_telemetry"]
+source = """
+# 1. Agent-side redaction: remove obvious secret patterns before transport.
+if exists(.command_line) && is_string(.command_line) {
+    .command_line = replace!(.command_line, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\\s]*', "[REDACTED_SECRET]")
+}
+if exists(.script_block_text) && is_string(.script_block_text) {
+    .script_block_text = replace!(.script_block_text, r'(?i)(token|auth|key|secret|password|passwd|pwd)\\s*=\\s*[\\x22\\x27]?[^\\s\\x22\\x27]+[\\x22\\x27]?', "[REDACTED_SECRET]")
+}
+if exists(.event_data.CommandLine) && is_string(.event_data.CommandLine) {
+    .event_data.CommandLine = replace!(.event_data.CommandLine, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\\s]*', "[REDACTED_SECRET]")
+}
+if exists(.event_data.ParentCommandLine) && is_string(.event_data.ParentCommandLine) {
+    .event_data.ParentCommandLine = replace!(.event_data.ParentCommandLine, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\\s]*', "[REDACTED_SECRET]")
+}
+if exists(.event_data.ScriptBlockText) && is_string(.event_data.ScriptBlockText) {
+    .event_data.ScriptBlockText = replace!(.event_data.ScriptBlockText, r'(?i)(token|auth|key|secret|password|passwd|pwd)\\s*=\\s*[\\x22\\x27]?[^\\s\\x22\\x27]+[\\x22\\x27]?', "[REDACTED_SECRET]")
+}
+if exists(.event_data.HostApplication) && is_string(.event_data.HostApplication) {
+    .event_data.HostApplication = replace!(.event_data.HostApplication, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\\s]*', "[REDACTED_SECRET]")
+}
+
+# 2. Capture post-redaction raw evidence for server-side raw vault.
+.raw_log = encode_json(.)
+
+# 3. BÃ¡Â»â€¢ sung siÃƒÂªu dÃ¡Â»Â¯ liÃ¡Â»â€¡u Ã„â€˜Ã¡Â»â€¹nh danh Enterprise Baseline (HÃƒÂ m get_env_var cÃƒÂ³ thÃ¡Â»Æ’ trÃ¡Â»â€˜ng nÃƒÂªn giÃ¡Â»Â¯ lÃ¡ÂºÂ¡i ??)
+.agent_id = get_env_var("HOSTEYE_AGENT_ID") ?? get_env_var("VECTOR_AGENT_ID") ?? "hosteye-agent-unassigned"
+.host_id = get_env_var("HOSTEYE_HOST_ID") ?? get_env_var("VECTOR_HOST_ID") ?? "hosteye-host-unassigned"
+.os = "windows"
+.source_platform = "hosteye_windows_endpoint"
+
+# 4. ChuÃ¡ÂºÂ©n hÃƒÂ³a cÃ¡ÂºÂ¥u trÃƒÂºc dÃ¡Â»Â¯ liÃ¡Â»â€¡u (XÃƒÂ³a hoÃƒÂ n toÃƒÂ n toÃƒÂ¡n tÃ¡Â»Â­ ?? Ã„â€˜Ã¡Â»â€˜i vÃ¡Â»â€ºi cÃƒÂ¡c trÃ†Â°Ã¡Â»Âng chÃ¡ÂºÂ¯c chÃ¡ÂºÂ¯n tÃ¡Â»â€œn tÃ¡ÂºÂ¡i)
+.computer = .computer
+.channel = .channel
+.timestamp = .timestamp
+
+raw_event_id = .event_id
+.event_id = to_int(raw_event_id) ?? raw_event_id
+
+raw_record_id = .record_id
+.record_id = to_int(raw_record_id) ?? raw_record_id
+
+.provider_name = .provider_name
+.level = .level
+
+# 5. Sinh Idempotency Key bÃ¡ÂºÂ¥t biÃ¡ÂºÂ¿n tÃ¡ÂºÂ¡i nguÃ¡Â»â€œn phÃƒÂ¡t
+computer_str = to_string(.computer) ?? "unknown"
+channel_str = to_string(.channel) ?? "unknown"
+record_str = to_string(.record_id) ?? "0"
+string_to_hash = join([computer_str, channel_str, record_str], separator: "-") ?? ""
+.idempotency_key = sha2(string_to_hash, "SHA-256")
+"""
+
+# =============================================================================
+# 3. TÃ¡ÂºÂ¦NG TRUYÃ¡Â»â‚¬N TÃ¡ÂºÂ¢I BÃ¡ÂºÂ¢O MÃ¡ÂºÂ¬T VÃƒâ‚¬ GIÃ¡ÂºÂ¢M CHÃ¡ÂºÂ¤N HÃ¡ÂºÂ  TÃ¡ÂºÂ¦NG (SECURE SINK LAYER)
+# =============================================================================
+[sinks.emit_to_gateway_secure]
+type = "http"
+inputs = ["normalize_and_enrich"]
+uri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry"
+method = "post"
+compression = "gzip" 
+
+[sinks.emit_to_gateway_secure.encoding]
+codec = "json"
+
+[sinks.emit_to_gateway_secure.request.headers]
+Authorization = "Bearer HOSTEYE_AGENT_SECRET_TOKEN_HASH_A1_G6"
+
+[sinks.emit_to_gateway_secure.tls]
+crt_file = "C:\\Program Files\\HostEye\\certs\\client.crt"
+key_file = "C:\\Program Files\\HostEye\\certs\\client.key"
+ca_file = "C:\\Program Files\\HostEye\\certs\\company_ca.crt"
+
+verify_hostname = true
+verify_certificate = true # Xác thực server cert bằng company_ca.crt.
+
+[sinks.emit_to_gateway_secure.batch]
+# Batch theo yêu cầu kỹ thuật: giảm số request, gzip theo mẻ; server processor đã tách JSON array batch.
+max_events = 1000
+timeout_secs = 10
+
+[sinks.emit_to_gateway_secure.buffer]
+type = "disk"
+max_size = 1073741824
+when_full = "block"
+
+
+
+
+
+
+

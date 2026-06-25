@@ -15,63 +15,109 @@ Directory.CreateDirectory(config.LogDirectory);
 var logger = new FileLogger(Path.Combine(config.LogDirectory, "shipper.log"));
 var state = ShipperState.Load(Path.Combine(config.StateDirectory, "shipper-state.json"));
 var random = RandomNumberGenerator.Create();
-var endpointSeed = Environment.GetEnvironmentVariable("VECTOR_AGENT_ID")
+var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
+    ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID")
     ?? Environment.MachineName
     ?? Guid.NewGuid().ToString("n");
-var nextSpoolCheckUtc = DateTimeOffset.MinValue;
 
-logger.Info($"SOCShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
+logger.Info($"HostEyeShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
 using var http = BuildHttpClient(config, logger);
+using var cleanupCts = new CancellationTokenSource();
+var cleanupTask = config.MaxSpoolSizeMB > 0
+    ? RunSpoolQuotaLoop(config, logger, cleanupCts.Token)
+    : Task.CompletedTask;
 var attempt = 0;
 
-while (true)
+try
+{
+    while (true)
+    {
+        try
+        {
+            var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed);
+            if (sentAny)
+            {
+                attempt = 0;
+                if (config.RunOnce)
+                {
+                    logger.Info("RunOnce completed after one successful batch.");
+                    return 0;
+                }
+            }
+            else if (config.RunOnce)
+            {
+                logger.Info("RunOnce completed; no pending spool data.");
+                return 0;
+            }
+            else
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5));
+            }
+        }
+        catch (BackpressureException ex)
+        {
+            attempt++;
+            var retryAfter = ex.RetryAfterSeconds ?? 0;
+            var delay = retryAfter > 0
+                ? TimeSpan.FromSeconds(retryAfter + RandomInt(random, 0, 30))
+                : FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
+            logger.Info($"Backpressure/status={ex.StatusCode}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
+            if (config.RunOnce) return 2;
+            await Task.Delay(delay);
+        }
+        catch (Exception ex)
+        {
+            attempt++;
+            var delay = FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
+            logger.Error($"Unhandled shipper error: {ex.Message}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
+            if (config.RunOnce) return 1;
+            await Task.Delay(delay);
+        }
+    }
+}
+finally
+{
+    await StopCleanupLoop(cleanupCts, cleanupTask, logger);
+}
+
+static async Task RunSpoolQuotaLoop(ShipperConfig config, FileLogger logger, CancellationToken token)
+{
+    logger.Info($"Spool quota loop enabled. MaxSpoolSizeMB={config.MaxSpoolSizeMB} LowWatermarkPercent={config.LowWatermarkPercent} CheckIntervalSeconds={config.SpoolCheckIntervalSeconds} PreferDeletingSentFirst={config.PreferDeletingSentFirst} SentRetentionDays={config.SentRetentionDays}.");
+    while (!token.IsCancellationRequested)
+    {
+        try
+        {
+            EnforceSpoolPolicy(config, logger);
+        }
+        catch (Exception ex)
+        {
+            logger.Warn($"Spool quota check failed: {ex.Message}");
+        }
+
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, config.SpoolCheckIntervalSeconds)), token);
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+    }
+}
+
+static async Task StopCleanupLoop(CancellationTokenSource cleanupCts, Task cleanupTask, FileLogger logger)
 {
     try
     {
-        if (DateTimeOffset.UtcNow >= nextSpoolCheckUtc)
-        {
-            EnforceSpoolPolicy(config, logger);
-            nextSpoolCheckUtc = DateTimeOffset.UtcNow.AddSeconds(Math.Max(5, config.SpoolCheckIntervalSeconds));
-        }
-
-        var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed);
-        if (sentAny)
-        {
-            attempt = 0;
-            if (config.RunOnce)
-            {
-                logger.Info("RunOnce completed after one successful batch.");
-                return 0;
-            }
-        }
-        else if (config.RunOnce)
-        {
-            logger.Info("RunOnce completed; no pending spool data.");
-            return 0;
-        }
-        else
-        {
-            await Task.Delay(TimeSpan.FromSeconds(5));
-        }
+        cleanupCts.Cancel();
+        await cleanupTask;
     }
-    catch (BackpressureException ex)
+    catch (OperationCanceledException)
     {
-        attempt++;
-        var retryAfter = ex.RetryAfterSeconds ?? 0;
-        var delay = retryAfter > 0
-            ? TimeSpan.FromSeconds(retryAfter + RandomInt(random, 0, 30))
-            : FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
-        logger.Info($"Backpressure/status={ex.StatusCode}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
-        if (config.RunOnce) return 2;
-        await Task.Delay(delay);
     }
     catch (Exception ex)
     {
-        attempt++;
-        var delay = FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
-        logger.Error($"Unhandled shipper error: {ex.Message}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
-        if (config.RunOnce) return 1;
-        await Task.Delay(delay);
+        logger.Warn($"Spool quota loop stopped with error: {ex.Message}");
     }
 }
 
@@ -105,7 +151,7 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
         content.Headers.ContentEncoding.Add("gzip");
         using var gzipped = await GzipContent.Create(content);
         using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = gzipped };
-        req.Headers.UserAgent.ParseAdd("SOCShipper/0.1");
+        req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
 
         logger.Info($"Sending file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} bytes={Encoding.UTF8.GetByteCount(payload)}.");
         using var resp = await http.SendAsync(req);
@@ -170,14 +216,21 @@ static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
             if (totalBytes <= targetBytes) break;
             try
             {
-                var length = new FileInfo(file).Length;
-                File.Delete(file);
+                var length = new FileInfo(file.FullName).Length;
+                File.Delete(file.FullName);
                 totalBytes -= length;
-                logger.Info($"Deleted spool file {file} ({length} bytes) to enforce spool limit.");
+                if (file.IsSent)
+                {
+                    logger.Info($"Deleted sent spool file {file.FullName} ({length} bytes) to enforce spool limit.");
+                }
+                else
+                {
+                    logger.Warn($"Dropped unsent spool file {file.FullName} ({length} bytes) to enforce spool limit. DATA_LOSS=true");
+                }
             }
             catch (Exception ex)
             {
-                logger.Info($"Spool cleanup skipped {file}: {ex.Message}");
+                logger.Info($"Spool cleanup skipped {file.FullName}: {ex.Message}");
             }
         }
     }
@@ -221,7 +274,7 @@ static long GetDirectorySizeBytes(string directory)
     return total;
 }
 
-static IEnumerable<string> GetDeletionCandidates(ShipperConfig config)
+static IEnumerable<QuotaFile> GetDeletionCandidates(ShipperConfig config)
 {
     var sentDir = Path.Combine(config.SpoolDirectory, "sent");
     if (config.PreferDeletingSentFirst && Directory.Exists(sentDir))
@@ -230,7 +283,7 @@ static IEnumerable<string> GetDeletionCandidates(ShipperConfig config)
             .OrderBy(File.GetLastWriteTimeUtc)
             .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
         {
-            yield return file;
+            yield return new QuotaFile(file, true);
         }
     }
 
@@ -239,7 +292,7 @@ static IEnumerable<string> GetDeletionCandidates(ShipperConfig config)
         .OrderBy(File.GetCreationTimeUtc)
         .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
     {
-        yield return file;
+        yield return new QuotaFile(file, false);
     }
 
     if (!config.PreferDeletingSentFirst && Directory.Exists(sentDir))
@@ -248,7 +301,7 @@ static IEnumerable<string> GetDeletionCandidates(ShipperConfig config)
             .OrderBy(File.GetLastWriteTimeUtc)
             .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
         {
-            yield return file;
+            yield return new QuotaFile(file, true);
         }
     }
 }
@@ -334,6 +387,7 @@ static int RandomInt(RandomNumberGenerator rng, int minInclusive, int maxExclusi
 }
 
 record Batch(List<string> Lines);
+record QuotaFile(string FullName, bool IsSent);
 
 class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception($"Backpressure {statusCode}")
 {
@@ -344,12 +398,12 @@ class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception(
 class ShipperConfig
 {
     public string GatewayUri { get; set; } = "https://soc-gateway.yourcorporate.com/api/v1/telemetry";
-    public string SpoolDirectory { get; set; } = "C:\\ProgramData\\Vector\\spool";
-    public string StateDirectory { get; set; } = "C:\\ProgramData\\Vector\\shipper_state";
-    public string LogDirectory { get; set; } = "C:\\ProgramData\\Vector\\logs";
-    public string ClientCertificateFile { get; set; } = "C:\\Program Files\\Vector\\certs\\client.crt";
-    public string ClientKeyFile { get; set; } = "C:\\Program Files\\Vector\\certs\\client.key";
-    public string CaCertificateFile { get; set; } = "C:\\Program Files\\Vector\\certs\\company_ca.crt";
+    public string SpoolDirectory { get; set; } = "C:\\ProgramData\\HostEye\\spool";
+    public string StateDirectory { get; set; } = "C:\\ProgramData\\HostEye\\shipper_state";
+    public string LogDirectory { get; set; } = "C:\\ProgramData\\HostEye\\logs";
+    public string ClientCertificateFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\client.crt";
+    public string ClientKeyFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\client.key";
+    public string CaCertificateFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\company_ca.crt";
     public int MaxEvents { get; set; } = 1000;
     public int MaxBytes { get; set; } = 1048576;
     public int NormalJitterWindowSeconds { get; set; } = 120;
@@ -418,6 +472,7 @@ class FileCheckpoint
 class FileLogger(string path)
 {
     public void Info(string message) => Write("INFO", message);
+    public void Warn(string message) => Write("WARN", message);
     public void Error(string message) => Write("ERROR", message);
     void Write(string level, string message)
     {

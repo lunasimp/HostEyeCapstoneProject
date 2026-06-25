@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="master-vector.toml" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="master-vector.toml.sig" CopyToOutputDirectory="PreserveNewest" />
+    <Content Update="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="manifest.json.sig" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

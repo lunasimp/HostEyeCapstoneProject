@@ -1,11 +1,11 @@
-# SOC Agent secured configuration updater.
+# HostEye Agent secured configuration updater.
 # Runs as SYSTEM. Applies config updates only after release signature, hash,
 # version, syntax validation, backup, and health checks pass.
 
 $ErrorActionPreference = "Stop"
 
-$TargetDir = "C:\Program Files\Vector"
-$ProgramDataDir = "C:\ProgramData\Vector"
+$TargetDir = "C:\Program Files\HostEye"
+$ProgramDataDir = "C:\ProgramData\HostEye"
 $BackupDir = Join-Path $ProgramDataDir "config-backups"
 $PublicKeyPath = Join-Path $TargetDir "certs\updater_public.pem"
 $UpdateUrl = "https://soc-gateway.yourcorporate.com/api/v1/agent/config"
@@ -15,7 +15,7 @@ $VersionState = Join-Path $ProgramDataDir "config.version"
 $LogDir = Join-Path $ProgramDataDir "logs"
 $LogPath = Join-Path $LogDir "updater.log"
 
-$TmpRoot = Join-Path $env:TEMP ("soc-agent-update-" + [guid]::NewGuid().ToString("N"))
+$TmpRoot = Join-Path $env:TEMP ("hosteye-agent-update-" + [guid]::NewGuid().ToString("N"))
 $TmpManifest = Join-Path $TmpRoot "manifest.json"
 $TmpManifestSig = Join-Path $TmpRoot "manifest.json.sig"
 $TmpConfig = Join-Path $TmpRoot "vector.toml"
@@ -63,7 +63,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 
-public static class SocSignatureVerifier
+public static class HostEyeSignatureVerifier
 {
     private static int ReadLength(byte[] data, ref int offset)
     {
@@ -162,7 +162,7 @@ function Test-Signature([string]$DataPath, [string]$SignaturePath) {
     if (-not (Test-Path -LiteralPath $DataPath) -or -not (Test-Path -LiteralPath $SignaturePath)) {
         return $false
     }
-    try { return [SocSignatureVerifier]::Verify($PublicKeyPath, $DataPath, $SignaturePath) } catch {
+    try { return [HostEyeSignatureVerifier]::Verify($PublicKeyPath, $DataPath, $SignaturePath) } catch {
         Write-UpdateLog "Signature verification error: $($_.Exception.Message)"
         return $false
     }
@@ -170,20 +170,20 @@ function Test-Signature([string]$DataPath, [string]$SignaturePath) {
 
 function Test-VectorConfig([string]$ConfigPath) {
     if (-not (Test-Path -LiteralPath $VectorExe)) {
-        Write-UpdateLog "Vector executable missing; cannot validate config: $VectorExe"
+        Write-UpdateLog "HostEye collector executable missing; cannot validate config: $VectorExe"
         return $false
     }
     $output = & $VectorExe validate --no-environment $ConfigPath 2>&1
     $code = $LASTEXITCODE
     if ($code -ne 0) {
-        Write-UpdateLog "Vector config validation failed: $($output -join ' ')"
+        Write-UpdateLog "HostEye config validation failed: $($output -join ' ')"
         return $false
     }
     return $true
 }
 
 function Test-VectorServiceHealthy {
-    $svc = Get-Service -Name "Vector" -ErrorAction SilentlyContinue
+    $svc = Get-Service -Name "HostEyeAgent" -ErrorAction SilentlyContinue
     if (-not $svc) { return $false }
     return ($svc.Status -eq "Running")
 }
@@ -283,11 +283,11 @@ try {
 
 Start-Sleep -Seconds 5
 if (-not (Test-VectorServiceHealthy)) {
-    Write-UpdateLog "Vector service unhealthy after update; rolling back."
+    Write-UpdateLog "HostEye service unhealthy after update; rolling back."
     try {
         if (Test-Path -LiteralPath $backupPath) {
             Copy-Item -LiteralPath $backupPath -Destination $ActiveConfig -Force
-            Start-Service -Name "Vector" -ErrorAction SilentlyContinue
+            Start-Service -Name "HostEyeAgent" -ErrorAction SilentlyContinue
             Write-UpdateLog "Rollback completed from $backupPath."
         }
     } catch {

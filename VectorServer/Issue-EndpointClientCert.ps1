@@ -36,7 +36,7 @@ req_extensions = req_ext
 
 [ dn ]
 CN = $EndpointId
-O = SOC Endpoint Agent
+O = HostEye Endpoint Agent
 
 [ req_ext ]
 subjectAltName = @alt_names

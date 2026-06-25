@@ -1,0 +1,188 @@
+services:
+  vector-gateway-1:
+    image: timberio/vector:0.35.0-alpine
+    container_name: hosteye-demo-vector-gateway-1
+    volumes:
+      - ./vector-gateway.toml:/etc/vector/vector.toml:ro
+      - ./soc_vault_demo:/var/log/soc_vault
+    command: ["--config", "/etc/vector/vector.toml"]
+    depends_on:
+      - redpanda-broker
+      - clickhouse
+    networks:
+      - hosteye-demo-network
+
+  vector-gateway-2:
+    image: timberio/vector:0.35.0-alpine
+    container_name: hosteye-demo-vector-gateway-2
+    volumes:
+      - ./vector-gateway.toml:/etc/vector/vector.toml:ro
+      - ./soc_vault_demo:/var/log/soc_vault
+    command: ["--config", "/etc/vector/vector.toml"]
+    depends_on:
+      - redpanda-broker
+      - clickhouse
+    networks:
+      - hosteye-demo-network
+
+  redpanda-broker:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+    container_name: hosteye-demo-redpanda-broker
+    command:
+      - redpanda start
+      - --overprovisioned
+      - --smp 1
+      - --memory 1G
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda-broker:9092,external://localhost:29092
+    networks:
+      - hosteye-demo-network
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: hosteye-demo-clickhouse
+    ports:
+      - "18123:8123"
+      - "19000:9000"
+    volumes:
+      - hosteye_demo_clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse-config/users.d/default-user.xml:/etc/clickhouse-server/users.d/default-user.xml:ro
+    networks:
+      - hosteye-demo-network
+
+  grafana:
+    image: grafana/grafana-oss
+    container_name: hosteye-demo-grafana
+    ports:
+      - "3300:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - hosteye_demo_grafana_data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - clickhouse
+    networks:
+      - hosteye-demo-network
+
+  hosteye-endpoint-sim-01:
+    build: ./demo/endpoint-simulator
+    image: hosteye-endpoint-simulator:local
+    container_name: hosteye-demo-hosteye-endpoint-sim-01
+    environment:
+      ENDPOINT_ID: hosteye-endpoint-sim-01
+      HOSTNAME_OVERRIDE: WIN-DEMO-01
+      GATEWAY_URL: http://vector-gateway-1:8686
+      DEMO_DURATION_SECONDS: 90
+      EVENTS_PER_BATCH: 40
+      SEND_INTERVAL_SECONDS: 8
+      JITTER_WINDOW_SECONDS: 30
+      MAX_BACKOFF_SECONDS: 30
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - hosteye-demo-network
+
+  hosteye-endpoint-sim-02:
+    image: hosteye-endpoint-simulator:local
+    container_name: hosteye-demo-hosteye-endpoint-sim-02
+    environment:
+      ENDPOINT_ID: hosteye-endpoint-sim-02
+      HOSTNAME_OVERRIDE: WIN-DEMO-02
+      GATEWAY_URL: http://vector-gateway-2:8686
+      DEMO_DURATION_SECONDS: 90
+      EVENTS_PER_BATCH: 40
+      SEND_INTERVAL_SECONDS: 8
+      JITTER_WINDOW_SECONDS: 30
+      MAX_BACKOFF_SECONDS: 30
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - hosteye-demo-network
+
+  hosteye-endpoint-sim-03:
+    image: hosteye-endpoint-simulator:local
+    container_name: hosteye-demo-hosteye-endpoint-sim-03
+    environment:
+      ENDPOINT_ID: hosteye-endpoint-sim-03
+      HOSTNAME_OVERRIDE: WIN-DEMO-03
+      GATEWAY_URL: http://vector-gateway-1:8686
+      DEMO_DURATION_SECONDS: 90
+      EVENTS_PER_BATCH: 40
+      SEND_INTERVAL_SECONDS: 8
+      JITTER_WINDOW_SECONDS: 30
+      MAX_BACKOFF_SECONDS: 30
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - hosteye-demo-network
+
+  hosteye-endpoint-sim-04:
+    image: hosteye-endpoint-simulator:local
+    container_name: hosteye-demo-hosteye-endpoint-sim-04
+    environment:
+      ENDPOINT_ID: hosteye-endpoint-sim-04
+      HOSTNAME_OVERRIDE: WIN-DEMO-04
+      GATEWAY_URL: http://vector-gateway-2:8686
+      DEMO_DURATION_SECONDS: 90
+      EVENTS_PER_BATCH: 40
+      SEND_INTERVAL_SECONDS: 8
+      JITTER_WINDOW_SECONDS: 30
+      MAX_BACKOFF_SECONDS: 30
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - hosteye-demo-network
+
+  hosteye-endpoint-sim-05:
+    image: hosteye-endpoint-simulator:local
+    container_name: hosteye-demo-hosteye-endpoint-sim-05
+    environment:
+      ENDPOINT_ID: hosteye-endpoint-sim-05
+      HOSTNAME_OVERRIDE: WIN-DEMO-05
+      GATEWAY_URL: http://vector-gateway-1:8686
+      DEMO_DURATION_SECONDS: 90
+      EVENTS_PER_BATCH: 40
+      SEND_INTERVAL_SECONDS: 8
+      JITTER_WINDOW_SECONDS: 30
+      MAX_BACKOFF_SECONDS: 30
+    depends_on:
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - hosteye-demo-network
+
+  demo-testcases:
+    build: ./demo/testcases
+    image: hosteye-demo-testcases:local
+    container_name: hosteye-demo-testcases
+    environment:
+      CLICKHOUSE_URL: http://clickhouse:8123
+      EXPECTED_ENDPOINTS: 5
+      MIN_TOTAL_EVENTS: 100
+      TIMEOUT_SECONDS: 180
+    depends_on:
+      - clickhouse
+      - hosteye-endpoint-sim-01
+      - hosteye-endpoint-sim-02
+      - hosteye-endpoint-sim-03
+      - hosteye-endpoint-sim-04
+      - hosteye-endpoint-sim-05
+    networks:
+      - hosteye-demo-network
+
+networks:
+  hosteye-demo-network:
+    name: hosteye-demo-network
+    driver: bridge
+
+volumes:
+  hosteye_demo_clickhouse_data:
+  hosteye_demo_grafana_data:

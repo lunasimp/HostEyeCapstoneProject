@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Phân tích ô HostEye</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="detail-page">
+      <header class="detail-topbar">
+        <a class="back-link" href="./index.html#heatmap">Quay lại dashboard</a>
+        <div class="detail-brand">
+          <img src="./assets/hosteye-logo.png" alt="HostEye">
+        </div>
+      </header>
+
+      <main class="detail-main">
+        <section class="detail-hero">
+          <p class="breadcrumb">Host Activity / Phân tích ô</p>
+          <h1 id="detailTitle">Cell analysis</h1>
+          <p id="detailSubtitle">Loading...</p>
+        </section>
+
+        <section class="kpi-grid">
+          <article class="kpi"><span>Total events</span><strong id="detailTotal">-</strong></article>
+          <article class="kpi"><span>Channels</span><strong id="detailChannels">-</strong></article>
+          <article class="kpi"><span>Event types</span><strong id="detailTypes">-</strong></article>
+          <article class="kpi"><span>Recent logs</span><strong id="detailLogs">-</strong></article>
+        </section>
+
+        <section class="grid three">
+          <article class="panel">
+            <div class="panel-title"><h3>Breakdown by event type</h3></div>
+            <div id="detailByType" class="table-shell tall"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Breakdown by channel</h3></div>
+            <div id="detailByChannel" class="table-shell tall"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-title"><h3>Breakdown by event ID</h3></div>
+            <div id="detailByEventId" class="table-shell tall"></div>
+          </article>
+        </section>
+
+        <section class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Recent logs in selected cell</h2></div>
+          <article class="panel logs-panel">
+            <div id="detailRecentLogs" class="table-shell logs"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script src="./detail.js"></script>
+  </body>
+</html>
