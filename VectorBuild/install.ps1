@@ -1,6 +1,12 @@
 # HostEye Endpoint Agent installer
 # Requires Administrator. Installs HostEye collector as LocalSystem service, config updater, certs, and Sysmon.
 
+param(
+    [string]$GatewayUri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+    [string]$CaCertificateFileName = "company_ca.crt",
+    [switch]$NoStart
+)
+
 $ErrorActionPreference = "Stop"
 $StagingDir = $PSScriptRoot
 $ServiceName = "HostEyeAgent"
@@ -52,6 +58,25 @@ function Get-StableJitterSeconds([string]$Seed, [int]$WindowSeconds) {
     }
 }
 
+function Stop-ExistingComponent([string]$Name) {
+    $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if ($svc) {
+        Write-InstallLog "Stopping existing component before file copy: $Name"
+        try { Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue } catch {}
+        Start-Sleep -Seconds 2
+        try {
+            $svcInfo = Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+            if ($svcInfo -and $svcInfo.ProcessId -and $svcInfo.ProcessId -ne 0) {
+                Write-InstallLog "Killing stuck service process for $Name PID=$($svcInfo.ProcessId)"
+                Stop-Process -Id $svcInfo.ProcessId -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 2
+            }
+        } catch {
+            Write-InstallLog "WARNING: could not inspect process for ${Name}: $($_.Exception.Message)"
+        }
+    }
+}
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "This installer must be run as Administrator."
     exit 1
@@ -59,7 +84,20 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 Write-InstallLog "Bat dau cai dat HostEye Endpoint Agent from $StagingDir"
 
-New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state") | Out-Null
+New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "data"), (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state") | Out-Null
+
+foreach ($existingComponent in @($ServiceName, $ShipperServiceName, "Vector", "SOCShipper")) {
+    Stop-ExistingComponent $existingComponent
+}
+foreach ($existingTask in @("HostEye_Shipper_Startup", "HostEye_Agent_Startup", "SOC_Shipper_Startup", "SOC_Vector_Startup")) {
+    try { Stop-ScheduledTask -TaskName $existingTask -ErrorAction SilentlyContinue } catch {}
+}
+foreach ($existingProcess in @("HostEyeShipper", "SOCShipper")) {
+    Get-Process -Name $existingProcess -ErrorAction SilentlyContinue | ForEach-Object {
+        Write-InstallLog "Killing existing process before file copy: $($_.ProcessName) PID=$($_.Id)"
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+}
 
 # Stable endpoint identity for HostEye metadata.
 $machineGuid = $null
@@ -77,30 +115,32 @@ Copy-IfDifferent (Join-Path $StagingDir "HostEye_Updater.ps1") (Join-Path $Targe
 Copy-IfDifferent (Join-Path $StagingDir "SOC_Updater.ps1") (Join-Path $TargetDir "HostEye_Updater.ps1")
 Set-Content -LiteralPath (Join-Path $TargetDir "agent.version") -Value "1.0.0" -Encoding ASCII
 if (Test-Path (Join-Path $StagingDir "HostEyeShipper")) {
-    Copy-Item -LiteralPath (Join-Path $StagingDir "HostEyeShipper\*") -Destination $ShipperDir -Force -Recurse
+    Copy-Item -Path (Join-Path $StagingDir "HostEyeShipper\*") -Destination $ShipperDir -Force -Recurse
 } elseif (Test-Path (Join-Path $StagingDir "SOCShipper")) {
-    Copy-Item -LiteralPath (Join-Path $StagingDir "SOCShipper\*") -Destination $ShipperDir -Force -Recurse
+    Copy-Item -Path (Join-Path $StagingDir "SOCShipper\*") -Destination $ShipperDir -Force -Recurse
 } else {
     Write-InstallLog "WARNING: HostEyeShipper directory was not found in staging dir."
 }
 
 if (Test-Path (Join-Path $StagingDir "certs")) {
-    Copy-Item -LiteralPath (Join-Path $StagingDir "certs\*") -Destination $CertDir -Force
+    Copy-Item -Path (Join-Path $StagingDir "certs\*") -Destination $CertDir -Force
 } else {
     Write-InstallLog "WARNING: certs directory was not found in staging dir."
 }
 
 if (Test-Path (Join-Path $StagingDir "Sysmon")) {
-    Copy-Item -LiteralPath (Join-Path $StagingDir "Sysmon\*") -Destination $SysmonDir -Force -Recurse
+    Copy-Item -Path (Join-Path $StagingDir "Sysmon\*") -Destination $SysmonDir -Force -Recurse
 } else {
     Write-InstallLog "WARNING: Sysmon directory was not found in staging dir."
 }
 
 # Trust internal CA for HostEye TLS and PowerShell updater HTTPS downloads.
-$caPath = Join-Path $CertDir "company_ca.crt"
+$caPath = Join-Path $CertDir $CaCertificateFileName
 if (Test-Path $caPath) {
     Import-Certificate -FilePath $caPath -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
-    Write-InstallLog "Imported company CA into LocalMachine Root."
+    Write-InstallLog "Imported CA certificate into LocalMachine Root: $caPath"
+} else {
+    Write-InstallLog "WARNING: CA certificate was not found at $caPath"
 }
 
 # Harden install directory. Only SYSTEM and Administrators can read private key/config.
@@ -222,20 +262,24 @@ $startupSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Ex
 Register-ScheduledTask -TaskName $startupTaskName -Action $startupAction -Trigger $startupTrigger -Principal $startupPrincipal -Settings $startupSettings -Force | Out-Null
 Write-InstallLog "HostEye_Agent_Startup scheduled task registered."
 
-Write-InstallLog "Dang khoi dong HostEye Endpoint Agent."
-$startupJitterSeconds = Get-StableJitterSeconds -Seed $machineGuid -WindowSeconds 30
-Write-InstallLog "Applying stable startup jitter before HostEye service start: $startupJitterSeconds seconds."
-if ($startupJitterSeconds -gt 0) { Start-Sleep -Seconds $startupJitterSeconds }
-& $vectorExe service start --name $ServiceName | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "HostEye service start failed with exit code $LASTEXITCODE" }
-Write-InstallLog "HostEye service started."
+if (-not $NoStart) {
+    Write-InstallLog "Dang khoi dong HostEye Endpoint Agent."
+    $startupJitterSeconds = Get-StableJitterSeconds -Seed $machineGuid -WindowSeconds 30
+    Write-InstallLog "Applying stable startup jitter before HostEye service start: $startupJitterSeconds seconds."
+    if ($startupJitterSeconds -gt 0) { Start-Sleep -Seconds $startupJitterSeconds }
+    & $vectorExe service start --name $ServiceName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "HostEye service start failed with exit code $LASTEXITCODE" }
+    Write-InstallLog "HostEye service started."
+} else {
+    Write-InstallLog "NoStart was set; HostEye service installed but not started."
+}
 
 
 # Configure and install HostEye Shipper startup task. HostEye collector writes local spool; shipper sends batches with mTLS/backoff.
 $shipperExe = Join-Path $ShipperDir "HostEyeShipper.exe"
 $shipperConfig = Join-Path $ShipperDir "shipper-config.json"
 $shipperConfigObject = [ordered]@{
-    GatewayUri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry"
+    GatewayUri = $GatewayUri
     SpoolDirectory = (Join-Path $ProgramDataDir "spool")
     StateDirectory = (Join-Path $ProgramDataDir "shipper_state")
     LogDirectory = $LogDir
@@ -276,8 +320,12 @@ if (Test-Path $shipperExe) {
     $shipperPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
     $shipperSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Days 3650) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
     Register-ScheduledTask -TaskName $shipperTaskName -Action $shipperAction -Trigger $shipperTrigger -Principal $shipperPrincipal -Settings $shipperSettings -Force | Out-Null
-    Start-ScheduledTask -TaskName $shipperTaskName
-    Write-InstallLog "HostEye Shipper startup task registered and started."
+    if (-not $NoStart) {
+        Start-ScheduledTask -TaskName $shipperTaskName
+        Write-InstallLog "HostEye Shipper startup task registered and started."
+    } else {
+        Write-InstallLog "HostEye Shipper startup task registered but not started because NoStart was set."
+    }
 } else {
     Write-InstallLog "WARNING: HostEyeShipper.exe missing; Shipper startup task not registered."
 }

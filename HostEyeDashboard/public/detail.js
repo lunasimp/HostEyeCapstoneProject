@@ -1,4 +1,4 @@
-const API_BASE = window.HOSTEYE_API_BASE || "http://localhost:5055";
+const API_BASE = window.HOSTEYE_API_BASE || "";
 
 const el = (id) => document.getElementById(id);
 
@@ -94,7 +94,7 @@ function setOptionalParam(url, key, value) {
 }
 
 async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`);
+  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 200)}`);

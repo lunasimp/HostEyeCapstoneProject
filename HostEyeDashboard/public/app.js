@@ -1,4 +1,4 @@
-const API_BASE = window.HOSTEYE_API_BASE || "http://localhost:5055";
+const API_BASE = window.HOSTEYE_API_BASE || "";
 const palette = ["#ff8200", "#4c8dff", "#6dd17c", "#ff5364", "#b184ff", "#f7c948", "#59c3c3", "#f97090"];
 
 const state = {
@@ -512,7 +512,7 @@ function renderHeatmap(container, hosts, cells, bucket = selectedHeatmapBucket()
 }
 
 async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`);
+  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);
