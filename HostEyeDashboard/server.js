@@ -25,12 +25,7 @@ http.createServer((req, res) => {
     return;
   }
 
-  res.writeHead(200, {
-    "content-type": types[extname(filePath)] || "application/octet-stream",
-    "cache-control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-    "pragma": "no-cache",
-    "expires": "0",
-  });
+  res.writeHead(200, { "content-type": types[extname(filePath)] || "application/octet-stream" });
   createReadStream(filePath).pipe(res);
 }).listen(port, () => {
   console.log(`HostEye Dashboard running at http://localhost:${port}`);

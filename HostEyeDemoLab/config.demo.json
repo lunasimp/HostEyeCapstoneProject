@@ -1,4 +1,4 @@
-﻿{
+{
   "LabName": "HostEyeDemoLab",
   "TemplateVmName": "HostEye-Win11-Template",
   "TemplateSnapshotName": "clean-hosteye-template",
@@ -20,10 +20,8 @@
   "InstallerArguments": "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
   "DockerComposeDirectory": "../Vector-HA-Cluster",
   "DockerComposeFile": "docker-compose.yml",
-  "DashboardApiDirectory": "../HostEyeDashboardApi",
+  "DashboardApiDirectory": "../VectorDashboardApi",
   "DashboardWebDirectory": "../HostEyeDashboard",
   "DashboardApiPort": 5055,
   "DashboardWebPort": 5174
 }
-
-
