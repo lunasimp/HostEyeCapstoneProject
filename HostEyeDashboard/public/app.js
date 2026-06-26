@@ -8,13 +8,24 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 
+const pages = {
+  overview: { title: "Overview", eyebrow: "[ SOC OVERVIEW ]" },
+  hosts: { title: "Host Inventory", eyebrow: "[ ENDPOINTS ]" },
+  process: { title: "Process Activity", eyebrow: "[ PROCESS TELEMETRY ]" },
+  network: { title: "Network & DNS", eyebrow: "[ NETWORK TELEMETRY ]" },
+  registry: { title: "Registry & File", eyebrow: "[ ENDPOINT CHANGES ]" },
+  powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
+  heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
+};
+
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.addEventListener("click", () => {
-      document.querySelectorAll(".nav-item").forEach((link) => link.classList.remove("active"));
-      item.classList.add("active");
+      const page = pageFromHash(item.getAttribute("href") || "");
+      showPage(page);
     });
   });
+  window.addEventListener("hashchange", () => showPage(pageFromHash(window.location.hash)));
 
   el("refreshBtn").addEventListener("click", loadDashboard);
   el("rangeSelect").addEventListener("change", loadDashboard);
@@ -28,8 +39,30 @@ document.addEventListener("DOMContentLoaded", () => {
       button.setAttribute("aria-expanded", String(isOpen));
     });
   });
+  showPage(pageFromHash(window.location.hash));
   loadDashboard();
 });
+
+function pageFromHash(hash) {
+  const value = String(hash || "").replace(/^#/, "");
+  return pages[value] ? value : "overview";
+}
+
+function showPage(page) {
+  const selectedPage = pages[page] ? page : "overview";
+  document.querySelectorAll(".page-view").forEach((view) => {
+    view.hidden = view.dataset.page !== selectedPage;
+  });
+  document.querySelectorAll(".nav-item").forEach((link) => {
+    link.classList.toggle("active", pageFromHash(link.getAttribute("href")) === selectedPage);
+  });
+  if (window.location.hash !== `#${selectedPage}`) {
+    history.replaceState(null, "", `#${selectedPage}`);
+  }
+  const meta = pages[selectedPage];
+  el("pageHeading").textContent = meta.title;
+  el("pageEyebrow").textContent = meta.eyebrow;
+}
 
 async function loadDashboard() {
   if (state.loading) return;

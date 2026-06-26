@@ -10,8 +10,9 @@ if [ ! -f /opt/hosteye/certs/hosteye-local-ca.key ] || [ ! -f /opt/hosteye/certs
     -subj "/CN=HostEye All-In-One Lab CA" >/dev/null 2>&1
 fi
 
-cat >/opt/hosteye/certs/server-ext.cnf <<'EOF'
-subjectAltName=DNS:localhost,DNS:host.docker.internal,DNS:hosteye-all-in-one,IP:127.0.0.1
+server_san="${HOSTEYE_SERVER_SAN:-DNS:localhost,DNS:host.docker.internal,DNS:hosteye-all-in-one,IP:127.0.0.1,IP:192.168.17.1}"
+cat >/opt/hosteye/certs/server-ext.cnf <<EOF
+subjectAltName=${server_san}
 extendedKeyUsage=serverAuth
 EOF
 

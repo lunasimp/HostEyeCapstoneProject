@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye SOC Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260626-hosts">
+    <link rel="stylesheet" href="./styles.css?v=20260626-pages">
   </head>
   <body>
     <div class="app-shell">
@@ -15,6 +15,7 @@
 
         <nav class="nav-list" aria-label="Dashboard sections">
           <a href="#overview" class="nav-item active">Overview</a>
+          <a href="#hosts" class="nav-item">Hosts</a>
           <a href="#process" class="nav-item">Process</a>
           <a href="#network" class="nav-item">Network & DNS</a>
           <a href="#registry" class="nav-item">Registry & File</a>
@@ -62,18 +63,18 @@
 
       <main class="main">
         <section class="page-title">
-          <p>[ HOSTEYE SOC ]</p>
-          <h1>Dashboard</h1>
+          <p id="pageEyebrow">[ HOSTEYE SOC ]</p>
+          <h1 id="pageHeading">Overview</h1>
         </section>
 
-        <section class="kpi-grid" id="kpis">
+        <section class="kpi-grid page-view" id="kpis" data-page="overview">
           <article class="kpi"><span>Total events</span><strong id="kpiEvents">-</strong></article>
           <article class="kpi"><span>Total hosts</span><strong id="kpiHosts">-</strong></article>
           <article class="kpi"><span>Event IDs</span><strong id="kpiEventIds">-</strong></article>
           <article class="kpi"><span>Last seen</span><strong id="kpiLastSeen">-</strong></article>
         </section>
 
-        <section id="hosts" class="dashboard-section section-card is-open">
+        <section id="hosts" class="dashboard-section section-card is-open page-view" data-page="hosts" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">00</span>
             <span>
@@ -106,7 +107,7 @@
           </div>
         </section>
 
-        <section id="overview" class="dashboard-section section-card is-open">
+        <section id="overview" class="dashboard-section section-card is-open page-view" data-page="overview">
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">01</span>
             <span>
@@ -137,7 +138,7 @@
           </div>
         </section>
 
-        <section id="process" class="dashboard-section section-card is-open">
+        <section id="process" class="dashboard-section section-card is-open page-view" data-page="process" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">02</span>
             <span>
@@ -160,7 +161,7 @@
           </div>
         </section>
 
-        <section id="network" class="dashboard-section section-card is-open">
+        <section id="network" class="dashboard-section section-card is-open page-view" data-page="network" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">03</span>
             <span>
@@ -191,7 +192,7 @@
           </div>
         </section>
 
-        <section id="registry" class="dashboard-section section-card is-open">
+        <section id="registry" class="dashboard-section section-card is-open page-view" data-page="registry" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">04</span>
             <span>
@@ -218,7 +219,7 @@
           </div>
         </section>
 
-        <section id="powershell" class="dashboard-section section-card is-open">
+        <section id="powershell" class="dashboard-section section-card is-open page-view" data-page="powershell" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">05</span>
             <span>
@@ -241,7 +242,7 @@
           </div>
         </section>
 
-        <section id="heatmap" class="dashboard-section section-card is-open">
+        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">06</span>
             <span>
@@ -272,6 +273,6 @@
         </section>
       </main>
     </div>
-    <script src="./app.js?v=20260626-hosts"></script>
+    <script src="./app.js?v=20260626-pages"></script>
   </body>
 </html>
