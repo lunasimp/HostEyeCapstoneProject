@@ -165,10 +165,11 @@ async function overviewSecurityTimeline(ctx, res) {
 }
 
 async function processTopProcesses(ctx, res) {
-  const where = timeWhere(ctx.url, ["process_path != ''"]);
+  const processPath = processImageExpr();
+  const where = timeWhere(ctx.url, [`${processPath} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT process_path AS processPath, count() AS volume
+    SELECT ${processPath} AS processPath, count() AS volume
     FROM default.process_events
     ${where.sql}
     GROUP BY processPath
@@ -188,11 +189,11 @@ async function processRecent(ctx, res) {
       event_type AS eventType,
       event_id AS eventId,
       user_name AS userName,
-      process_path AS processPath,
-      parent_process_path AS parentProcessPath,
-      left(command_line, 800) AS commandLine,
-      process_guid AS processGuid,
-      parent_process_guid AS parentProcessGuid
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('parent_process_path', 'ParentImage')} AS parentProcessPath,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${fieldExpr('parent_process_guid', 'ParentProcessGuid')} AS parentProcessGuid
     FROM default.process_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -202,10 +203,11 @@ async function processRecent(ctx, res) {
 }
 
 async function networkTopDestinationIps(ctx, res) {
-  const where = timeWhere(ctx.url, ["destination_ip != ''"]);
+  const destinationIp = fieldExpr("destination_ip", "DestinationIp");
+  const where = timeWhere(ctx.url, [`${destinationIp} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT destination_ip AS destinationIp, count() AS volume
+    SELECT ${destinationIp} AS destinationIp, count() AS volume
     FROM default.network_events
     ${where.sql}
     GROUP BY destinationIp
@@ -222,15 +224,15 @@ async function networkRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      user_name AS userName,
-      process_guid AS processGuid,
-      process_path AS processPath,
-      source_ip AS sourceIp,
-      source_port AS sourcePort,
-      destination_ip AS destinationIp,
-      destination_port AS destinationPort,
-      protocol,
-      initiated
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
+      ${uintFieldExpr("source_port", "SourcePort")} AS sourcePort,
+      ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
+      ${uintFieldExpr("destination_port", "DestinationPort")} AS destinationPort,
+      ${fieldExpr('protocol', 'Protocol')} AS protocol,
+      ${fieldExpr('initiated', 'Initiated')} AS initiated
     FROM default.network_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -240,10 +242,11 @@ async function networkRecent(ctx, res) {
 }
 
 async function dnsTopDomains(ctx, res) {
-  const where = timeWhere(ctx.url, ["dns_query != ''"]);
+  const dnsQuery = fieldExpr("dns_query", "QueryName");
+  const where = timeWhere(ctx.url, [`${dnsQuery} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT dns_query AS domain, count() AS volume
+    SELECT ${dnsQuery} AS domain, count() AS volume
     FROM default.dns_events
     ${where.sql}
     GROUP BY domain
@@ -260,11 +263,11 @@ async function dnsRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      user_name AS userName,
-      process_guid AS processGuid,
-      process_path AS processPath,
-      dns_query AS dnsQuery,
-      query_status AS queryStatus
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
+      ${fieldExpr('query_status', 'QueryStatus')} AS queryStatus
     FROM default.dns_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -282,9 +285,9 @@ async function registryRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_object AS targetObject,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
       left(message, 300) AS message
     FROM default.registry_events
     ${where.sql}
@@ -303,10 +306,10 @@ async function fileRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_filename AS targetFilename,
-      hashes,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
+      ${fieldExpr('hashes', 'Hashes')} AS hashes,
       left(message, 300) AS message
     FROM default.file_events
     ${where.sql}
@@ -324,11 +327,11 @@ async function processAccessRecent(ctx, res) {
       kafka_timestamp AS time,
       computer,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_image AS targetImage,
-      granted_access AS grantedAccess,
-      call_trace AS callTrace,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_path', 'SourceImage', 'Image')} AS processPath,
+      ${fieldExpr('target_image', 'TargetImage')} AS targetImage,
+      ${fieldExpr('granted_access', 'GrantedAccess')} AS grantedAccess,
+      ${fieldExpr('call_trace', 'CallTrace')} AS callTrace,
       left(message, 300) AS message
     FROM default.process_access_events
     ${where.sql}
@@ -360,9 +363,9 @@ async function powershellRecent(ctx, res) {
       computer,
       event_id AS eventId,
       level,
-      user_name AS userName,
-      left(command_line, 800) AS commandLine,
-      left(script_block_text, 1200) AS scriptBlockText,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+      left(${fieldExpr('script_block_text', 'ScriptBlockText')}, 1200) AS scriptBlockText,
       left(message, 300) AS message
     FROM default.powershell_events
     ${where.sql}
@@ -474,14 +477,14 @@ async function hostsHeatmapCell(ctx, res) {
         channel,
         event_id AS eventId,
         ${eventTypeExpression()} AS eventType,
-        user_name AS userName,
-        process_path AS processPath,
-        left(command_line, 800) AS commandLine,
-        source_ip AS sourceIp,
-        destination_ip AS destinationIp,
-        dns_query AS dnsQuery,
-        target_filename AS targetFilename,
-        target_object AS targetObject,
+        ${fieldExpr('user_name', 'User')} AS userName,
+        ${processImageExpr()} AS processPath,
+        left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+        ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
+        ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
+        ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
+        ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
+        ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
         left(message, 500) AS message
       FROM default.windows_system_logs
       ${where}
@@ -522,9 +525,9 @@ async function logsSearch(ctx, res) {
       channel,
       event_id AS eventId,
       level,
-      user_name AS userName,
-      process_path AS processPath,
-      left(command_line, 800) AS commandLine,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
       left(message, 500) AS message,
       idempotency_key AS idempotencyKey
     FROM default.windows_system_logs
@@ -580,6 +583,19 @@ async function queryRows(sql) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function fieldExpr(column, ...jsonKeys) {
+  const fallbacks = jsonKeys.map((key) => `nullIf(JSONExtractString(event_data_json, ${sqlString(key)}), '')`);
+  return `coalesce(nullIf(${column}, ''), ${fallbacks.join(", ")}, '')`;
+}
+
+function processImageExpr() {
+  return fieldExpr("process_path", "Image", "NewProcessName", "ApplicationPath", "SourceImage");
+}
+
+function uintFieldExpr(column, jsonKey) {
+  return `if(${column} != 0, ${column}, toUInt32OrZero(JSONExtractString(event_data_json, ${sqlString(jsonKey)})))`;
 }
 
 function timeWhere(url, extraPredicates = []) {
