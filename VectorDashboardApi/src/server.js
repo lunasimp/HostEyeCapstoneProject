@@ -21,6 +21,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/overview\/top-hosts$/, overviewTopHosts],
   ["GET", /^\/api\/dashboard\/overview\/event-types$/, overviewEventTypes],
   ["GET", /^\/api\/dashboard\/overview\/security-timeline$/, overviewSecurityTimeline],
+  ["GET", /^\/api\/dashboard\/hosts\/summary$/, hostsSummary],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -162,6 +163,51 @@ async function overviewSecurityTimeline(ctx, res) {
     LIMIT ${limit}
   `);
   sendJson(res, 200, { items: rows });
+}
+
+async function hostsSummary(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      count() AS totalEvents,
+      min(kafka_timestamp) AS firstSeen,
+      max(kafka_timestamp) AS lastSeen,
+      uniqExact(channel) AS channels,
+      uniqExact(event_id) AS eventIds
+    FROM default.windows_system_logs
+    WHERE computer != ''
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  const hosts = rows.map((row) => {
+    const status = hostStatus(row.lastSeen);
+    return {
+      computer: row.computer,
+      totalEvents: Number(row.totalEvents || 0),
+      firstSeen: row.firstSeen,
+      lastSeen: row.lastSeen,
+      channels: Number(row.channels || 0),
+      eventIds: Number(row.eventIds || 0),
+      statusLevel: status.level,
+      statusLabel: status.label,
+      ageSeconds: status.ageSeconds,
+    };
+  });
+
+  const groups = ["online", "active", "delayed", "stale", "unknown"].map((level) => {
+    const members = hosts.filter((host) => host.statusLevel === level);
+    return {
+      level,
+      label: hostLevelLabel(level),
+      count: members.length,
+      hosts: members.slice(0, 20),
+    };
+  });
+
+  sendJson(res, 200, { hosts, groups });
 }
 
 async function processTopProcesses(ctx, res) {
@@ -378,7 +424,7 @@ async function powershellRecent(ctx, res) {
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
-  const where = timeWhere(ctx.url);
+  const where = timeWhere(ctx.url, ["computer != ''"]);
 
   const hosts = await queryRows(`
     SELECT computer, count() AS totalEvents
@@ -441,6 +487,22 @@ async function hostsHeatmapCell(ctx, res) {
     `kafka_timestamp >= ${startExpr}`,
     `kafka_timestamp < ${endExpr}`,
   ];
+
+  const channel = ctx.url.searchParams.get("channel");
+  const eventId = ctx.url.searchParams.get("eventId");
+  const q = ctx.url.searchParams.get("q");
+  if (channel) predicates.push(`channel = ${sqlString(channel)}`);
+  if (eventId) predicates.push(`event_id = ${uintParam(eventId, "eventId")}`);
+  if (q) {
+    const search = sqlString(q);
+    predicates.push(`(
+      positionCaseInsensitive(message, ${search}) > 0
+      OR positionCaseInsensitive(command_line, ${search}) > 0
+      OR positionCaseInsensitive(process_path, ${search}) > 0
+      OR positionCaseInsensitive(raw_log, ${search}) > 0
+    )`);
+  }
+
   const where = `WHERE ${predicates.join(" AND ")}`;
   const limit = limitParam(ctx.url, 200, 500);
 
@@ -679,6 +741,27 @@ function heatLevel(value, max) {
   if (ratio >= 0.3) return 3;
   if (ratio >= 0.1) return 2;
   return 1;
+}
+
+function hostStatus(lastSeen) {
+  if (!lastSeen) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+  const normalized = String(lastSeen).includes("T") ? lastSeen : String(lastSeen).replace(" ", "T");
+  const time = new Date(normalized).getTime();
+  if (Number.isNaN(time)) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (ageSeconds <= 5 * 60) return { level: "online", label: hostLevelLabel("online"), ageSeconds };
+  if (ageSeconds <= 60 * 60) return { level: "active", label: hostLevelLabel("active"), ageSeconds };
+  if (ageSeconds <= 24 * 60 * 60) return { level: "delayed", label: hostLevelLabel("delayed"), ageSeconds };
+  return { level: "stale", label: hostLevelLabel("stale"), ageSeconds };
+}
+
+function hostLevelLabel(level) {
+  if (level === "online") return "Online <= 5m";
+  if (level === "active") return "Active <= 1h";
+  if (level === "delayed") return "Delayed <= 24h";
+  if (level === "stale") return "Stale > 24h";
+  return "Unknown";
 }
 
 function dateParam(url, name, fallback) {

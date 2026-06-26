@@ -19,6 +19,8 @@ document.addEventListener("DOMContentLoaded", () => {
   el("refreshBtn").addEventListener("click", loadDashboard);
   el("rangeSelect").addEventListener("change", loadDashboard);
   el("hostFilter").addEventListener("change", loadDashboard);
+  el("heatmapBucket")?.addEventListener("change", loadHeatmap);
+  el("hostLevelFilter")?.addEventListener("change", () => renderHostsScreen(state.hostSummary || { hosts: [], groups: [] }));
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.closest(".section-card");
@@ -40,6 +42,7 @@ async function loadDashboard() {
 
     await loadSummaryAndHosts();
     await Promise.all([
+      loadHostsScreen(),
       loadOverview(),
       loadProcess(),
       loadNetworkDns(),
@@ -136,6 +139,26 @@ function renderDemoDashboard() {
   renderLineChart(el("powershellVolumeChart"), volume, "time", "events", "#ff4b12");
   renderTable(el("powershellRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["Event ID", "eventId", "numeric"], ["Level", "level"], ["Script block", "scriptBlockText"]]);
 
+  renderHostsScreen({
+    groups: [
+      { level: "online", label: "Online <= 5m", count: 2 },
+      { level: "active", label: "Active <= 1h", count: 1 },
+      { level: "delayed", label: "Delayed <= 24h", count: 1 },
+      { level: "stale", label: "Stale > 24h", count: 0 },
+    ],
+    hosts: hosts.map((host, index) => ({
+      computer: host.computer,
+      totalEvents: host.events,
+      firstSeen: volume[0].time,
+      lastSeen: volume[Math.min(index, volume.length - 1)].time,
+      channels: 3,
+      eventIds: 8,
+      statusLevel: index === 0 ? "online" : index === 1 ? "active" : "delayed",
+      statusLabel: index === 0 ? "Online <= 5m" : index === 1 ? "Active <= 1h" : "Delayed <= 24h",
+      ageSeconds: index * 1800,
+    })),
+  });
+
   const heatHosts = hosts.slice(0, 4).map((host, index) => ({ rank: index + 1, alias: `C${index + 1}`, computer: host.computer, totalEvents: host.events }));
   const heatCells = [];
   heatHosts.forEach((host, hostIndex) => {
@@ -170,6 +193,73 @@ async function loadSummaryAndHosts() {
     .map((host) => `<option value="${escapeAttr(host.computer)}">${escapeHtml(host.computer)} (${formatNumber(host.events)})</option>`)
     .join("");
   select.value = selected;
+}
+
+async function loadHostsScreen() {
+  const data = await api(`/api/dashboard/hosts/summary${query({ limit: 5000 })}`);
+  state.hostSummary = data;
+  renderHostsScreen(data);
+}
+
+function renderHostsScreen(data) {
+  const groups = data.groups || [];
+  const hosts = data.hosts || [];
+  const selectedLevel = el("hostLevelFilter")?.value || "";
+  const visibleHosts = selectedLevel ? hosts.filter((host) => host.statusLevel === selectedLevel) : hosts;
+
+  el("hostLevelCards").innerHTML = groups.map((group) => `
+    <button class="host-level-card status-${escapeAttr(group.level)}" type="button" data-level="${escapeAttr(group.level)}">
+      <span>${escapeHtml(group.label)}</span>
+      <strong>${formatNumber(group.count)}</strong>
+    </button>
+  `).join("");
+
+  el("hostLevelCards").querySelectorAll(".host-level-card").forEach((card) => {
+    card.addEventListener("click", () => {
+      const level = card.dataset.level || "";
+      const select = el("hostLevelFilter");
+      select.value = select.value === level ? "" : level;
+      renderHostsScreen(state.hostSummary || { hosts: [], groups: [] });
+    });
+  });
+
+  renderHostTable(el("hostsSummaryTable"), visibleHosts);
+}
+
+function renderHostTable(container, rows) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No hosts in selected level</div>`;
+    return;
+  }
+
+  const body = rows.map((host) => `
+    <tr>
+      <td title="${escapeAttr(host.computer)}">${escapeHtml(host.computer || "(empty)")}</td>
+      <td><span class="status-badge status-${escapeAttr(host.statusLevel)}">${escapeHtml(host.statusLabel)}</span></td>
+      <td title="${escapeAttr(host.lastSeen)}">${escapeHtml(formatDate(host.lastSeen))}</td>
+      <td class="numeric">${formatAge(host.ageSeconds)}</td>
+      <td class="numeric">${formatNumber(host.totalEvents)}</td>
+      <td class="numeric">${formatNumber(host.channels)}</td>
+      <td class="numeric">${formatNumber(host.eventIds)}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Level</th>
+          <th>Last seen</th>
+          <th class="numeric">Age</th>
+          <th class="numeric">Events</th>
+          <th class="numeric">Channels</th>
+          <th class="numeric">Event IDs</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
 }
 
 async function loadOverview() {
@@ -296,8 +386,9 @@ async function loadPowerShell() {
 }
 
 async function loadHeatmap() {
-  const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket: "minute" })}`);
-  renderHeatmap(el("hostHeatmap"), data.hosts || [], data.cells || []);
+  const bucket = selectedHeatmapBucket();
+  const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
+  renderHeatmap(el("hostHeatmap"), data.hosts || [], data.cells || [], bucket);
 }
 
 function renderTable(container, rows, columns) {
@@ -384,7 +475,7 @@ function renderPie(container, rows, labelKey, valueKey) {
   `;
 }
 
-function renderHeatmap(container, hosts, cells) {
+function renderHeatmap(container, hosts, cells, bucket = selectedHeatmapBucket()) {
   if (!hosts.length) {
     container.innerHTML = `<div class="empty-state">No data</div>`;
     return;
@@ -414,7 +505,7 @@ function renderHeatmap(container, hosts, cells) {
       const url = new URL("./detail.html", window.location.href);
       url.searchParams.set("host", cell.dataset.host);
       url.searchParams.set("time", cell.dataset.time);
-      url.searchParams.set("bucket", "minute");
+      url.searchParams.set("bucket", bucket);
       window.location.href = url.toString();
     });
   });
@@ -462,6 +553,10 @@ function selectedBucket() {
   return "minute";
 }
 
+function selectedHeatmapBucket() {
+  return el("heatmapBucket")?.value || "minute";
+}
+
 function setStatus(text, ok, detail = "") {
   el("statusText").textContent = text;
   el("rowCount").textContent = detail || "ClickHouse";
@@ -477,6 +572,16 @@ function renderErrorEverywhere(message) {
 function formatNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number.toLocaleString() : "0";
+}
+
+function formatAge(seconds) {
+  if (seconds === null || seconds === undefined || seconds === "") return "-";
+  const value = Number(seconds);
+  if (!Number.isFinite(value)) return "-";
+  if (value < 60) return `${Math.round(value)}s`;
+  if (value < 3600) return `${Math.round(value / 60)}m`;
+  if (value < 86400) return `${Math.round(value / 3600)}h`;
+  return `${Math.round(value / 86400)}d`;
 }
 
 function formatDate(value) {

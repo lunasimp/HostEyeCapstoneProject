@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye Cell Analysis</title>
-    <link rel="stylesheet" href="./styles.css?v=20260626-ui-new">
+    <link rel="stylesheet" href="./styles.css?v=20260626-hosts">
   </head>
   <body>
     <div class="detail-page">
@@ -20,6 +20,33 @@
           <p class="breadcrumb">Host Activity / Cell Analysis</p>
           <h1 id="detailTitle">Cell analysis</h1>
           <p id="detailSubtitle">Loading...</p>
+        </section>
+
+        <section class="detail-filters panel">
+          <div class="panel-title"><h3>Cell filters</h3><span>Apply to this selected heatmap cell</span></div>
+          <form id="detailFilterForm" class="filter-grid">
+            <label class="inline-control">
+              <span>Channel</span>
+              <input id="detailChannel" name="channel" placeholder="Any channel">
+            </label>
+            <label class="inline-control">
+              <span>Event ID</span>
+              <input id="detailEventId" name="eventId" inputmode="numeric" placeholder="Any event">
+            </label>
+            <label class="inline-control">
+              <span>Keyword</span>
+              <input id="detailQuery" name="q" placeholder="message / command / path">
+            </label>
+            <label class="inline-control">
+              <span>Limit</span>
+              <select id="detailLimit" name="limit">
+                <option value="100">100 logs</option>
+                <option value="200" selected>200 logs</option>
+                <option value="500">500 logs</option>
+              </select>
+            </label>
+            <button class="refresh-btn" type="submit">Apply</button>
+          </form>
         </section>
 
         <section class="kpi-grid">
@@ -52,6 +79,6 @@
         </section>
       </main>
     </div>
-    <script src="./detail.js?v=20260626-ui-new"></script>
+    <script src="./detail.js?v=20260626-hosts"></script>
   </body>
 </html>

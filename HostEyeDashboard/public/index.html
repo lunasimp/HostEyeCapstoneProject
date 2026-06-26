@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye SOC Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260626-ui-new">
+    <link rel="stylesheet" href="./styles.css?v=20260626-hosts">
   </head>
   <body>
     <div class="app-shell">
@@ -71,6 +71,39 @@
           <article class="kpi"><span>Total hosts</span><strong id="kpiHosts">-</strong></article>
           <article class="kpi"><span>Event IDs</span><strong id="kpiEventIds">-</strong></article>
           <article class="kpi"><span>Last seen</span><strong id="kpiLastSeen">-</strong></article>
+        </section>
+
+        <section id="hosts" class="dashboard-section section-card is-open">
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">00</span>
+            <span>
+              <strong>Host Inventory</strong>
+              <small>last seen and production grouping</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div id="hostLevelCards" class="host-level-grid"></div>
+            <article class="panel hosts-panel">
+              <div class="panel-title">
+                <h3>All hosts / last telemetry seen</h3>
+                <div class="panel-actions">
+                  <label class="inline-control">
+                    <span>Level</span>
+                    <select id="hostLevelFilter">
+                      <option value="">All levels</option>
+                      <option value="online">Online <= 5m</option>
+                      <option value="active">Active <= 1h</option>
+                      <option value="delayed">Delayed <= 24h</option>
+                      <option value="stale">Stale > 24h</option>
+                      <option value="unknown">Unknown</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              <div id="hostsSummaryTable" class="table-shell hosts-table"></div>
+            </article>
+          </div>
         </section>
 
         <section id="overview" class="dashboard-section section-card is-open">
@@ -219,13 +252,26 @@
           </button>
           <div class="section-body">
             <article class="panel heatmap-panel">
-              <div class="panel-title"><h3>Host Activity Over Time (C1-C10)</h3><span>Each cell opens a detail page</span></div>
+              <div class="panel-title">
+                <h3>Host Activity Over Time (C1-C10)</h3>
+                <div class="panel-actions">
+                  <label class="inline-control">
+                    <span>Cell</span>
+                    <select id="heatmapBucket">
+                      <option value="minute" selected>1 minute</option>
+                      <option value="hour">1 hour</option>
+                      <option value="day">1 day</option>
+                    </select>
+                  </label>
+                  <span>Each cell opens a detail page</span>
+                </div>
+              </div>
               <div id="hostHeatmap" class="heatmap"></div>
             </article>
           </div>
         </section>
       </main>
     </div>
-    <script src="./app.js?v=20260626-ui-new"></script>
+    <script src="./app.js?v=20260626-hosts"></script>
   </body>
 </html>

@@ -2,13 +2,35 @@ const API_BASE = window.HOSTEYE_API_BASE || "http://localhost:5055";
 
 const el = (id) => document.getElementById(id);
 
-document.addEventListener("DOMContentLoaded", loadDetail);
+document.addEventListener("DOMContentLoaded", () => {
+  const form = el("detailFilterForm");
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const url = new URL(window.location.href);
+    setOptionalParam(url, "channel", el("detailChannel")?.value);
+    setOptionalParam(url, "eventId", el("detailEventId")?.value);
+    setOptionalParam(url, "q", el("detailQuery")?.value);
+    setOptionalParam(url, "limit", el("detailLimit")?.value);
+    window.history.replaceState(null, "", url.toString());
+    loadDetail();
+  });
+  loadDetail();
+});
 
 async function loadDetail() {
   const params = new URLSearchParams(window.location.search);
   const host = params.get("host");
   const time = params.get("time");
   const bucket = params.get("bucket") || "minute";
+  const channel = params.get("channel") || "";
+  const eventId = params.get("eventId") || "";
+  const q = params.get("q") || "";
+  const limit = params.get("limit") || "200";
+
+  if (el("detailChannel")) el("detailChannel").value = channel;
+  if (el("detailEventId")) el("detailEventId").value = eventId;
+  if (el("detailQuery")) el("detailQuery").value = q;
+  if (el("detailLimit")) el("detailLimit").value = limit;
 
   if (!host || !time) {
     renderError("Missing host or time query parameter.");
@@ -19,7 +41,11 @@ async function loadDetail() {
   el("detailSubtitle").textContent = `${time} / bucket: ${bucket}`;
 
   try {
-    const detail = await api(`/api/dashboard/hosts/heatmap/cell?host=${encodeURIComponent(host)}&time=${encodeURIComponent(time)}&bucket=${encodeURIComponent(bucket)}&limit=200`);
+    const request = new URLSearchParams({ host, time, bucket, limit });
+    if (channel) request.set("channel", channel);
+    if (eventId) request.set("eventId", eventId);
+    if (q) request.set("q", q);
+    const detail = await api(`/api/dashboard/hosts/heatmap/cell?${request.toString()}`);
     const byType = detail.breakdown?.byEventType || [];
     const byChannel = detail.breakdown?.byChannel || [];
     const byEventId = detail.breakdown?.byEventId || [];
@@ -59,6 +85,12 @@ async function loadDetail() {
   } catch (error) {
     renderError(error.message);
   }
+}
+
+function setOptionalParam(url, key, value) {
+  const trimmed = String(value || "").trim();
+  if (trimmed) url.searchParams.set(key, trimmed);
+  else url.searchParams.delete(key);
 }
 
 async function api(path) {
