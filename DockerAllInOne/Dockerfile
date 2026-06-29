@@ -43,6 +43,7 @@ RUN chmod +x /usr/local/bin/hosteye-entrypoint.sh /usr/local/bin/init-clickhouse
     && mkdir -p /var/log/soc_vault /run/nginx /opt/hosteye/certs /opt/hosteye/runtime \
     && chown -R clickhouse:clickhouse /var/lib/clickhouse /var/log/clickhouse-server
 
-EXPOSE 80 443 5055 5174 8123 9000 8686
+# Single unified port; everything else is reverse-proxied by nginx internally.
+EXPOSE 80
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/hosteye-entrypoint.sh"]

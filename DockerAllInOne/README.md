@@ -8,6 +8,10 @@ This folder builds a single test container that runs:
 - HostEye dashboard web UI
 - Nginx reverse proxy and artifact browser
 
+Everything is reverse-proxied by nginx behind a **single HTTP port (80)**, so the
+container exposes exactly one port and is ready to deploy behind a platform that
+terminates TLS (Dokploy / Traefik / load balancer).
+
 It intentionally does not replace the existing multi-container `Vector-HA-Cluster` stack.
 
 ## Build
@@ -22,13 +26,21 @@ docker build -f DockerAllInOne\Dockerfile -t hosteye-all-in-one:local .
 ```powershell
 docker run --name hosteye-all-in-one --rm `
   -p 8080:80 `
-  -p 8443:443 `
-  -p 8123:8123 `
-  -p 9000:9000 `
   -v hosteye_clickhouse:/var/lib/clickhouse `
   -v hosteye_vault:/var/log/soc_vault `
   hosteye-all-in-one:local
 ```
+
+All routes live under the same port:
+
+| Path | Backend |
+|------|---------|
+| `/` | redirects to `/dashboard/` |
+| `/dashboard/` | dashboard web UI |
+| `/api/` | dashboard API |
+| `/api/v1/telemetry` | Vector ingest gateway |
+| `/clickhouse/` | ClickHouse HTTP interface (port 8123) |
+| `/artifacts/` | artifact browser |
 
 Dashboard:
 
@@ -40,7 +52,12 @@ Telemetry endpoint:
 
 ```text
 http://localhost:8080/api/v1/telemetry
-https://localhost:8443/api/v1/telemetry
+```
+
+ClickHouse HTTP (via proxy):
+
+```text
+http://localhost:8080/clickhouse/?query=SELECT%20version()
 ```
 
 Artifacts:
@@ -61,21 +78,20 @@ On the endpoint VM, extract the zip, open PowerShell as Administrator, then run:
 .\install-lab.ps1
 ```
 
-The default lab endpoint is:
-
-```text
-https://localhost:8443/api/v1/telemetry
-```
-
-If the endpoint VM is not the Docker host, pass the Docker host address:
+If the endpoint VM is not the Docker host, point the installer at the gateway URL
+(the single published port, or the public domain once deployed):
 
 ```powershell
-.\install-lab.ps1 -GatewayUri "https://<docker-host>:8443/api/v1/telemetry"
+.\install-lab.ps1 -GatewayUri "http://<docker-host>:8080/api/v1/telemetry"
 ```
 
 ## Notes
 
-- The HTTPS listener generates a local lab CA and a server certificate at container startup.
-- The lab installer bundle includes `certs\company_ca.crt` and imports it into `LocalMachine\Root`.
-- The all-in-one gateway is relaxed for lab testing and does not enforce the original mTLS allowlist.
-- The installer bundle is rebuilt at container startup so its CA matches the running container.
+- TLS is no longer terminated inside the container. Put this behind a deployment
+  platform (Dokploy/Traefik) or any reverse proxy to add HTTPS on a public domain.
+- The ClickHouse native protocol (port 9000) is not exposed — only the HTTP
+  interface is proxied under `/clickhouse/`. The default user has no password in
+  this lab build, so do not expose `/clickhouse/` publicly without adding auth.
+- The all-in-one gateway is relaxed for lab testing and does not enforce the
+  original mTLS allowlist.
+- The installer bundle is rebuilt at container startup.

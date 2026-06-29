@@ -1,10 +1,7 @@
 param(
   [string]$ImageName = "hosteye-all-in-one:local",
   [string]$ContainerName = "hosteye-all-in-one",
-  [int]$HttpPort = 8080,
-  [int]$HttpsPort = 8443,
-  [int]$ClickHouseHttpPort = 8123,
-  [int]$ClickHouseNativePort = 9000
+  [int]$HttpPort = 8080
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,10 +16,6 @@ if ($existing -eq $ContainerName) {
 
 docker run --name $ContainerName --rm `
   -p "${HttpPort}:80" `
-  -p "${HttpsPort}:443" `
-  -p "${ClickHouseHttpPort}:8123" `
-  -p "${ClickHouseNativePort}:9000" `
   -v hosteye_clickhouse:/var/lib/clickhouse `
   -v hosteye_vault:/var/log/soc_vault `
   $ImageName
-
