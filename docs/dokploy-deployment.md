@@ -72,11 +72,17 @@ clickhouse-1:
    lists replicas; route `/api/v1/telemetry` → gateways, `/dashboard|/api|/clickhouse|/artifacts`
    → dashboard/clickhouse, preserving the single-domain API from the root `README.md`.
 8. **Drop the 5 demo simulators** from `docker-compose.demo.full.yml` (load-test only).
-9. **Edge security:** Traefik terminates Let's Encrypt; internal HTTP. No agent mTLS this phase.
+9. **Edge security (split by SNI):** human host `hosteye…` → Traefik terminates Let's Encrypt +
+   **Google OIDC forward-auth**; agent host `ingest.hosteye…` → Traefik **TCP passthrough** to an
+   internal **mTLS** nginx (company-CA client cert + serial allowlist). See `authentication.md`.
+10. **Add a forward-auth service** (oauth2-proxy/Authelia → Google) and an **ingest-nginx** service
+    (reuses `Vector-HA-Cluster/nginx.conf`). Provision least-privilege ClickHouse users + Redpanda SASL.
 
 ## 5. Domains
 
-- Public: `hosteye.iahn.hanoi.vn` → Traefik → `edge-nginx:80`. Same routes/API as today.
+- Public (human): `hosteye.iahn.hanoi.vn` → Traefik (LE + OIDC forward-auth) → `edge-nginx:80`.
+- Ingest (agents): `ingest.hosteye.iahn.hanoi.vn` → Traefik **TCP passthrough** → `ingest-nginx` (mTLS).
+  Needs its own DNS record pointing at the Swarm ingress.
 - During cutover, attach a **staging host** (e.g. `hosteye-ha.iahn.hanoi.vn`) to validate the HA
   stack side-by-side with the running all-in-one before flipping the main domain.
 

@@ -13,8 +13,11 @@
 
 **Non-goals (this phase)**
 - Multi-region / cross-datacenter HA.
-- Agent mTLS enforcement (deferred; TLS terminates at the edge).
+- Multi-tenant data scoping (single-tenant this phase — see `authentication.md`).
 - Auto-scaling (replica counts are set manually; documented knobs only).
+
+> Auth is **in scope** and locked: human Google OIDC→JWT at the edge; agent ingest via **mTLS**
+> (Traefik TCP passthrough → internal nginx, company-CA). See `authentication.md`.
 
 ## 2. Failure domains
 
@@ -67,11 +70,11 @@ on any 3 nodes). See `clickhouse-cluster.md` for the sharding key that preserves
 ## 4. End-to-end data flow
 
 ```
-agent (Vector→spool→SOCShipper, gzip JSON batch, HTTPS)
+agent (Vector→spool→SOCShipper, gzip JSON batch, mTLS w/ client cert)
    │
-   ▼  TLS terminate
-Traefik ──► edge-nginx (path routing, one domain)
-                 │ /api/v1/telemetry
+   ▼  Traefik TCP passthrough (SNI ingest.hosteye…) — TLS NOT terminated
+ingest-nginx (mTLS: company-CA client cert + serial allowlist + per-serial rate-limit)
+                 │ /api/v1/telemetry  (plaintext, internal)
                  ▼  round-robin across replicas (Swarm mesh)
             vector-gateway ×N
                  ├─► raw_forensic_vault (per-node file vault)
@@ -79,6 +82,8 @@ Traefik ──► edge-nginx (path routing, one domain)
                  └─► ClickHouse Distributed table (sharded by idempotency_key)
                           └─► ReplicatedReplacingMergeTree (per shard, dedup)
                                    └─► 9 materialized views → per-type Replicated tables
+
+human ──TLS(LE)──► Traefik ──forwardAuth(Google OIDC→JWT)──► dashboard-web / dashboard-api
 dashboard-api ──► ClickHouse Distributed (read fan-out across shards)
 ```
 

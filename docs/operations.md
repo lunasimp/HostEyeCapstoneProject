@@ -74,12 +74,15 @@ Keeper quorum loss, Vector buffer near-full.
 
 ## 6. Security posture (this phase)
 
-- TLS terminates at Traefik (Let's Encrypt); internal traffic is plain HTTP on the overlay network.
-- **No agent mTLS** this phase — the original per-client cert allowlist + rate limiting from
-  `Vector-HA-Cluster/nginx.conf` is deferred. To re-introduce later: add a Traefik TCP passthrough
-  entrypoint to an internal nginx that performs `ssl_verify_client` + `limit_req` by client serial.
-- `/clickhouse/` proxy and default no-password user from the lab build must **not** be exposed
-  publicly without auth before going to real production.
+- **Human path:** TLS terminated at Traefik (Let's Encrypt) on `hosteye…` + **Google OIDC**
+  forward-auth → JWT/session. Internal traffic plain HTTP on the overlay.
+- **Agent path:** `ingest.hosteye…` via Traefik **TCP passthrough** → internal **mTLS** nginx
+  (company-CA client cert + `$ssl_client_serial` allowlist + per-serial rate-limit). Cert lifecycle
+  via existing `Issue/Register/Revoke-EndpointClientCert.ps1`; renew before expiry; revoke = remove
+  from allowlist (immediate cutoff). Company-CA pinning keeps anti-MITM/DNS-poisoning protection.
+- **Data/services:** least-privilege ClickHouse users (`dashboard_ro`/`ingest_rw`/`admin`), Redpanda
+  SASL/SCRAM; secrets in Dokploy env. `/clickhouse/` & `/artifacts/` behind `hosteye-admin` (or off
+  the public domain) — never expose a no-password user. See `authentication.md`.
 
 ## 7. Definition of done (for the build phase that follows this design)
 

@@ -33,15 +33,16 @@ all-in-one deployment to a **multi-node, fault-tolerant** deployment on Dokploy.
 
 1. **HA level B (multi-node).** Component-HA on a single node was rejected because it does
    not survive host failure. Requires provisioning ≥3 Dokploy servers (see prerequisites).
-2. **TLS at the edge only.** Agent telemetry arrives over HTTPS to Traefik, which terminates
-   TLS and forwards plain HTTP internally. Agent **mTLS** (client-cert allowlist + per-client
-   rate limit from the original `nginx.conf`) is **out of scope** for this phase; instead, agent
-   ingest is authenticated with a **per-agent bearer token** (see `authentication.md`). mTLS can
-   be re-introduced later via a dedicated Traefik TCP passthrough entrypoint (PKI already exists).
-4. **Authentication is in scope.** Three planes — human SSO (OIDC forward-auth at the edge),
-   machine/agent ingest (bearer token), and service/data-store (least-privilege DB + Redpanda
-   SASL). Closes the current "everything is open" gap. See `authentication.md`.
-3. **Reuse the existing pipeline contract.** Same ingest path (`/api/v1/telemetry`), same
+2. **Split-plane edge security (locked).** Two ingress patterns on port 443, split by SNI:
+   - **Human** (`hosteye.iahn.hanoi.vn`): TLS terminated at Traefik (Let's Encrypt) + **Google OIDC**
+     forward-auth → JWT/session.
+   - **Agent ingest** (`ingest.hosteye.iahn.hanoi.vn`): Traefik **TCP passthrough** → internal nginx
+     **mTLS** (company-CA client cert + serial allowlist), reusing the existing PKI. Company-CA pinning
+     preserves anti-MITM/DNS-poisoning protection.
+3. **Authentication is in scope (locked).** Three planes — human **Google OIDC → JWT**, machine
+   **mTLS** ingest, and service/data-store (least-privilege DB users + Redpanda SASL). **Single-tenant.**
+   Closes the current "everything is open" gap. See `authentication.md`.
+4. **Reuse the existing pipeline contract.** Same ingest path (`/api/v1/telemetry`), same
    `idempotency_key` dedup, same single public domain and API surface documented in the
    root `README.md`. Only the backend topology changes.
 
@@ -51,6 +52,7 @@ all-in-one deployment to a **multi-node, fault-tolerant** deployment on Dokploy.
 - Whether to keep Redpanda strictly as a durable replay bus (current design) or move
   ClickHouse ingestion to consume *from* Redpanda (Kafka-engine) instead of Vector direct-write.
 - Backup target (object storage bucket) for ClickHouse `BACKUP`.
-- **Auth (see `authentication.md`):** human IdP choice (Google OIDC vs self-hosted Authelia/Authentik);
-  agent ingest auth primary (bearer token now vs reinstate mTLS); single- vs multi-tenant; whether
-  `/clickhouse/` and `/artifacts/` are gated behind admin SSO or removed from the public domain.
+- **Auth (resolved — see `authentication.md`):** Google OIDC→JWT for humans, **mTLS** for agent
+  ingest, single-tenant. Remaining minor: `/clickhouse/` & `/artifacts/` gated behind admin SSO vs
+  removed from public; forward-auth impl (`oauth2-proxy` vs Authelia).
+- **DNS** for `ingest.hosteye.iahn.hanoi.vn` (new ingest hostname) + the existing `hosteye…` record.
