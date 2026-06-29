@@ -26,6 +26,7 @@ all-in-one deployment to a **multi-node, fault-tolerant** deployment on Dokploy.
 | [`ha-architecture.md`](./ha-architecture.md) | Goals/non-goals, node topology, component HA roles, data flow, failure domains, capacity & scaling knobs |
 | [`clickhouse-cluster.md`](./clickhouse-cluster.md) | ClickHouse Keeper + Replicated tables + Distributed + sharding-by-`idempotency_key`, schema migration from the current DDL |
 | [`dokploy-deployment.md`](./dokploy-deployment.md) | Prerequisites (provision nodes + Swarm), Dokploy resource mapping, compose/Swarm specifics, volumes, domains, env, phased rollout |
+| [`authentication.md`](./authentication.md) | Auth/authz: human SSO (OIDC forward-auth), per-agent ingest token (+ mTLS path via existing PKI), least-privilege DB/Redpanda users, secrets, roles |
 | [`operations.md`](./operations.md) | Backup/restore, monitoring, failure & recovery runbooks, upgrades, scaling procedures |
 
 ## Key decisions (decision record)
@@ -33,9 +34,13 @@ all-in-one deployment to a **multi-node, fault-tolerant** deployment on Dokploy.
 1. **HA level B (multi-node).** Component-HA on a single node was rejected because it does
    not survive host failure. Requires provisioning ≥3 Dokploy servers (see prerequisites).
 2. **TLS at the edge only.** Agent telemetry arrives over HTTPS to Traefik, which terminates
-   TLS and forwards plain HTTP internally. Agent mTLS (client-cert allowlist + per-client
-   rate limit from the original `nginx.conf`) is **out of scope** for this phase; it can be
-   re-introduced later via a dedicated Traefik TCP passthrough entrypoint.
+   TLS and forwards plain HTTP internally. Agent **mTLS** (client-cert allowlist + per-client
+   rate limit from the original `nginx.conf`) is **out of scope** for this phase; instead, agent
+   ingest is authenticated with a **per-agent bearer token** (see `authentication.md`). mTLS can
+   be re-introduced later via a dedicated Traefik TCP passthrough entrypoint (PKI already exists).
+4. **Authentication is in scope.** Three planes — human SSO (OIDC forward-auth at the edge),
+   machine/agent ingest (bearer token), and service/data-store (least-privilege DB + Redpanda
+   SASL). Closes the current "everything is open" gap. See `authentication.md`.
 3. **Reuse the existing pipeline contract.** Same ingest path (`/api/v1/telemetry`), same
    `idempotency_key` dedup, same single public domain and API surface documented in the
    root `README.md`. Only the backend topology changes.
@@ -46,3 +51,6 @@ all-in-one deployment to a **multi-node, fault-tolerant** deployment on Dokploy.
 - Whether to keep Redpanda strictly as a durable replay bus (current design) or move
   ClickHouse ingestion to consume *from* Redpanda (Kafka-engine) instead of Vector direct-write.
 - Backup target (object storage bucket) for ClickHouse `BACKUP`.
+- **Auth (see `authentication.md`):** human IdP choice (Google OIDC vs self-hosted Authelia/Authentik);
+  agent ingest auth primary (bearer token now vs reinstate mTLS); single- vs multi-tenant; whether
+  `/clickhouse/` and `/artifacts/` are gated behind admin SSO or removed from the public domain.
