@@ -1,0 +1,26 @@
+﻿
+2026-06-29 19:05:50 Diagnosing HostEye install.
+2026-06-29 19:05:50 Program files:
+2026-06-29 19:05:50   certs 1
+2026-06-29 19:05:50   HostEyeShipper 1
+2026-06-29 19:05:50   Sysmon 1
+2026-06-29 19:05:50   agent.version 7
+2026-06-29 19:05:50   HostEye_StartAgent.ps1 1680
+2026-06-29 19:05:50   install.ps1 19454
+2026-06-29 19:05:50   is-4W6CK2KSYX.tmp 10737
+2026-06-29 19:05:50   unins000.dat 12134
+2026-06-29 19:05:50   unins000.exe 4405304
+2026-06-29 19:05:50   vector.toml 4768
+2026-06-29 19:05:50   vector.toml.sig 256
+2026-06-29 19:05:50 Shipper files:
+2026-06-29 19:05:50   HostEyeShipper.deps.json 487
+2026-06-29 19:05:50   HostEyeShipper.dll 38400
+2026-06-29 19:05:50   HostEyeShipper.exe 151552
+2026-06-29 19:05:50   HostEyeShipper.pdb 17916
+2026-06-29 19:05:50   HostEyeShipper.runtimeconfig.json 340
+2026-06-29 19:05:50   shipper-config.json 892
+2026-06-29 19:05:50 Services:
+2026-06-29 19:05:50 Tasks:
+2026-06-29 19:05:51   HostEye_Agent_Startup State=Ready
+2026-06-29 19:05:52   HostEye_Shipper_Startup State=Ready
+2026-06-29 19:05:53   HostEye_Agent_Updater not found

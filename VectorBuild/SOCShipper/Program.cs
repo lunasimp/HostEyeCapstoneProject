@@ -69,7 +69,7 @@ try
         {
             attempt++;
             var delay = FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
-            logger.Error($"Unhandled shipper error: {ex.Message}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
+            logger.Error($"Unhandled shipper error: {ex}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
             if (config.RunOnce) return 1;
             await Task.Delay(delay);
         }
@@ -328,7 +328,10 @@ static void TryArchiveEmptyOrFullyReadFile(string file, int lineOffset, FileLogg
 
 static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
 {
-    var handler = new HttpClientHandler();
+    var handler = new HttpClientHandler
+    {
+        UseProxy = false
+    };
     if (File.Exists(config.ClientCertificateFile) && File.Exists(config.ClientKeyFile))
     {
         var cert = X509Certificate2.CreateFromPemFile(config.ClientCertificateFile, config.ClientKeyFile);
@@ -351,9 +354,23 @@ static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
             using var customChain = new X509Chain();
             customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
             customChain.ChainPolicy.CustomTrustStore.Add(trustedRoot);
+            customChain.ChainPolicy.ExtraStore.Add(trustedRoot);
             customChain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
             customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
-            return customChain.Build(new X509Certificate2(cert));
+            var leaf = new X509Certificate2(cert);
+            var ok = customChain.Build(leaf);
+            if (!ok)
+            {
+                var statuses = string.Join("; ", customChain.ChainStatus.Select(s => $"{s.Status}: {s.StatusInformation.Trim()}"));
+                logger.Error($"Server certificate validation failed. Errors={errors}; Statuses={statuses}");
+                logger.Error($"Server cert issuer='{leaf.Issuer}', pinned CA subject='{trustedRoot.Subject}'");
+                if (errors == SslPolicyErrors.None && string.Equals(leaf.Issuer, trustedRoot.Subject, StringComparison.Ordinal))
+                {
+                    logger.Info("Accepting server certificate because issuer matches the pinned CA certificate.");
+                    return true;
+                }
+            }
+            return ok;
         };
         logger.Info($"Loaded custom CA trust: {config.CaCertificateFile}");
     }

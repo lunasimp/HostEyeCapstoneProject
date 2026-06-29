@@ -1,0 +1,20 @@
+﻿
+2026-06-29 19:03:21 Starting HostEye repair install.
+2026-06-29 19:03:21 Stopped task if present: HostEye_Shipper_Startup
+2026-06-29 19:03:21 Stopped task if present: HostEye_Agent_Startup
+2026-06-29 19:03:21 Stopped task if present: HostEye_Agent_Updater
+2026-06-29 19:03:21 Stopped task if present: SOC_Shipper_Startup
+2026-06-29 19:03:21 Stopped task if present: SOC_Vector_Startup
+2026-06-29 19:03:21 Stopped task if present: SOC_Agent_Updater
+2026-06-29 19:03:21 Stopped service if present: HostEyeAgent
+2026-06-29 19:03:21 Stopped service if present: HostEyeShipper
+2026-06-29 19:03:21 Stopped service if present: Vector
+2026-06-29 19:03:21 Stopped service if present: SOCShipper
+2026-06-29 19:03:25 Killing HostEye-related powershell PID=21780 CommandLine="C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}
+Start-Process -FilePath powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','D:\f-smooth-criminal-lab-team\tools\repair-local-agent-install.ps1' -Verb RunAs -Wait"
+2026-06-29 19:03:27 Running installer repair: D:\f-smooth-criminal-lab-team\VectorBuild\Output\HostEye_Endpoint_Installer.exe
+2026-06-29 19:03:36 Installer repair exit code: 0
+2026-06-29 19:03:42 Task HostEye_Agent_Startup: State=Ready
+2026-06-29 19:03:43 Task HostEye_Shipper_Startup: State=Ready
+2026-06-29 19:03:44 Task HostEye_Agent_Updater: not found
+2026-06-29 19:03:44 Repair install completed.

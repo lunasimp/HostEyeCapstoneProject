@@ -34,6 +34,24 @@ function Copy-IfDifferent([string]$Source, [string]$Destination) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Copy-DirectoryContentsIfDifferent([string]$SourceDir, [string]$DestinationDir, [switch]$Recurse) {
+    if (-not (Test-Path $SourceDir)) { return $false }
+    $srcFull = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\')
+    $dstFull = [System.IO.Path]::GetFullPath($DestinationDir).TrimEnd('\')
+    if ($srcFull -ieq $dstFull) {
+        Write-InstallLog "Source and destination are the same; skipping copy: $SourceDir"
+        return $true
+    }
+
+    New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+    if ($Recurse) {
+        Copy-Item -Path (Join-Path $SourceDir "*") -Destination $DestinationDir -Force -Recurse
+    } else {
+        Copy-Item -Path (Join-Path $SourceDir "*") -Destination $DestinationDir -Force
+    }
+    return $true
+}
+
 function Ensure-MachineEnv([string]$Name, [string]$Value) {
     $current = [Environment]::GetEnvironmentVariable($Name, "Machine")
     if ([string]::IsNullOrWhiteSpace($current)) {
@@ -114,22 +132,18 @@ Copy-IfDifferent (Join-Path $StagingDir "vector.toml") (Join-Path $TargetDir "ve
 Copy-IfDifferent (Join-Path $StagingDir "HostEye_Updater.ps1") (Join-Path $TargetDir "HostEye_Updater.ps1")
 Copy-IfDifferent (Join-Path $StagingDir "SOC_Updater.ps1") (Join-Path $TargetDir "HostEye_Updater.ps1")
 Set-Content -LiteralPath (Join-Path $TargetDir "agent.version") -Value "1.0.0" -Encoding ASCII
-if (Test-Path (Join-Path $StagingDir "HostEyeShipper")) {
-    Copy-Item -Path (Join-Path $StagingDir "HostEyeShipper\*") -Destination $ShipperDir -Force -Recurse
-} elseif (Test-Path (Join-Path $StagingDir "SOCShipper")) {
-    Copy-Item -Path (Join-Path $StagingDir "SOCShipper\*") -Destination $ShipperDir -Force -Recurse
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "HostEyeShipper") $ShipperDir -Recurse) {
+} elseif (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "SOCShipper") $ShipperDir -Recurse) {
 } else {
     Write-InstallLog "WARNING: HostEyeShipper directory was not found in staging dir."
 }
 
-if (Test-Path (Join-Path $StagingDir "certs")) {
-    Copy-Item -Path (Join-Path $StagingDir "certs\*") -Destination $CertDir -Force
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "certs") $CertDir) {
 } else {
     Write-InstallLog "WARNING: certs directory was not found in staging dir."
 }
 
-if (Test-Path (Join-Path $StagingDir "Sysmon")) {
-    Copy-Item -Path (Join-Path $StagingDir "Sysmon\*") -Destination $SysmonDir -Force -Recurse
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "Sysmon") $SysmonDir -Recurse) {
 } else {
     Write-InstallLog "WARNING: Sysmon directory was not found in staging dir."
 }

@@ -1,0 +1,22 @@
+2026-06-29 19:22:47 +07:00 INFO HostEyeShipper starting. Config=.\tools\local-shipper-runonce-avast-config.json Spool=C:\ProgramData\HostEye\spool Gateway=https://127.0.0.1/api/v1/telemetry
+2026-06-29 19:22:48 +07:00 INFO Loaded client certificate: D:\f-smooth-criminal-lab-team\VectorBuild\certs\client.crt
+2026-06-29 19:22:48 +07:00 INFO Sending file=events-2026-06-29-11-56.ndjson offset=0 events=10 bytes=76131.
+2026-06-29 19:22:48 +07:00 ERROR Unhandled shipper error: System.Net.Http.HttpRequestException: An error occurred while sending the request.
+ ---> System.IO.IOException: Unable to read data from the transport connection: An existing connection was forcibly closed by the remote host..
+ ---> System.Net.Sockets.SocketException (10054): An existing connection was forcibly closed by the remote host.
+   --- End of inner exception stack trace ---
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.ThrowException(SocketError error, CancellationToken cancellationToken)
+   at System.Net.Sockets.Socket.AwaitableSocketAsyncEventArgs.System.Threading.Tasks.Sources.IValueTaskSource<System.Int32>.GetResult(Int16 token)
+   at System.Net.Security.SslStream.EnsureFullTlsFrameAsync[TIOAdapter](CancellationToken cancellationToken, Int32 estimatedSize)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at System.Net.Security.SslStream.ReadAsyncInternal[TIOAdapter](Memory`1 buffer, CancellationToken cancellationToken)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at System.Net.Http.HttpConnection.InitialFillAsync(Boolean async)
+   at System.Net.Http.HttpConnection.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   --- End of inner exception stack trace ---
+   at System.Net.Http.HttpConnection.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpConnectionPool.SendWithVersionDetectionAndRetryAsync(HttpRequestMessage request, Boolean async, Boolean doRequestAuth, CancellationToken cancellationToken)
+   at System.Net.Http.RedirectHandler.SendAsync(HttpRequestMessage request, Boolean async, CancellationToken cancellationToken)
+   at System.Net.Http.HttpClient.<SendAsync>g__Core|83_0(HttpRequestMessage request, HttpCompletionOption completionOption, CancellationTokenSource cts, Boolean disposeCts, CancellationTokenSource pendingRequestsCts, CancellationToken originalCancellationToken)
+   at Program.<<Main>$>g__ProcessSpoolOnce|0_2(ShipperConfig config, ShipperState state, HttpClient http, FileLogger logger, String endpointSeed) in D:\f-smooth-criminal-lab-team\VectorBuild\SOCShipper\Program.cs:line 157
+   at Program.<Main>$(String[] args) in D:\f-smooth-criminal-lab-team\VectorBuild\SOCShipper\Program.cs:line 37; delaying 0s attempt=1.

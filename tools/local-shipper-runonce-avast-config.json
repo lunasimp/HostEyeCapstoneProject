@@ -1,0 +1,21 @@
+{
+  "GatewayUri": "https://127.0.0.1/api/v1/telemetry",
+  "SpoolDirectory": "C:\\ProgramData\\HostEye\\spool",
+  "StateDirectory": "D:\\f-smooth-criminal-lab-team\\tools\\shipper_state_avast",
+  "LogDirectory": "D:\\f-smooth-criminal-lab-team\\tools\\shipper_logs_avast",
+  "ClientCertificateFile": "D:\\f-smooth-criminal-lab-team\\VectorBuild\\certs\\client.crt",
+  "ClientKeyFile": "D:\\f-smooth-criminal-lab-team\\VectorBuild\\certs\\client.key",
+  "CaCertificateFile": "",
+  "MaxEvents": 10,
+  "MaxBytes": 262144,
+  "NormalJitterWindowSeconds": 0,
+  "RecoveryJitterWindowSeconds": 0,
+  "BaseBackoffSeconds": 2,
+  "MaxBackoffSeconds": 30,
+  "MaxSpoolSizeMB": 0,
+  "LowWatermarkPercent": 85,
+  "SpoolCheckIntervalSeconds": 30,
+  "PreferDeletingSentFirst": true,
+  "SentRetentionDays": 2,
+  "RunOnce": true
+}
