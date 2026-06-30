@@ -300,17 +300,17 @@ $shipperConfigObject = [ordered]@{
     ClientCertificateFile = (Join-Path $CertDir "client.crt")
     ClientKeyFile = (Join-Path $CertDir "client.key")
     CaCertificateFile = (Join-Path $CertDir "company_ca.crt")
-    MaxEvents = 1000
-    MaxBytes = 1048576
-    NormalJitterWindowSeconds = 120
-    RecoveryJitterWindowSeconds = 900
+    MaxEvents = 500
+    MaxBytes = 524288
+    NormalJitterWindowSeconds = 5
+    RecoveryJitterWindowSeconds = 30
     BaseBackoffSeconds = 2
-    MaxBackoffSeconds = 300
-    MaxSpoolSizeMB = 8192
-    LowWatermarkPercent = 85
-    SpoolCheckIntervalSeconds = 30
+    MaxBackoffSeconds = 120
+    MaxSpoolSizeMB = 2048
+    LowWatermarkPercent = 80
+    SpoolCheckIntervalSeconds = 10
     PreferDeletingSentFirst = $true
-    SentRetentionDays = 2
+    SentRetentionDays = 1
     RunOnce = $false
 }
 $shipperConfigObject | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $shipperConfig -Encoding UTF8

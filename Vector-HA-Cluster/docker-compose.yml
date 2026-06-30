@@ -16,6 +16,8 @@ services:
     depends_on:
       - vector-gateway-1
       - vector-gateway-2
+      - dashboard-web
+      - dashboard-api
     networks:
       - soc-network
 
@@ -92,6 +94,43 @@ services:
       - ./grafana-provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - clickhouse
+    networks:
+      - soc-network
+
+  dashboard-api:
+    image: node:20-alpine
+    container_name: hosteye-dashboard-api
+    working_dir: /app
+    command: ["node", "src/server.js"]
+    environment:
+      PORT: "5055"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      CLICKHOUSE_DATABASE: "default"
+      CLICKHOUSE_USERNAME: "default"
+      CLICKHOUSE_PASSWORD: ""
+      CORS_ORIGIN: "*"
+      NODE_ENV: "production"
+    ports:
+      - "5055:5055"
+    volumes:
+      - ../VectorDashboardApi:/app:ro
+    depends_on:
+      - clickhouse
+    networks:
+      - soc-network
+
+  dashboard-web:
+    image: node:20-alpine
+    container_name: hosteye-dashboard-web
+    working_dir: /app
+    command: ["node", "server.js"]
+    environment:
+      PORT: "5174"
+      NODE_ENV: "production"
+    ports:
+      - "5174:5174"
+    volumes:
+      - ../HostEyeDashboard:/app:ro
     networks:
       - soc-network
 
