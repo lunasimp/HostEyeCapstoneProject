@@ -33,6 +33,8 @@ const routes = [
   ["GET", /^\/api\/dashboard\/process-access\/recent$/, processAccessRecent],
   ["GET", /^\/api\/dashboard\/powershell\/volume$/, powershellVolume],
   ["GET", /^\/api\/dashboard\/powershell\/recent$/, powershellRecent],
+  ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
+  ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap$/, hostsHeatmap],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
@@ -421,6 +423,75 @@ async function powershellRecent(ctx, res) {
   sendJson(res, 200, { items: rows });
 }
 
+async function jitterSummary(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const rows = await queryRows(`
+    SELECT
+      count() AS samples,
+      uniqExact(computer) AS hosts,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const worstRows = await queryRows(`
+    SELECT
+      computer,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY p95JitterMs DESC, spoolDepthBytes DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    worstHost: worstRows[0] || null,
+  });
+}
+
+async function jitterHosts(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      anyLast(agent_id) AS agentId,
+      count() AS samples,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      min(planned_jitter_ms) AS minJitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(batch_size) AS maxBatchSize,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(pending_file_count) AS pendingFileCount,
+      max(send_duration_ms) AS maxSendDurationMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: jitterStatus(row),
+      statusLabel: jitterStatusLabel(jitterStatus(row)),
+    })),
+  });
+}
+
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
@@ -762,6 +833,24 @@ function hostLevelLabel(level) {
   if (level === "delayed") return "Delayed <= 24h";
   if (level === "stale") return "Stale > 24h";
   return "Unknown";
+}
+
+function jitterStatus(row) {
+  const age = hostStatus(row.lastSeen).ageSeconds;
+  if (age === null || age > 30 * 60) return "silent";
+  const p95 = Number(row.p95JitterMs || 0);
+  const spool = Number(row.spoolDepthBytes || 0);
+  const pending = Number(row.pendingFileCount || 0);
+  if (spool >= 1024 * 1024 * 1024 || pending >= 20) return "delayed";
+  if (p95 >= 45000) return "bursty";
+  return "stable";
+}
+
+function jitterStatusLabel(level) {
+  if (level === "stable") return "Stable";
+  if (level === "bursty") return "Bursty";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
 }
 
 function dateParam(url, name, fallback) {

@@ -15,6 +15,7 @@ const pages = {
   network: { title: "Network & DNS", eyebrow: "[ NETWORK TELEMETRY ]" },
   registry: { title: "Registry & File", eyebrow: "[ ENDPOINT CHANGES ]" },
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
+  jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
 };
 
@@ -81,6 +82,7 @@ async function loadDashboard() {
       loadNetworkDns(),
       loadRegistryFileAccess(),
       loadPowerShell(),
+      loadJitter(),
       loadHeatmap(),
     ]);
   } catch (error) {
@@ -418,6 +420,32 @@ async function loadPowerShell() {
   ]);
 }
 
+async function loadJitter() {
+  const [summary, hosts] = await Promise.all([
+    api(`/api/dashboard/jitter/summary${query()}`),
+    api(`/api/dashboard/jitter/hosts${query({ limit: 100 })}`),
+  ]);
+
+  const rows = hosts.items || [];
+  el("jitterHosts").textContent = formatNumber(summary.hosts);
+  el("jitterAvg").textContent = formatMs(summary.avgJitterMs);
+  el("jitterP95").textContent = formatMs(summary.p95JitterMs);
+  el("jitterWorst").textContent = summary.worstHost?.computer || "-";
+
+  renderBarChart(el("jitterChart"), rows.slice(0, 12), "computer", "p95JitterMs", "#3b82f6", formatMs);
+  renderTable(el("jitterHostsTable"), rows, [
+    ["Host", "computer"],
+    ["Status", "statusLabel"],
+    ["Samples", "samples", "numeric"],
+    ["Avg jitter", "avgJitterMs", "duration"],
+    ["P95 jitter", "p95JitterMs", "duration"],
+    ["Batch avg", "avgBatchSize", "numeric"],
+    ["Spool", "spoolDepthBytes", "bytes"],
+    ["Pending", "pendingFileCount", "numeric"],
+    ["Last seen", "lastSeen", "date"],
+  ]);
+}
+
 async function loadHeatmap() {
   const bucket = selectedHeatmapBucket();
   const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
@@ -434,13 +462,37 @@ function renderTable(container, rows, columns) {
   const body = rows.map((row) => {
     const cells = columns.map(([, key, type]) => {
       const raw = row[key] ?? "";
-      const value = type === "date" ? formatDate(raw) : type === "numeric" ? formatNumber(raw) : String(raw);
+      const value = type === "date" ? formatDate(raw) : type === "numeric" ? formatNumber(raw) : type === "duration" ? formatMs(raw) : type === "bytes" ? formatBytes(raw) : String(raw);
       return `<td class="${type === "numeric" ? "numeric" : ""}" title="${escapeAttr(String(raw))}">${escapeHtml(value)}</td>`;
     }).join("");
     return `<tr>${cells}</tr>`;
   }).join("");
 
   container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderBarChart(container, rows, labelKey, valueKey, color, formatter = formatNumber) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No data</div>`;
+    return;
+  }
+
+  const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
+  container.innerHTML = `
+    <div class="bar-list">
+      ${rows.map((row) => {
+        const value = Number(row[valueKey] || 0);
+        const width = Math.max(2, Math.round(value / max * 100));
+        return `
+          <div class="bar-row">
+            <span title="${escapeAttr(row[labelKey])}">${escapeHtml(row[labelKey] || "(empty)")}</span>
+            <div class="bar-track"><i style="width:${width}%;background:${color}"></i></div>
+            <strong>${escapeHtml(formatter(value))}</strong>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function renderLineChart(container, rows, xKey, yKey, color) {
@@ -615,6 +667,26 @@ function formatAge(seconds) {
   if (value < 3600) return `${Math.round(value / 60)}m`;
   if (value < 86400) return `${Math.round(value / 3600)}h`;
   return `${Math.round(value / 86400)}d`;
+}
+
+function formatMs(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0s";
+  if (number < 1000) return `${Math.round(number)}ms`;
+  return `${(number / 1000).toFixed(number < 10000 ? 1 : 0)}s`;
+}
+
+function formatBytes(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = number;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
 function formatDate(value) {

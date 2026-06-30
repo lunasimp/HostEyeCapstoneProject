@@ -42,5 +42,6 @@ desktop.ini
 # Temporary and generated analysis outputs
 outputs/
 work/
+sim-jitter/
 *.tmp
 *.bak

@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Security;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -34,7 +35,7 @@ try
     {
         try
         {
-            var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed);
+            var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed, attempt);
             if (sentAny)
             {
                 attempt = 0;
@@ -121,12 +122,13 @@ static async Task StopCleanupLoop(CancellationTokenSource cleanupCts, Task clean
     }
 }
 
-static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState state, HttpClient http, FileLogger logger, string endpointSeed)
+static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState state, HttpClient http, FileLogger logger, string endpointSeed, int retryAttempt)
 {
     var files = Directory.GetFiles(config.SpoolDirectory, "*.ndjson")
         .OrderBy(File.GetCreationTimeUtc)
         .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
         .ToArray();
+    var spoolStats = GetSpoolStats(config.SpoolDirectory);
 
     foreach (var file in files)
     {
@@ -154,7 +156,9 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
         req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
 
         logger.Info($"Sending file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} bytes={Encoding.UTF8.GetByteCount(payload)}.");
+        var stopwatch = Stopwatch.StartNew();
         using var resp = await http.SendAsync(req);
+        stopwatch.Stop();
         if ((int)resp.StatusCode == 429 || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
         {
             var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
@@ -168,6 +172,7 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
         state.SetCheckpoint(file, checkpoint.LineOffset + batch.Lines.Count);
         state.Save();
         logger.Info($"Sent OK file={Path.GetFileName(file)} new_offset={checkpoint.LineOffset + batch.Lines.Count}.");
+        await TrySendRuntimeMetric(config, http, logger, file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed);
         TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset + batch.Lines.Count, logger);
         return true;
     }
@@ -193,7 +198,79 @@ static async Task<Batch> ReadBatch(string file, int skipLines, int maxEvents, in
         bytes += lineBytes;
         if (lines.Count >= maxEvents || bytes >= maxBytes) break;
     }
-    return new Batch(lines);
+    return new Batch(lines, bytes);
+}
+
+static async Task TrySendRuntimeMetric(
+    ShipperConfig config,
+    HttpClient http,
+    FileLogger logger,
+    string spoolFile,
+    int lineOffset,
+    int nextLineOffset,
+    Batch batch,
+    long compressedBytes,
+    int plannedJitterSeconds,
+    int jitterWindowSeconds,
+    int retryAttempt,
+    SpoolStats spoolStats,
+    int statusCode,
+    TimeSpan sendDuration)
+{
+    try
+    {
+        var maxSpoolBytes = config.MaxSpoolSizeMB <= 0 ? 0 : config.MaxSpoolSizeMB * 1024L * 1024L;
+        var lowWatermarkBytes = maxSpoolBytes <= 0 ? 0 : maxSpoolBytes * Math.Clamp(config.LowWatermarkPercent, 1, 100) / 100L;
+        var metricTimestamp = DateTimeOffset.UtcNow;
+        var metric = new Dictionary<string, object?>
+        {
+            ["source_type"] = "hosteye_shipper_metric",
+            ["metric_type"] = "shipper_batch",
+            ["metric_timestamp"] = metricTimestamp.ToString("O"),
+            ["agent_id"] = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID") ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID") ?? "",
+            ["host_id"] = Environment.GetEnvironmentVariable("HOSTEYE_HOST_ID") ?? Environment.GetEnvironmentVariable("VECTOR_HOST_ID") ?? "",
+            ["computer"] = Environment.MachineName,
+            ["source_platform"] = "hosteye_windows_endpoint",
+            ["shipper_version"] = typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0",
+            ["gateway_uri"] = config.GatewayUri,
+            ["spool_directory"] = config.SpoolDirectory,
+            ["spool_file"] = Path.GetFileName(spoolFile),
+            ["line_offset"] = lineOffset,
+            ["next_line_offset"] = nextLineOffset,
+            ["batch_size"] = batch.Lines.Count,
+            ["batch_bytes"] = batch.Bytes,
+            ["compressed_bytes"] = compressedBytes,
+            ["planned_jitter_ms"] = plannedJitterSeconds * 1000,
+            ["jitter_window_ms"] = jitterWindowSeconds * 1000,
+            ["retry_attempt"] = retryAttempt,
+            ["planned_backoff_ms"] = 0,
+            ["spool_depth_bytes"] = spoolStats.Bytes,
+            ["spool_file_count"] = spoolStats.FileCount,
+            ["pending_file_count"] = spoolStats.PendingFileCount,
+            ["max_spool_bytes"] = maxSpoolBytes,
+            ["low_watermark_bytes"] = lowWatermarkBytes,
+            ["status_code"] = statusCode,
+            ["send_duration_ms"] = Math.Max(0, (int)Math.Round(sendDuration.TotalMilliseconds)),
+            ["success"] = statusCode >= 200 && statusCode < 300,
+            ["data_loss"] = maxSpoolBytes > 0 && spoolStats.Bytes > maxSpoolBytes,
+            ["message"] = "HostEyeShipper batch sent",
+            ["idempotency_key"] = Sha256Hex($"{Environment.MachineName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{metricTimestamp:O}")
+        };
+
+        var payload = "[" + JsonSerializer.Serialize(metric) + "]";
+        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = content };
+        req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
+        using var resp = await http.SendAsync(req);
+        if (!resp.IsSuccessStatusCode)
+        {
+            logger.Warn($"Runtime metric send returned {(int)resp.StatusCode} {resp.ReasonPhrase}.");
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.Warn($"Runtime metric send skipped: {ex.Message}");
+    }
 }
 
 static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
@@ -272,6 +349,32 @@ static long GetDirectorySizeBytes(string directory)
         try { total += new FileInfo(file).Length; } catch { }
     }
     return total;
+}
+
+static SpoolStats GetSpoolStats(string directory)
+{
+    if (!Directory.Exists(directory)) return new SpoolStats(0, 0, 0);
+    long bytes = 0;
+    var fileCount = 0;
+    var pendingFileCount = 0;
+    foreach (var file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
+    {
+        try
+        {
+            var info = new FileInfo(file);
+            bytes += info.Length;
+            fileCount++;
+            if (string.Equals(info.Extension, ".ndjson", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(info.Directory?.FullName, directory, StringComparison.OrdinalIgnoreCase))
+            {
+                pendingFileCount++;
+            }
+        }
+        catch
+        {
+        }
+    }
+    return new SpoolStats(bytes, fileCount, pendingFileCount);
 }
 
 static IEnumerable<QuotaFile> GetDeletionCandidates(ShipperConfig config)
@@ -403,8 +506,15 @@ static int RandomInt(RandomNumberGenerator rng, int minInclusive, int maxExclusi
     return minInclusive + (int)(value % (uint)(maxExclusive - minInclusive));
 }
 
-record Batch(List<string> Lines);
+static string Sha256Hex(string value)
+{
+    var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+    return Convert.ToHexString(hash).ToLowerInvariant();
+}
+
+record Batch(List<string> Lines, int Bytes);
 record QuotaFile(string FullName, bool IsSent);
+record SpoolStats(long Bytes, int FileCount, int PendingFileCount);
 
 class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception($"Backpressure {statusCode}")
 {
@@ -504,6 +614,7 @@ class GzipContent : HttpContent
 {
     readonly HttpContent _inner;
     readonly MemoryStream _compressed;
+    public long CompressedLength => _compressed.Length;
 
     GzipContent(HttpContent inner, MemoryStream compressed)
     {

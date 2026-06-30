@@ -26,8 +26,11 @@ SetupLogging=yes
 Source: "{#BuildRoot}\vector.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\vector.toml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\vector.toml.sig"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildRoot}\collector-policy.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\SOC_Updater.ps1"; DestDir: "{app}"; DestName: "HostEye_Updater.ps1"; Flags: ignoreversion
 Source: "{#BuildRoot}\install.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildRoot}\Pause-HostEyeDemoCollection.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildRoot}\Resume-HostEyeDemoCollection.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\SOCShipper\publish\*"; DestDir: "{app}\HostEyeShipper"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#BuildRoot}\certs\*"; DestDir: "{app}\certs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#BuildRoot}\Sysmon\Sysmon64.exe"; DestDir: "{app}\Sysmon"; Flags: ignoreversion
