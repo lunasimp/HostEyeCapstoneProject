@@ -32,6 +32,9 @@ VectorBuild/Output/
 *.7z
 
 # Local IDE / OS files
+.appdata/
+.dotnet-home/
+.localappdata/
 .vs/
 .vscode/
 *.user
@@ -43,5 +46,9 @@ desktop.ini
 outputs/
 work/
 sim-jitter/
+tools/shipper_logs*/
+tools/local-shipper-runonce*.json
+tools/InnoSetup/Examples/
+VectorBuild/Sysmon/*-output.*
 *.tmp
 *.bak
