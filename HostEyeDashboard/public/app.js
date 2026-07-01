@@ -89,11 +89,32 @@ async function loadDashboard() {
     ]);
   } catch (error) {
     console.error(error);
-    setStatus("Demo mode", false, "API offline");
-    renderDemoDashboard();
+    setStatus("API offline", false, "Check dashboard API");
+    resetKpis();
+    renderErrorEverywhere(error.message || "API offline");
   } finally {
     state.loading = false;
   }
+}
+
+function resetKpis() {
+  [
+    "kpiEvents",
+    "kpiHosts",
+    "kpiEventIds",
+    "kpiLastSeen",
+    "jitterHosts",
+    "jitterAvg",
+    "jitterP95",
+    "jitterWorst",
+    "chunkCount",
+    "chunkHosts",
+    "chunkEvents",
+    "chunkFailed",
+  ].forEach((id) => {
+    const node = el(id);
+    if (node) node.textContent = "-";
+  });
 }
 
 function renderDemoDashboard() {
