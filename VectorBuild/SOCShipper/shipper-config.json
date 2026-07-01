@@ -6,6 +6,7 @@
   "ClientCertificateFile": "C:\\Program Files\\HostEye\\certs\\client.crt",
   "ClientKeyFile": "C:\\Program Files\\HostEye\\certs\\client.key",
   "CaCertificateFile": "C:\\Program Files\\HostEye\\certs\\company_ca.crt",
+  "AllowSystemServerCertificateTrust": true,
   "MaxEvents": 500,
   "MaxBytes": 524288,
   "NormalJitterWindowSeconds": 5,

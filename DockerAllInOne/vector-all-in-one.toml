@@ -69,9 +69,17 @@ if exists(.user_name) && is_string(.user_name) {
 }
 '''
 
+[transforms.route_runtime_metrics]
+type = "route"
+inputs = ["pii_scrubber"]
+
+[transforms.route_runtime_metrics.route]
+shipper_metrics = '.source_type == "hosteye_shipper_metric" || .metric_type == "shipper_batch"'
+windows_logs = '!(.source_type == "hosteye_shipper_metric" || .metric_type == "shipper_batch")'
+
 [transforms.prepare_clickhouse]
 type = "remap"
-inputs = ["pii_scrubber"]
+inputs = ["route_runtime_metrics.windows_logs"]
 source = '''
 .kafka_timestamp = now()
 .event_data_json = if exists(.event_data) { encode_json(.event_data) } else { "" }
@@ -199,6 +207,43 @@ if exists(.event_data) {
 .idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
 '''
 
+[transforms.prepare_shipper_metrics]
+type = "remap"
+inputs = ["route_runtime_metrics.shipper_metrics"]
+source = '''
+.kafka_timestamp = now()
+.metric_timestamp = parse_timestamp(.metric_timestamp, format: "%+") ?? now()
+.agent_id = to_string(.agent_id) ?? ""
+.host_id = to_string(.host_id) ?? ""
+.computer = to_string(.computer) ?? ""
+.source_platform = to_string(.source_platform) ?? "hosteye_windows_endpoint"
+.shipper_version = to_string(.shipper_version) ?? ""
+.metric_type = to_string(.metric_type) ?? "shipper_batch"
+.gateway_uri = to_string(.gateway_uri) ?? ""
+.spool_directory = to_string(.spool_directory) ?? ""
+.spool_file = to_string(.spool_file) ?? ""
+.line_offset = to_int(.line_offset) ?? 0
+.next_line_offset = to_int(.next_line_offset) ?? 0
+.batch_size = to_int(.batch_size) ?? 0
+.batch_bytes = to_int(.batch_bytes) ?? 0
+.compressed_bytes = to_int(.compressed_bytes) ?? 0
+.planned_jitter_ms = to_int(.planned_jitter_ms) ?? 0
+.jitter_window_ms = to_int(.jitter_window_ms) ?? 0
+.retry_attempt = to_int(.retry_attempt) ?? 0
+.planned_backoff_ms = to_int(.planned_backoff_ms) ?? 0
+.spool_depth_bytes = to_int(.spool_depth_bytes) ?? 0
+.spool_file_count = to_int(.spool_file_count) ?? 0
+.pending_file_count = to_int(.pending_file_count) ?? 0
+.max_spool_bytes = to_int(.max_spool_bytes) ?? 0
+.low_watermark_bytes = to_int(.low_watermark_bytes) ?? 0
+.status_code = to_int(.status_code) ?? 0
+.send_duration_ms = to_int(.send_duration_ms) ?? 0
+.success = if to_bool(.success) ?? false { 1 } else { 0 }
+.data_loss = if to_bool(.data_loss) ?? false { 1 } else { 0 }
+.message = to_string(.message) ?? ""
+.idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
+'''
+
 [sinks.raw_forensic_vault]
 type = "file"
 inputs = ["from_nginx"]
@@ -214,5 +259,14 @@ inputs = ["prepare_clickhouse"]
 endpoint = "http://127.0.0.1:8123"
 database = "default"
 table = "windows_system_logs"
+compression = "gzip"
+skip_unknown_fields = true
+
+[sinks.persist_shipper_metrics_to_clickhouse]
+type = "clickhouse"
+inputs = ["prepare_shipper_metrics"]
+endpoint = "http://127.0.0.1:8123"
+database = "default"
+table = "shipper_runtime_metrics"
 compression = "gzip"
 skip_unknown_fields = true

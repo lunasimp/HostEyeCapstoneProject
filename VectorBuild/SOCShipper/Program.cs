@@ -454,6 +454,11 @@ static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
             if (cert is null) return false;
             if ((errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0) return false;
             if ((errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0) return false;
+            if (config.AllowSystemServerCertificateTrust && errors == SslPolicyErrors.None)
+            {
+                logger.Info("Accepted server certificate using Windows system trust.");
+                return true;
+            }
             using var customChain = new X509Chain();
             customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
             customChain.ChainPolicy.CustomTrustStore.Add(trustedRoot);
@@ -475,7 +480,7 @@ static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
             }
             return ok;
         };
-        logger.Info($"Loaded custom CA trust: {config.CaCertificateFile}");
+        logger.Info($"Loaded custom CA trust: {config.CaCertificateFile}; AllowSystemServerCertificateTrust={config.AllowSystemServerCertificateTrust}");
     }
 
     return new HttpClient(handler)
@@ -531,6 +536,7 @@ class ShipperConfig
     public string ClientCertificateFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\client.crt";
     public string ClientKeyFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\client.key";
     public string CaCertificateFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\company_ca.crt";
+    public bool AllowSystemServerCertificateTrust { get; set; } = true;
     public int MaxEvents { get; set; } = 1000;
     public int MaxBytes { get; set; } = 1048576;
     public int NormalJitterWindowSeconds { get; set; } = 120;

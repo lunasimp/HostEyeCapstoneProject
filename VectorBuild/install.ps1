@@ -300,6 +300,7 @@ $shipperConfigObject = [ordered]@{
     ClientCertificateFile = (Join-Path $CertDir "client.crt")
     ClientKeyFile = (Join-Path $CertDir "client.key")
     CaCertificateFile = (Join-Path $CertDir "company_ca.crt")
+    AllowSystemServerCertificateTrust = $true
     MaxEvents = 500
     MaxBytes = 524288
     NormalJitterWindowSeconds = 5

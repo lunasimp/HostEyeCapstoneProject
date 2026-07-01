@@ -6,6 +6,7 @@
     "ClientCertificateFile":  "C:\\VectorBuild\\certs\\client.crt",
     "ClientKeyFile":  "C:\\VectorBuild\\certs\\client.key",
     "CaCertificateFile":  "C:\\VectorBuild\\certs\\company_ca.crt",
+    "AllowSystemServerCertificateTrust":  true,
     "MaxEvents":  3,
     "MaxBytes":  65536,
     "NormalJitterWindowSeconds":  0,
