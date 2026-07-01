@@ -577,7 +577,9 @@ async function hostsHeatmapCell(ctx, res) {
   const where = `WHERE ${predicates.join(" AND ")}`;
   const limit = limitParam(ctx.url, 200, 500);
 
-  const [summaryRows, byChannel, byEventId, byEventType, recentLogs] = await Promise.all([
+  const chunkWhere = `WHERE computer = ${sqlString(host)} AND metric_timestamp >= ${startExpr} AND metric_timestamp < ${endExpr}`;
+
+  const [summaryRows, byChannel, byEventId, byEventType, recentLogs, chunks] = await Promise.all([
     queryRows(`SELECT count() AS totalEvents FROM default.windows_system_logs ${where}`),
     queryRows(`
       SELECT channel, count() AS events
@@ -624,6 +626,33 @@ async function hostsHeatmapCell(ctx, res) {
       ORDER BY kafka_timestamp DESC
       LIMIT ${limit}
     `),
+    queryRows(`
+      SELECT
+        metric_timestamp AS sentAt,
+        agent_id AS agentId,
+        spool_file AS spoolFile,
+        line_offset AS lineOffset,
+        next_line_offset AS nextLineOffset,
+        batch_size AS batchSize,
+        batch_bytes AS batchBytes,
+        compressed_bytes AS compressedBytes,
+        planned_jitter_ms AS plannedJitterMs,
+        jitter_window_ms AS jitterWindowMs,
+        retry_attempt AS retryAttempt,
+        planned_backoff_ms AS plannedBackoffMs,
+        spool_depth_bytes AS spoolDepthBytes,
+        spool_file_count AS spoolFileCount,
+        pending_file_count AS pendingFileCount,
+        status_code AS statusCode,
+        send_duration_ms AS sendDurationMs,
+        success,
+        data_loss AS dataLoss,
+        message
+      FROM default.shipper_runtime_metrics
+      ${chunkWhere}
+      ORDER BY metric_timestamp DESC
+      LIMIT 100
+    `),
   ]);
 
   sendJson(res, 200, {
@@ -637,6 +666,7 @@ async function hostsHeatmapCell(ctx, res) {
       byEventType,
     },
     recentLogs,
+    chunks,
   });
 }
 

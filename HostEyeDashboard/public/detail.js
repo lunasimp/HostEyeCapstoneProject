@@ -50,6 +50,7 @@ async function loadDetail() {
     const byChannel = detail.breakdown?.byChannel || [];
     const byEventId = detail.breakdown?.byEventId || [];
     const logs = detail.recentLogs || [];
+    const chunks = detail.chunks || [];
 
     el("detailTotal").textContent = formatNumber(detail.totalEvents);
     el("detailChannels").textContent = formatNumber(byChannel.length);
@@ -67,6 +68,27 @@ async function loadDetail() {
     renderTable(el("detailByEventId"), byEventId, [
       ["Event ID", "eventId", "numeric"],
       ["events", "events", "numeric"],
+    ]);
+    renderTable(el("detailChunks"), chunks, [
+      ["Sent at", "sentAt", "date"],
+      ["Agent", "agentId"],
+      ["Spool file", "spoolFile"],
+      ["Line offset", "lineOffset", "numeric"],
+      ["Next offset", "nextLineOffset", "numeric"],
+      ["Batch", "batchSize", "numeric"],
+      ["Bytes", "batchBytes", "numeric"],
+      ["Gzip", "compressedBytes", "numeric"],
+      ["Jitter", "plannedJitterMs", "duration"],
+      ["Window", "jitterWindowMs", "duration"],
+      ["Retry", "retryAttempt", "numeric"],
+      ["Backoff", "plannedBackoffMs", "duration"],
+      ["Spool depth", "spoolDepthBytes", "bytes"],
+      ["Files", "spoolFileCount", "numeric"],
+      ["Pending", "pendingFileCount", "numeric"],
+      ["HTTP", "statusCode", "numeric"],
+      ["Send", "sendDurationMs", "duration"],
+      ["OK", "success", "boolean"],
+      ["Data loss", "dataLoss", "boolean"],
     ]);
     renderTable(el("detailRecentLogs"), logs, [
       ["Time", "time", "date"],
@@ -112,7 +134,17 @@ function renderTable(container, rows, columns) {
   const body = rows.map((row) => {
     const cells = columns.map(([, key, type]) => {
       const raw = row[key] ?? "";
-      const value = type === "date" ? formatDate(raw) : type === "numeric" ? formatNumber(raw) : String(raw);
+      const value = type === "date"
+        ? formatDate(raw)
+        : type === "numeric"
+          ? formatNumber(raw)
+          : type === "duration"
+            ? formatDuration(raw)
+            : type === "bytes"
+              ? formatBytes(raw)
+              : type === "boolean"
+                ? formatBoolean(raw)
+                : String(raw);
       return `<td class="${type === "numeric" ? "numeric" : ""}" title="${escapeAttr(String(raw))}">${escapeHtml(value)}</td>`;
     }).join("");
     return `<tr>${cells}</tr>`;
@@ -131,6 +163,25 @@ function renderError(message) {
 function formatNumber(value) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number.toLocaleString() : "0";
+}
+
+function formatDuration(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "-";
+  if (number >= 1000) return `${(number / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })}s`;
+  return `${number.toLocaleString()}ms`;
+}
+
+function formatBytes(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "0 B";
+  if (number >= 1024 * 1024) return `${(number / 1024 / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} MB`;
+  if (number >= 1024) return `${(number / 1024).toLocaleString(undefined, { maximumFractionDigits: 2 })} KB`;
+  return `${number.toLocaleString()} B`;
+}
+
+function formatBoolean(value) {
+  return Number(value) === 1 || value === true ? "yes" : "no";
 }
 
 function formatDate(value) {
