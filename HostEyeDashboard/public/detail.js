@@ -11,6 +11,7 @@ document.addEventListener("DOMContentLoaded", () => {
     setOptionalParam(url, "eventId", el("detailEventId")?.value);
     setOptionalParam(url, "q", el("detailQuery")?.value);
     setOptionalParam(url, "limit", el("detailLimit")?.value);
+    setOptionalParam(url, "view", el("detailView")?.value);
     window.history.replaceState(null, "", url.toString());
     loadDetail();
   });
@@ -26,11 +27,14 @@ async function loadDetail() {
   const eventId = params.get("eventId") || "";
   const q = params.get("q") || "";
   const limit = params.get("limit") || "200";
+  const view = params.get("view") || "both";
 
   if (el("detailChannel")) el("detailChannel").value = channel;
   if (el("detailEventId")) el("detailEventId").value = eventId;
   if (el("detailQuery")) el("detailQuery").value = q;
   if (el("detailLimit")) el("detailLimit").value = limit;
+  if (el("detailView")) el("detailView").value = view;
+  applyDetailView(view);
 
   if (!host || !time) {
     renderError("Missing host or time query parameter.");
@@ -107,6 +111,14 @@ async function loadDetail() {
   } catch (error) {
     renderError(error.message);
   }
+}
+
+function applyDetailView(view) {
+  const normalized = ["both", "logs", "chunks"].includes(view) ? view : "both";
+  const showLogs = normalized === "both" || normalized === "logs";
+  const showChunks = normalized === "both" || normalized === "chunks";
+  if (el("detailLogsSection")) el("detailLogsSection").hidden = !showLogs;
+  if (el("detailChunksSection")) el("detailChunksSection").hidden = !showChunks;
 }
 
 function setOptionalParam(url, key, value) {

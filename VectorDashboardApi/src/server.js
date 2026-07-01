@@ -35,6 +35,8 @@ const routes = [
   ["GET", /^\/api\/dashboard\/powershell\/recent$/, powershellRecent],
   ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
   ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
+  ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
+  ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap$/, hostsHeatmap],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
@@ -492,6 +494,85 @@ async function jitterHosts(ctx, res) {
   });
 }
 
+async function chunksSummary(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const rows = await queryRows(`
+    SELECT
+      count() AS chunks,
+      uniqExact(computer) AS hosts,
+      sum(batch_size) AS eventsSent,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      sum(if(success = 1, 1, 0)) AS okChunks,
+      sum(if(success = 0, 1, 0)) AS failedChunks,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const latestRows = await queryRows(`
+    SELECT
+      computer,
+      argMax(spool_file, metric_timestamp) AS spoolFile,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    latestChunk: latestRows[0] || null,
+  });
+}
+
+async function chunksHosts(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      argMax(agent_id, metric_timestamp) AS agentId,
+      argMax(spool_file, metric_timestamp) AS lastChunk,
+      argMax(line_offset, metric_timestamp) AS lineOffset,
+      argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(batch_bytes, metric_timestamp) AS batchBytes,
+      argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(data_loss, metric_timestamp) AS dataLoss,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
+      argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+      count() AS chunks,
+      sum(batch_size) AS eventsSent,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: chunkStatus(row),
+      statusLabel: chunkStatusLabel(chunkStatus(row)),
+    })),
+  });
+}
+
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
@@ -879,6 +960,20 @@ function jitterStatus(row) {
 function jitterStatusLabel(level) {
   if (level === "stable") return "Stable";
   if (level === "bursty") return "Bursty";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
+}
+
+function chunkStatus(row) {
+  if (Number(row.success || 0) !== 1 || Number(row.statusCode || 0) >= 400) return "failed";
+  if (Number(row.dataLoss || 0) === 1) return "failed";
+  if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) return "delayed";
+  return "ok";
+}
+
+function chunkStatusLabel(level) {
+  if (level === "ok") return "OK";
+  if (level === "failed") return "Failed";
   if (level === "delayed") return "Delayed";
   return "Silent";
 }

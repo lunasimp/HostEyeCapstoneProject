@@ -16,6 +16,7 @@ const pages = {
   registry: { title: "Registry & File", eyebrow: "[ ENDPOINT CHANGES ]" },
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
+  chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
 };
 
@@ -83,6 +84,7 @@ async function loadDashboard() {
       loadRegistryFileAccess(),
       loadPowerShell(),
       loadJitter(),
+      loadChunks(),
       loadHeatmap(),
     ]);
   } catch (error) {
@@ -446,6 +448,78 @@ async function loadJitter() {
   ]);
 }
 
+async function loadChunks() {
+  const [summary, hosts] = await Promise.all([
+    api(`/api/dashboard/chunks/summary${query()}`),
+    api(`/api/dashboard/chunks/hosts${query({ limit: 100 })}`),
+  ]);
+
+  const rows = hosts.items || [];
+  el("chunkCount").textContent = formatNumber(summary.chunks);
+  el("chunkHosts").textContent = formatNumber(summary.hosts);
+  el("chunkEvents").textContent = formatNumber(summary.eventsSent);
+  el("chunkFailed").textContent = formatNumber(summary.failedChunks);
+
+  renderBarChart(el("chunkSpoolChart"), rows.slice(0, 12), "computer", "spoolDepthBytes", "#17b26a", formatBytes);
+  renderChunkHostTable(el("chunkHostsTable"), rows);
+}
+
+function renderChunkHostTable(container, rows) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No chunks</div>`;
+    return;
+  }
+
+  const body = rows.map((row) => `
+    <tr class="clickable-row" data-host="${escapeAttr(row.computer)}" data-time="${escapeAttr(row.lastSeen)}">
+      <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+      <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
+      <td title="${escapeAttr(row.lastChunk)}">${escapeHtml(row.lastChunk || "-")}</td>
+      <td class="numeric">${formatNumber(row.statusCode)}</td>
+      <td class="numeric">${formatNumber(row.batchSize)}</td>
+      <td class="numeric">${formatBytes(row.spoolDepthBytes)}</td>
+      <td class="numeric">${formatMs(row.plannedJitterMs)}</td>
+      <td class="numeric">${formatMs(row.sendDurationMs)}</td>
+      <td class="numeric">${formatNumber(row.pendingFileCount)}</td>
+      <td title="${escapeAttr(row.lastSeen)}">${escapeHtml(formatDate(row.lastSeen))}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Status</th>
+          <th>Last chunk</th>
+          <th class="numeric">HTTP</th>
+          <th class="numeric">Batch</th>
+          <th class="numeric">Spool</th>
+          <th class="numeric">Jitter</th>
+          <th class="numeric">Send</th>
+          <th class="numeric">Pending</th>
+          <th>Last seen</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+
+  container.querySelectorAll(".clickable-row").forEach((row) => {
+    row.addEventListener("click", () => openDetailForChunk(row.dataset.host, row.dataset.time));
+  });
+}
+
+function openDetailForChunk(host, time) {
+  if (!host || !time) return;
+  const url = new URL("./detail.html", window.location.href);
+  url.searchParams.set("host", host);
+  url.searchParams.set("time", minuteBucket(time));
+  url.searchParams.set("bucket", "minute");
+  url.searchParams.set("view", "both");
+  window.location.href = url.toString();
+}
+
 async function loadHeatmap() {
   const bucket = selectedHeatmapBucket();
   const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
@@ -702,6 +776,16 @@ function shortDate(value) {
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
   return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function minuteBucket(value) {
+  if (!value) return "";
+  const normalized = String(value).includes("T") ? value : String(value).replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16) + ":00";
+  date.setSeconds(0, 0);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
 }
 
 function describeArc(cx, cy, r, start, end) {
