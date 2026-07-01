@@ -108,7 +108,7 @@ $processes = foreach ($vm in $vms) {
 
     $stdout = Join-Path $vmDir "stdout.txt"
     $stderr = Join-Path $vmDir "stderr.txt"
-    $cmd = "set HOSTEYE_AGENT_ID=$agentId&& `"$ShipperExe`" `"$configPath`""
+    $cmd = "set HOSTEYE_AGENT_ID=$agentId&& set HOSTEYE_HOST_ID=host-$agentId&& set HOSTEYE_COMPUTER_NAME=$vm&& `"$ShipperExe`" `"$configPath`""
     [pscustomobject]@{
         Vm = $vm
         AgentId = $agentId

@@ -222,6 +222,7 @@ static async Task TrySendRuntimeMetric(
         var maxSpoolBytes = config.MaxSpoolSizeMB <= 0 ? 0 : config.MaxSpoolSizeMB * 1024L * 1024L;
         var lowWatermarkBytes = maxSpoolBytes <= 0 ? 0 : maxSpoolBytes * Math.Clamp(config.LowWatermarkPercent, 1, 100) / 100L;
         var metricTimestamp = DateTimeOffset.UtcNow;
+        var computerName = GetEndpointComputerName();
         var metric = new Dictionary<string, object?>
         {
             ["source_type"] = "hosteye_shipper_metric",
@@ -229,7 +230,7 @@ static async Task TrySendRuntimeMetric(
             ["metric_timestamp"] = metricTimestamp.ToString("O"),
             ["agent_id"] = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID") ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID") ?? "",
             ["host_id"] = Environment.GetEnvironmentVariable("HOSTEYE_HOST_ID") ?? Environment.GetEnvironmentVariable("VECTOR_HOST_ID") ?? "",
-            ["computer"] = Environment.MachineName,
+            ["computer"] = computerName,
             ["source_platform"] = "hosteye_windows_endpoint",
             ["shipper_version"] = typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0",
             ["gateway_uri"] = config.GatewayUri,
@@ -254,7 +255,7 @@ static async Task TrySendRuntimeMetric(
             ["success"] = statusCode >= 200 && statusCode < 300,
             ["data_loss"] = maxSpoolBytes > 0 && spoolStats.Bytes > maxSpoolBytes,
             ["message"] = "HostEyeShipper batch sent",
-            ["idempotency_key"] = Sha256Hex($"{Environment.MachineName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{metricTimestamp:O}")
+            ["idempotency_key"] = Sha256Hex($"{computerName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{metricTimestamp:O}")
         };
 
         var payload = "[" + JsonSerializer.Serialize(metric) + "]";
@@ -271,6 +272,14 @@ static async Task TrySendRuntimeMetric(
     {
         logger.Warn($"Runtime metric send skipped: {ex.Message}");
     }
+}
+
+static string GetEndpointComputerName()
+{
+    return Environment.GetEnvironmentVariable("HOSTEYE_COMPUTER_NAME")
+        ?? Environment.GetEnvironmentVariable("COMPUTERNAME")
+        ?? Environment.MachineName
+        ?? "";
 }
 
 static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
