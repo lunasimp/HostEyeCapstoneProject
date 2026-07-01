@@ -2,7 +2,7 @@
 # Requires Administrator. Installs HostEye collector as LocalSystem service, config updater, certs, and Sysmon.
 
 param(
-    [string]$GatewayUri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+    [string]$GatewayUri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
     [string]$CaCertificateFileName = "company_ca.crt",
     [switch]$NoStart
 )

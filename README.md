@@ -130,14 +130,14 @@ Default service ports:
 Endpoint agents send telemetry to:
 
 ```text
-https://soc-gateway.yourcorporate.com/api/v1/telemetry
+https://hosteye.iahn.hanoi.vn/api/v1/telemetry
 ```
 
-For a VPN/LAN demo, map this hostname on client machines to the server-reachable IP, for example:
+For a VPN/LAN demo before public DNS is ready, map this hostname on client machines to the server-reachable IP, for example:
 
 ```powershell
-Add-Content C:\Windows\System32\drivers\etc\hosts "192.168.17.1 soc-gateway.yourcorporate.com"
-Test-NetConnection soc-gateway.yourcorporate.com -Port 443
+Add-Content C:\Windows\System32\drivers\etc\hosts "192.168.17.1 hosteye.iahn.hanoi.vn"
+Test-NetConnection hosteye.iahn.hanoi.vn -Port 443
 ```
 
 ## Restore Vector binary before building installer

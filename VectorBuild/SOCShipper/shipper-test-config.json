@@ -1,5 +1,5 @@
 ﻿{
-    "GatewayUri":  "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+    "GatewayUri":  "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
     "SpoolDirectory":  "C:\\ProgramData\\HostEye\\spool",
     "StateDirectory":  "C:\\ProgramData\\HostEye\\shipper_state_test",
     "LogDirectory":  "C:\\ProgramData\\HostEye\\logs",

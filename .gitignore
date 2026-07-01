@@ -47,6 +47,7 @@ outputs/
 work/
 sim-jitter/
 tools/shipper_logs*/
+tools/*.log
 tools/local-shipper-runonce*.json
 tools/InnoSetup/Examples/
 VectorBuild/Sysmon/*-output.*

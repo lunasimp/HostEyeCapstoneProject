@@ -80,7 +80,7 @@ string_to_hash = join([computer_str, channel_str, record_str], separator: "-") ?
 [sinks.emit_to_gateway_secure]
 type = "http"
 inputs = ["normalize_and_enrich"]
-uri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry"
+uri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"
 method = "post"
 compression = "gzip" 
 

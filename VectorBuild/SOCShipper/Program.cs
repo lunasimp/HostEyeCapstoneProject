@@ -524,7 +524,7 @@ class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception(
 
 class ShipperConfig
 {
-    public string GatewayUri { get; set; } = "https://soc-gateway.yourcorporate.com/api/v1/telemetry";
+    public string GatewayUri { get; set; } = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry";
     public string SpoolDirectory { get; set; } = "C:\\ProgramData\\HostEye\\spool";
     public string StateDirectory { get; set; } = "C:\\ProgramData\\HostEye\\shipper_state";
     public string LogDirectory { get; set; } = "C:\\ProgramData\\HostEye\\logs";

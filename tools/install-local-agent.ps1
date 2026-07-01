@@ -1,5 +1,7 @@
 param(
-    [string]$RepoRoot = "D:\f-smooth-criminal-lab-team"
+    [string]$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path,
+    [string]$GatewayHostName = "hosteye.iahn.hanoi.vn",
+    [string]$GatewayIp = "127.0.0.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,9 +33,10 @@ Copy-Item -LiteralPath $HostsPath -Destination $backupPath -Force
 Write-AgentInstallLog "Backed up hosts file to $backupPath"
 
 $lines = Get-Content -LiteralPath $HostsPath
-$filtered = $lines | Where-Object { $_ -notmatch '(^|\s)soc-gateway\.yourcorporate\.com(\s|$)' }
-$filtered + "127.0.0.1 soc-gateway.yourcorporate.com" | Set-Content -LiteralPath $HostsPath -Encoding ASCII
-Write-AgentInstallLog "Mapped soc-gateway.yourcorporate.com to 127.0.0.1"
+$escapedGateway = [regex]::Escape($GatewayHostName)
+$filtered = $lines | Where-Object { $_ -notmatch "(^|\s)$escapedGateway(\s|$)" }
+$filtered + "$GatewayIp $GatewayHostName" | Set-Content -LiteralPath $HostsPath -Encoding ASCII
+Write-AgentInstallLog "Mapped $GatewayHostName to $GatewayIp"
 
 $args = @(
     "/VERYSILENT",
