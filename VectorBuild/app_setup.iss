@@ -1,6 +1,12 @@
 ﻿[Setup]
 AppName=HostEye Endpoint Agent
 #define BuildRoot SourcePath
+#ifndef InstallerOutputBaseFilename
+#define InstallerOutputBaseFilename "HostEye_Endpoint_Installer"
+#endif
+#ifndef InstallerGatewayUri
+#define InstallerGatewayUri "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"
+#endif
 AppPublisher=FPT
 AppPublisherURL=https://iahn.fpt.edu.vn/du-an/HostEye
 AppSupportURL=https://iahn.fpt.edu.vn/du-an/HostEye
@@ -9,7 +15,7 @@ DefaultDirName={commonpf}\HostEye
 DisableDirPage=yes
 DisableProgramGroupPage=yes
 OutputDir={#BuildRoot}\Output
-OutputBaseFilename=HostEye_Endpoint_Installer
+OutputBaseFilename={#InstallerOutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=admin
@@ -40,7 +46,7 @@ Source: "{#BuildRoot}\Sysmon\Eula.txt"; DestDir: "{app}\Sysmon"; Flags: ignoreve
 Source: "{#BuildRoot}\Sysmon\soc-sysmon-config.xml"; DestDir: "{app}\Sysmon"; DestName: "hosteye-sysmon-config.xml"; Flags: ignoreversion
 
 [Run]
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\install.ps1"""; Description: "Cài đặt HostEye Endpoint Agent"; Flags: runhidden waituntilterminated
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\install.ps1"" -GatewayUri ""{#InstallerGatewayUri}"""; Description: "Cài đặt HostEye Endpoint Agent"; Flags: runhidden waituntilterminated
 [Code]
 procedure StopOldAgentBeforeFileCopy();
 var
