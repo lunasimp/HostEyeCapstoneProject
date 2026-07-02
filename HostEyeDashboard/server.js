@@ -4,7 +4,7 @@ import { extname, join, normalize, resolve } from "node:path";
 
 const root = resolve("public");
 const port = Number.parseInt(process.env.PORT || "5174", 10);
-const apiTarget = process.env.HOSTEYE_API_TARGET || "http://hosteye-dashboard-api:5055";
+const apiTarget = process.env.HOSTEYE_API_TARGET || "http://127.0.0.1:5055";
 
 const types = {
   ".html": "text/html; charset=utf-8",

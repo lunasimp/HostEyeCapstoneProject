@@ -95,6 +95,78 @@ function Stop-ExistingComponent([string]$Name) {
     }
 }
 
+function Invoke-HostEyeSetupCommand([string]$Description, [string]$FilePath, [string[]]$ArgumentList) {
+    try {
+        Write-InstallLog $Description
+        $output = & $FilePath @ArgumentList 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($output) {
+            foreach ($line in $output) {
+                Write-InstallLog "  $line"
+            }
+        }
+        if ($exitCode -ne 0) {
+            Write-InstallLog "WARNING: command returned exit code ${exitCode}: $FilePath $($ArgumentList -join ' ')"
+        }
+    } catch {
+        Write-InstallLog "WARNING: $Description failed: $($_.Exception.Message)"
+    }
+}
+
+function Set-HostEyeDword([string]$Path, [string]$Name, [int]$Value) {
+    try {
+        New-Item -Path $Path -Force | Out-Null
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
+        Write-InstallLog "Set registry DWORD $Path\$Name=$Value"
+    } catch {
+        Write-InstallLog "WARNING: failed to set registry DWORD $Path\${Name}: $($_.Exception.Message)"
+    }
+}
+
+function Enable-HostEyeAuditPolicy {
+    Write-InstallLog "Configuring HostEye audit policy prerequisites."
+
+    # Use stable audit subcategory GUIDs so the installer works on localized Windows builds.
+    Invoke-HostEyeSetupCommand "Enabling Security 4688 Process Creation auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE922B-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+    Invoke-HostEyeSetupCommand "Enabling Windows Filtering Platform connection auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE9226-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+    Invoke-HostEyeSetupCommand "Enabling Windows Filtering Platform packet drop auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE9225-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+
+    Set-HostEyeDword "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" "ProcessCreationIncludeCmdLine_Enabled" 1
+    Set-HostEyeDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" "EnableScriptBlockLogging" 1
+    Set-HostEyeDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging" "EnableModuleLogging" 1
+    try {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" -Force | Out-Null
+        New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" -Name "*" -Value "*" -PropertyType String -Force | Out-Null
+        Write-InstallLog "Enabled PowerShell module logging for all modules."
+    } catch {
+        Write-InstallLog "WARNING: failed to enable PowerShell module logging names: $($_.Exception.Message)"
+    }
+
+    foreach ($channel in @(
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-TaskScheduler/Operational",
+        "Microsoft-Windows-Windows Defender/Operational",
+        "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+    )) {
+        Invoke-HostEyeSetupCommand "Enabling Windows Event Log channel: $channel" "wevtutil.exe" @("sl", $channel, "/e:true")
+    }
+}
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "This installer must be run as Administrator."
     exit 1
@@ -103,6 +175,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Write-InstallLog "Bat dau cai dat HostEye Endpoint Agent from $StagingDir"
 
 New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "data"), (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state") | Out-Null
+
+Enable-HostEyeAuditPolicy
 
 foreach ($existingComponent in @($ServiceName, $ShipperServiceName, "Vector", "SOCShipper")) {
     Stop-ExistingComponent $existingComponent

@@ -148,14 +148,14 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
             await Task.Delay(TimeSpan.FromSeconds(jitter));
         }
 
-        var payload = "[" + string.Join(",", batch.Lines) + "]";
+        var payload = BuildChunkPayload(file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, out var chunk);
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         content.Headers.ContentEncoding.Add("gzip");
         using var gzipped = await GzipContent.Create(content);
         using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = gzipped };
         req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
 
-        logger.Info($"Sending file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} bytes={Encoding.UTF8.GetByteCount(payload)}.");
+        logger.Info($"Sending chunk={chunk.ChunkId} file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} checksum={chunk.Checksum} bytes={Encoding.UTF8.GetByteCount(payload)}.");
         var stopwatch = Stopwatch.StartNew();
         using var resp = await http.SendAsync(req);
         stopwatch.Stop();
@@ -169,15 +169,105 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
             throw new Exception($"Gateway returned {(int)resp.StatusCode} {resp.ReasonPhrase}");
         }
 
+        var ack = await ReadAndValidateAck(resp, chunk);
         state.SetCheckpoint(file, checkpoint.LineOffset + batch.Lines.Count);
         state.Save();
-        logger.Info($"Sent OK file={Path.GetFileName(file)} new_offset={checkpoint.LineOffset + batch.Lines.Count}.");
-        await TrySendRuntimeMetric(config, http, logger, file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed);
+        logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} file={Path.GetFileName(file)} new_offset={checkpoint.LineOffset + batch.Lines.Count}.");
+        await TrySendRuntimeMetric(config, http, logger, file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed, chunk, ack);
         TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset + batch.Lines.Count, logger);
         return true;
     }
 
     return false;
+}
+
+static string BuildChunkPayload(string spoolFile, int lineOffset, int nextLineOffset, Batch batch, out ChunkMetadata chunk)
+{
+    var eventsJson = "[" + string.Join(",", batch.Lines) + "]";
+    using var eventDoc = JsonDocument.Parse(eventsJson);
+    var canonicalEventsJson = JsonSerializer.Serialize(eventDoc.RootElement);
+    var checksum = Sha256Hex(canonicalEventsJson);
+    var agentId = GetAgentId();
+    var hostId = GetHostId();
+    var computerName = GetEndpointComputerName();
+    var sequenceNumber = Math.Max(0, lineOffset);
+    var chunkId = Sha256Hex($"{agentId}|{hostId}|{computerName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{checksum}");
+
+    chunk = new ChunkMetadata(
+        ChunkId: chunkId,
+        AgentId: agentId,
+        HostId: hostId,
+        Computer: computerName,
+        SpoolFile: Path.GetFileName(spoolFile),
+        LineOffset: lineOffset,
+        NextLineOffset: nextLineOffset,
+        SequenceNumber: sequenceNumber,
+        EventCount: batch.Lines.Count,
+        Checksum: checksum);
+
+    using var stream = new MemoryStream();
+    using (var writer = new Utf8JsonWriter(stream))
+    {
+        writer.WriteStartObject();
+        writer.WriteString("protocol", "hosteye.telemetry.v1");
+        writer.WriteString("schema_version", "1.0.0");
+        writer.WriteString("chunk_id", chunk.ChunkId);
+        writer.WriteString("agent_id", chunk.AgentId);
+        writer.WriteString("host_id", chunk.HostId);
+        writer.WriteString("computer", chunk.Computer);
+        writer.WriteString("source_platform", "hosteye_windows_endpoint");
+        writer.WriteString("spool_file", chunk.SpoolFile);
+        writer.WriteNumber("line_offset", chunk.LineOffset);
+        writer.WriteNumber("next_line_offset", chunk.NextLineOffset);
+        writer.WriteNumber("sequence_number", chunk.SequenceNumber);
+        writer.WriteNumber("event_count", chunk.EventCount);
+        writer.WriteString("checksum", chunk.Checksum);
+        writer.WriteString("checksum_algorithm", "sha256");
+        writer.WriteString("created_at", DateTimeOffset.UtcNow.ToString("O"));
+        writer.WritePropertyName("events");
+        writer.WriteRawValue(canonicalEventsJson, skipInputValidation: false);
+        writer.WriteEndObject();
+    }
+
+    return Encoding.UTF8.GetString(stream.ToArray());
+}
+
+static async Task<ChunkAck> ReadAndValidateAck(HttpResponseMessage resp, ChunkMetadata chunk)
+{
+    var body = await resp.Content.ReadAsStringAsync();
+    if (string.IsNullOrWhiteSpace(body))
+    {
+        throw new Exception($"Gateway returned success without ACK body for chunk={chunk.ChunkId}");
+    }
+
+    ChunkAck? ack;
+    try
+    {
+        ack = JsonSerializer.Deserialize<ChunkAck>(body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+    }
+    catch (Exception ex)
+    {
+        throw new Exception($"Gateway ACK was not valid JSON for chunk={chunk.ChunkId}: {ex.Message}");
+    }
+
+    if (ack is null || !ack.Ack || !ack.Commit)
+    {
+        throw new Exception($"Gateway did not commit chunk={chunk.ChunkId}; ack_body={body}");
+    }
+    if (!string.Equals(ack.ChunkId, chunk.ChunkId, StringComparison.OrdinalIgnoreCase))
+    {
+        throw new Exception($"Gateway ACK chunk_id mismatch. expected={chunk.ChunkId} actual={ack.ChunkId}");
+    }
+    if (!string.Equals(ack.Checksum, chunk.Checksum, StringComparison.OrdinalIgnoreCase))
+    {
+        throw new Exception($"Gateway ACK checksum mismatch for chunk={chunk.ChunkId}.");
+    }
+    if (ack.EventCount != chunk.EventCount)
+    {
+        throw new Exception($"Gateway ACK event_count mismatch for chunk={chunk.ChunkId}. expected={chunk.EventCount} actual={ack.EventCount}");
+    }
+
+    return ack;
 }
 
 static async Task<Batch> ReadBatch(string file, int skipLines, int maxEvents, int maxBytes)
@@ -215,7 +305,9 @@ static async Task TrySendRuntimeMetric(
     int retryAttempt,
     SpoolStats spoolStats,
     int statusCode,
-    TimeSpan sendDuration)
+    TimeSpan sendDuration,
+    ChunkMetadata chunk,
+    ChunkAck ack)
 {
     try
     {
@@ -238,6 +330,10 @@ static async Task TrySendRuntimeMetric(
             ["spool_file"] = Path.GetFileName(spoolFile),
             ["line_offset"] = lineOffset,
             ["next_line_offset"] = nextLineOffset,
+            ["chunk_id"] = chunk.ChunkId,
+            ["chunk_checksum"] = chunk.Checksum,
+            ["sequence_number"] = chunk.SequenceNumber,
+            ["ack_status"] = ack.Status,
             ["batch_size"] = batch.Lines.Count,
             ["batch_bytes"] = batch.Bytes,
             ["compressed_bytes"] = compressedBytes,
@@ -280,6 +376,22 @@ static string GetEndpointComputerName()
         ?? Environment.GetEnvironmentVariable("COMPUTERNAME")
         ?? Environment.MachineName
         ?? "";
+}
+
+static string GetAgentId()
+{
+    return Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
+        ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID")
+        ?? Environment.MachineName
+        ?? "unknown-agent";
+}
+
+static string GetHostId()
+{
+    return Environment.GetEnvironmentVariable("HOSTEYE_HOST_ID")
+        ?? Environment.GetEnvironmentVariable("VECTOR_HOST_ID")
+        ?? Environment.MachineName
+        ?? "unknown-host";
 }
 
 static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
@@ -529,6 +641,41 @@ static string Sha256Hex(string value)
 record Batch(List<string> Lines, int Bytes);
 record QuotaFile(string FullName, bool IsSent);
 record SpoolStats(long Bytes, int FileCount, int PendingFileCount);
+record ChunkMetadata(
+    string ChunkId,
+    string AgentId,
+    string HostId,
+    string Computer,
+    string SpoolFile,
+    int LineOffset,
+    int NextLineOffset,
+    int SequenceNumber,
+    int EventCount,
+    string Checksum);
+
+class ChunkAck
+{
+    [JsonPropertyName("ack")]
+    public bool Ack { get; set; }
+
+    [JsonPropertyName("commit")]
+    public bool Commit { get; set; }
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("chunk_id")]
+    public string ChunkId { get; set; } = "";
+
+    [JsonPropertyName("checksum")]
+    public string Checksum { get; set; } = "";
+
+    [JsonPropertyName("event_count")]
+    public int EventCount { get; set; }
+
+    [JsonPropertyName("sequence_number")]
+    public int SequenceNumber { get; set; }
+}
 
 class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception($"Backpressure {statusCode}")
 {

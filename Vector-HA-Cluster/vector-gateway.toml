@@ -56,8 +56,20 @@ if exists(.command_line) && is_string(.command_line) {
     .command_line = replace!(.command_line, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\s]*', "[REDACTED_SECRET]")
 }
 
+if exists(.event_data.CommandLine) && is_string(.event_data.CommandLine) {
+    .event_data.CommandLine = replace!(.event_data.CommandLine, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\s]*', "[REDACTED_SECRET]")
+}
+
+if exists(.event_data.ParentCommandLine) && is_string(.event_data.ParentCommandLine) {
+    .event_data.ParentCommandLine = replace!(.event_data.ParentCommandLine, r'(?i)(password|passwd|pwd|secret|token|apikey|api_key)[^\s]*', "[REDACTED_SECRET]")
+}
+
 if exists(.script_block_text) && is_string(.script_block_text) {
     .script_block_text = replace!(.script_block_text, r'(?i)(token|auth|key|secret|password|passwd|pwd)\s*=\s*[\x22\x27]?[^\s\x22\x27]+[\x22\x27]?', "[REDACTED_SECRET]")
+}
+
+if exists(.event_data.ScriptBlockText) && is_string(.event_data.ScriptBlockText) {
+    .event_data.ScriptBlockText = replace!(.event_data.ScriptBlockText, r'(?i)(token|auth|key|secret|password|passwd|pwd)\s*=\s*[\x22\x27]?[^\s\x22\x27]+[\x22\x27]?', "[REDACTED_SECRET]")
 }
 
 if exists(.user_name) && is_string(.user_name) {
@@ -81,12 +93,20 @@ type = "remap"
 inputs = ["route_runtime_metrics.windows_logs"]
 source = '''
 .kafka_timestamp = now()
+.timestamp = parse_timestamp(.timestamp, format: "%+") ?? now()
 .event_data_json = if exists(.event_data) { encode_json(.event_data) } else { "" }
 
 .agent_id = to_string(.agent_id) ?? ""
 .host_id = to_string(.host_id) ?? ""
 .os = to_string(.os) ?? ""
 .source_platform = to_string(.source_platform) ?? ""
+.schema_version = to_string(.schema_version) ?? ""
+.parser_status = to_string(.parser_status) ?? "unknown"
+.parser_error = to_string(.parser_error) ?? ""
+.validation_errors = to_string(.validation_errors) ?? ""
+.chunk_id = to_string(.chunk_id) ?? ""
+.chunk_checksum = to_string(.chunk_checksum) ?? ""
+.sequence_number = to_int(.sequence_number) ?? 0
 .computer = to_string(.computer) ?? ""
 .channel = to_string(.channel) ?? ""
 .event_id = to_int(.event_id) ?? 0
@@ -98,37 +118,134 @@ source = '''
 .path = to_string(.path) ?? ""
 .method = to_string(.method) ?? ""
 .source_type = to_string(.source_type) ?? ""
-.user_name = to_string(.user_name) ?? to_string(.event_data.User) ?? to_string(.event_data.SubjectUserName) ?? ""
-.user_id = to_string(.user_id) ?? to_string(.event_data.UserID) ?? to_string(.event_data.SubjectUserSid) ?? ""
-.rule_name = to_string(.rule_name) ?? to_string(.event_data.RuleName) ?? ""
-.process_guid = to_string(.process_guid) ?? to_string(.event_data.ProcessGuid) ?? ""
-.parent_process_guid = to_string(.parent_process_guid) ?? to_string(.event_data.ParentProcessGuid) ?? ""
+.user_name = to_string(.user_name) ?? ""
+if .user_name == "" {
+    .user_name = to_string(.event_data.User) ?? to_string(.event_data.SubjectUserName) ?? ""
+}
+.user_id = to_string(.user_id) ?? ""
+if .user_id == "" {
+    .user_id = to_string(.event_data.UserID) ?? to_string(.event_data.SubjectUserSid) ?? ""
+}
+.rule_name = to_string(.rule_name) ?? ""
+if .rule_name == "" {
+    .rule_name = to_string(.event_data.RuleName) ?? ""
+}
+.process_guid = to_string(.process_guid) ?? ""
+if .process_guid == "" {
+    .process_guid = to_string(.event_data.ProcessGuid) ?? ""
+}
+.parent_process_guid = to_string(.parent_process_guid) ?? ""
+if .parent_process_guid == "" {
+    .parent_process_guid = to_string(.event_data.ParentProcessGuid) ?? ""
+}
 .process_id = to_int(.process_id) ?? to_int(.event_data.ProcessId) ?? to_int(.event_data.ProcessID) ?? to_int(.event_data.NewProcessId) ?? 0
 .parent_process_id = to_int(.parent_process_id) ?? to_int(.event_data.ParentProcessId) ?? to_int(.event_data.ParentProcessID) ?? 0
 .target_process_id = to_int(.target_process_id) ?? to_int(.event_data.TargetProcessId) ?? to_int(.event_data.TargetProcessID) ?? 0
-.process_path = to_string(.process_path) ?? to_string(.event_data.Image) ?? to_string(.event_data.NewProcessName) ?? ""
-.parent_process_path = to_string(.parent_process_path) ?? to_string(.event_data.ParentImage) ?? to_string(.event_data.ParentProcessName) ?? ""
-.target_image = to_string(.target_image) ?? to_string(.event_data.TargetImage) ?? ""
-.current_directory = to_string(.current_directory) ?? to_string(.event_data.CurrentDirectory) ?? ""
-.command_line = to_string(.command_line) ?? to_string(.event_data.CommandLine) ?? ""
-.parent_command_line = to_string(.parent_command_line) ?? to_string(.event_data.ParentCommandLine) ?? ""
-.script_block_text = to_string(.script_block_text) ?? to_string(.event_data.ScriptBlockText) ?? ""
-.hashes = to_string(.hashes) ?? to_string(.event_data.Hashes) ?? ""
-.imphash = to_string(.imphash) ?? to_string(.event_data.Imphash) ?? to_string(.event_data.ImpHash) ?? ""
-.source_ip = to_string(.source_ip) ?? to_string(.event_data.SourceIp) ?? to_string(.event_data.SourceAddress) ?? ""
+.process_path = to_string(.process_path) ?? ""
+if .process_path == "" {
+    .process_path = to_string(.event_data.Image) ?? to_string(.event_data.SourceImage) ?? to_string(.event_data.NewProcessName) ?? ""
+}
+.parent_process_path = to_string(.parent_process_path) ?? ""
+if .parent_process_path == "" {
+    .parent_process_path = to_string(.event_data.ParentImage) ?? to_string(.event_data.ParentProcessName) ?? ""
+}
+.target_image = to_string(.target_image) ?? ""
+if .target_image == "" {
+    .target_image = to_string(.event_data.TargetImage) ?? ""
+}
+.current_directory = to_string(.current_directory) ?? ""
+if .current_directory == "" {
+    .current_directory = to_string(.event_data.CurrentDirectory) ?? ""
+}
+.command_line = to_string(.command_line) ?? ""
+if .command_line == "" {
+    .command_line = to_string(.event_data.CommandLine) ?? ""
+}
+.parent_command_line = to_string(.parent_command_line) ?? ""
+if .parent_command_line == "" {
+    .parent_command_line = to_string(.event_data.ParentCommandLine) ?? ""
+}
+.script_block_text = to_string(.script_block_text) ?? ""
+if .script_block_text == "" {
+    .script_block_text = to_string(.event_data.ScriptBlockText) ?? ""
+}
+.hashes = to_string(.hashes) ?? ""
+if .hashes == "" {
+    .hashes = to_string(.event_data.Hashes) ?? ""
+}
+.imphash = to_string(.imphash) ?? ""
+if .imphash == "" {
+    .imphash = to_string(.event_data.Imphash) ?? to_string(.event_data.ImpHash) ?? ""
+}
+.source_ip = to_string(.source_ip) ?? ""
+if .source_ip == "" {
+    .source_ip = to_string(.event_data.SourceIp) ?? to_string(.event_data.SourceIP) ?? to_string(.event_data.SourceAddress) ?? ""
+}
 .source_port = to_int(.source_port) ?? to_int(.event_data.SourcePort) ?? 0
-.destination_ip = to_string(.destination_ip) ?? to_string(.event_data.DestinationIp) ?? to_string(.event_data.DestAddress) ?? ""
+.destination_ip = to_string(.destination_ip) ?? ""
+if .destination_ip == "" {
+    .destination_ip = to_string(.event_data.DestinationIp) ?? to_string(.event_data.DestinationIP) ?? to_string(.event_data.DestAddress) ?? ""
+}
 .destination_port = to_int(.destination_port) ?? to_int(.event_data.DestinationPort) ?? to_int(.event_data.DestPort) ?? 0
-.protocol = to_string(.protocol) ?? to_string(.event_data.Protocol) ?? ""
-.initiated = to_string(.initiated) ?? to_string(.event_data.Initiated) ?? ""
-.dns_query = to_string(.dns_query) ?? to_string(.event_data.QueryName) ?? to_string(.event_data.Query) ?? ""
-.query_status = to_string(.query_status) ?? to_string(.event_data.QueryStatus) ?? ""
-.target_filename = to_string(.target_filename) ?? to_string(.event_data.TargetFilename) ?? ""
-.target_object = to_string(.target_object) ?? to_string(.event_data.TargetObject) ?? ""
-.target_process_guid = to_string(.target_process_guid) ?? to_string(.event_data.TargetProcessGuid) ?? ""
-.granted_access = to_string(.granted_access) ?? to_string(.event_data.GrantedAccess) ?? ""
-.call_trace = to_string(.call_trace) ?? to_string(.event_data.CallTrace) ?? ""
+.protocol = to_string(.protocol) ?? ""
+if .protocol == "" {
+    .protocol = to_string(.event_data.Protocol) ?? ""
+}
+.initiated = to_string(.initiated) ?? ""
+if .initiated == "" {
+    .initiated = to_string(.event_data.Initiated) ?? ""
+}
+.dns_query = to_string(.dns_query) ?? ""
+if .dns_query == "" {
+    .dns_query = to_string(.event_data.QueryName) ?? to_string(.event_data.Query) ?? ""
+}
+.query_status = to_string(.query_status) ?? ""
+if .query_status == "" {
+    .query_status = to_string(.event_data.QueryStatus) ?? ""
+}
+.target_filename = to_string(.target_filename) ?? ""
+if .target_filename == "" {
+    .target_filename = to_string(.event_data.TargetFilename) ?? ""
+}
+.target_object = to_string(.target_object) ?? ""
+if .target_object == "" {
+    .target_object = to_string(.event_data.TargetObject) ?? ""
+}
+.file_path = to_string(.file_path) ?? ""
+if .file_path == "" {
+    .file_path = .target_filename
+}
+.registry_key = to_string(.registry_key) ?? ""
+if .registry_key == "" {
+    .registry_key = .target_object
+}
+.process_name = to_string(.process_name) ?? ""
+if .process_name == "" {
+    process_path_for_name = to_string(.process_path)
+    process_name_match = parse_regex(process_path_for_name, r'(?P<name>[^\\\\]+)$') ?? {}
+    .process_name = to_string(process_name_match.name)
+    if .process_name == "" {
+        .process_name = process_path_for_name
+    }
+}
+.target_process_guid = to_string(.target_process_guid) ?? ""
+if .target_process_guid == "" {
+    .target_process_guid = to_string(.event_data.TargetProcessGuid) ?? ""
+}
+.granted_access = to_string(.granted_access) ?? ""
+if .granted_access == "" {
+    .granted_access = to_string(.event_data.GrantedAccess) ?? ""
+}
+.call_trace = to_string(.call_trace) ?? ""
+if .call_trace == "" {
+    .call_trace = to_string(.event_data.CallTrace) ?? ""
+}
 .idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
+.suppression_rule_id = to_string(.suppression_rule_id) ?? ""
+.suppression_rule_version = to_string(.suppression_rule_version) ?? ""
+.suppressed_count = to_int(.suppressed_count) ?? 0
+.first_seen = parse_timestamp(.first_seen, format: "%+") ?? .timestamp
+.last_seen = parse_timestamp(.last_seen, format: "%+") ?? .timestamp
 '''
 
 [transforms.prepare_shipper_metrics]
@@ -148,6 +265,10 @@ source = '''
 .spool_file = to_string(.spool_file) ?? ""
 .line_offset = to_int(.line_offset) ?? 0
 .next_line_offset = to_int(.next_line_offset) ?? 0
+.chunk_id = to_string(.chunk_id) ?? ""
+.chunk_checksum = to_string(.chunk_checksum) ?? ""
+.sequence_number = to_int(.sequence_number) ?? 0
+.ack_status = to_string(.ack_status) ?? ""
 .batch_size = to_int(.batch_size) ?? 0
 .batch_bytes = to_int(.batch_bytes) ?? 0
 .compressed_bytes = to_int(.compressed_bytes) ?? 0

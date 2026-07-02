@@ -204,6 +204,23 @@ if exists(.event_data) {
 .target_process_guid = to_string(.target_process_guid) ?? ""
 .granted_access = to_string(.granted_access) ?? to_string(.event_data.GrantedAccess) ?? ""
 .call_trace = to_string(.call_trace) ?? to_string(.event_data.CallTrace) ?? ""
+.file_path = to_string(.file_path) ?? ""
+if .file_path == "" {
+    .file_path = .target_filename
+}
+.registry_key = to_string(.registry_key) ?? ""
+if .registry_key == "" {
+    .registry_key = .target_object
+}
+.process_name = to_string(.process_name) ?? ""
+if .process_name == "" {
+    process_path_for_name = to_string(.process_path)
+    process_name_match = parse_regex(process_path_for_name, r'(?P<name>[^\\\\]+)$') ?? {}
+    .process_name = to_string(process_name_match.name)
+    if .process_name == "" {
+        .process_name = process_path_for_name
+    }
+}
 .idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
 '''
 

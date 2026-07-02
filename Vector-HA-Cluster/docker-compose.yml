@@ -12,6 +12,7 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
       - ./certs:/etc/nginx/certs:ro # Phân phối chứng chỉ mTLS an toàn vào Nginx
     depends_on:
+      - ingest-ack-gateway
       - vector-gateway-1
       - vector-gateway-2
       - dashboard-web
@@ -39,6 +40,28 @@ services:
       - ./vector-gateway.toml:/etc/vector/vector.toml:ro
       - ./soc_vault:/var/log/soc_vault # Đảm bảo tính sẵn sàng cao đồng bộ đĩa lưu trữ pháp chứng
     command: ["--config", "/etc/vector/vector.toml"]
+    networks:
+      - soc-network
+
+  ingest-ack-gateway:
+    image: node:20-alpine
+    container_name: hosteye-ingest-ack-gateway
+    working_dir: /app
+    command: ["node", "server.js"]
+    environment:
+      PORT: "8088"
+      VECTOR_URL: "http://vector-gateway-1:8686/"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      MAX_BODY_BYTES: "26214400"
+      NODE_ENV: "production"
+    ports:
+      - "127.0.0.1:8088:8088"
+    volumes:
+      - ../VectorIngestAckGateway:/app:ro
+    depends_on:
+      - clickhouse
+      - vector-gateway-1
+      - vector-gateway-2
     networks:
       - soc-network
 
@@ -124,6 +147,7 @@ services:
     command: ["node", "server.js"]
     environment:
       PORT: "5174"
+      HOSTEYE_API_TARGET: "http://hosteye-dashboard-api:5055"
       NODE_ENV: "production"
     ports:
       - "5174:5174"
