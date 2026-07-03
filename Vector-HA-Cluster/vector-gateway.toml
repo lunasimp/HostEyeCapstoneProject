@@ -240,7 +240,12 @@ if .granted_access == "" {
 if .call_trace == "" {
     .call_trace = to_string(.event_data.CallTrace) ?? ""
 }
-.idempotency_key = to_string(.idempotency_key) ?? sha2(encode_json(.), "SHA-256")
+event_key = to_string(.idempotency_key) ?? ""
+if event_key == "" {
+    .idempotency_key = sha2(encode_json(.), "SHA-256")
+} else {
+    .idempotency_key = event_key
+}
 .suppression_rule_id = to_string(.suppression_rule_id) ?? ""
 .suppression_rule_version = to_string(.suppression_rule_version) ?? ""
 .suppressed_count = to_int(.suppressed_count) ?? 0
@@ -265,15 +270,30 @@ source = '''
 .spool_file = to_string(.spool_file) ?? ""
 .line_offset = to_int(.line_offset) ?? 0
 .next_line_offset = to_int(.next_line_offset) ?? 0
+.byte_offset = to_int(.byte_offset) ?? 0
+.next_byte_offset = to_int(.next_byte_offset) ?? 0
 .chunk_id = to_string(.chunk_id) ?? ""
 .chunk_checksum = to_string(.chunk_checksum) ?? ""
 .sequence_number = to_int(.sequence_number) ?? 0
 .ack_status = to_string(.ack_status) ?? ""
+.lease_id = to_string(.lease_id) ?? ""
+.lease_issued_at = parse_timestamp(.lease_issued_at, format: "%+") ?? .metric_timestamp
+.lease_expires_at = parse_timestamp(.lease_expires_at, format: "%+") ?? .metric_timestamp
+.lease_ttl_seconds = to_int(.lease_ttl_seconds) ?? 0
+.max_batch_mb = to_float(.max_batch_mb) ?? 0.0
+.max_upload_rate_kbps = to_int(.max_upload_rate_kbps) ?? 0
+.planned_jitter_ms = to_int(.planned_jitter_ms) ?? 0
+.jitter_window_ms = to_int(.jitter_window_ms) ?? 0
+.scheduled_send_at = parse_timestamp(.scheduled_send_at, format: "%+") ?? .metric_timestamp
+.actual_send_at = parse_timestamp(.actual_send_at, format: "%+") ?? .metric_timestamp
+.send_started_at = parse_timestamp(.send_started_at, format: "%+") ?? .metric_timestamp
+.send_completed_at = parse_timestamp(.send_completed_at, format: "%+") ?? .metric_timestamp
+.jitter_delay_ms = to_int(.jitter_delay_ms) ?? .planned_jitter_ms
+.backoff_delay_ms = to_int(.backoff_delay_ms) ?? 0
+.next_retry_at = parse_timestamp(.next_retry_at, format: "%+") ?? .metric_timestamp
 .batch_size = to_int(.batch_size) ?? 0
 .batch_bytes = to_int(.batch_bytes) ?? 0
 .compressed_bytes = to_int(.compressed_bytes) ?? 0
-.planned_jitter_ms = to_int(.planned_jitter_ms) ?? 0
-.jitter_window_ms = to_int(.jitter_window_ms) ?? 0
 .retry_attempt = to_int(.retry_attempt) ?? 0
 .planned_backoff_ms = to_int(.planned_backoff_ms) ?? 0
 .spool_depth_bytes = to_int(.spool_depth_bytes) ?? 0

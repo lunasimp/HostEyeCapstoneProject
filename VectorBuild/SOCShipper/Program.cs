@@ -23,6 +23,8 @@ var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
 
 logger.Info($"HostEyeShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
 using var http = BuildHttpClient(config, logger);
+await TrySyncAgentConfig(config, http, state, logger);
+state.Save();
 using var cleanupCts = new CancellationTokenSource();
 var cleanupTask = config.MaxSpoolSizeMB > 0
     ? RunSpoolQuotaLoop(config, logger, cleanupCts.Token)
@@ -133,32 +135,42 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
     foreach (var file in files)
     {
         var checkpoint = state.GetCheckpoint(file);
-        var batch = await ReadBatch(file, checkpoint.LineOffset, config.MaxEvents, config.MaxBytes);
+        var startByteOffset = ResolveStartByteOffset(file, checkpoint, logger);
+        var batch = ReadBatch(file, checkpoint.LineOffset, startByteOffset, config.MaxEvents, config.MaxBytes);
         if (batch.Lines.Count == 0)
         {
-            TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset, logger);
+            TryArchiveEmptyOrFullyReadFile(file, batch.NextByteOffset, logger);
             continue;
         }
 
-        var jitterWindow = checkpoint.LineOffset == 0 ? config.NormalJitterWindowSeconds : Math.Min(config.RecoveryJitterWindowSeconds, Math.Max(config.NormalJitterWindowSeconds, config.RecoveryJitterWindowSeconds));
-        var jitter = StableJitterSeconds(endpointSeed + ":" + Path.GetFileName(file) + ":" + checkpoint.LineOffset, jitterWindow);
+        var jitterPlannedAt = DateTimeOffset.UtcNow;
+        var jitterWindow = batch.StartByteOffset == 0 ? config.NormalJitterWindowSeconds : Math.Min(config.RecoveryJitterWindowSeconds, Math.Max(config.NormalJitterWindowSeconds, config.RecoveryJitterWindowSeconds));
+        var jitter = StableJitterSeconds(endpointSeed + ":" + Path.GetFileName(file) + ":" + batch.StartByteOffset, jitterWindow);
+        var scheduledSendAt = jitterPlannedAt.AddSeconds(jitter);
         if (jitter > 0)
         {
-            logger.Info($"Applying deterministic send jitter {jitter}s for {Path.GetFileName(file)} offset={checkpoint.LineOffset}.");
+            logger.Info($"Applying deterministic send jitter {jitter}s for {Path.GetFileName(file)} byte_offset={batch.StartByteOffset}.");
             await Task.Delay(TimeSpan.FromSeconds(jitter));
         }
+        var actualSendAt = DateTimeOffset.UtcNow;
 
-        var payload = BuildChunkPayload(file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, out var chunk);
+        var lease = await TryRequestAdmission(config, http, logger, batch, spoolStats, retryAttempt);
+        EnsureUploadLeaseUsable(lease, batch);
+
+        var payload = BuildChunkPayload(config, file, batch, lease, out var chunk);
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         content.Headers.ContentEncoding.Add("gzip");
-        using var gzipped = await GzipContent.Create(content);
+        using var gzipped = await GzipContent.Create(content, lease.MaxUploadRateKbps);
+        EnsureUploadLeaseUsable(lease, batch);
         using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = gzipped };
         req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
 
-        logger.Info($"Sending chunk={chunk.ChunkId} file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} checksum={chunk.Checksum} bytes={Encoding.UTF8.GetByteCount(payload)}.");
+        logger.Info($"Sending chunk={chunk.ChunkId} file={Path.GetFileName(file)} byte_offset={batch.StartByteOffset} events={batch.Lines.Count} checksum={chunk.Checksum} lease={lease.LeaseId} rate_kbps={lease.MaxUploadRateKbps} bytes={Encoding.UTF8.GetByteCount(payload)}.");
+        var sendStartedAt = DateTimeOffset.UtcNow;
         var stopwatch = Stopwatch.StartNew();
         using var resp = await http.SendAsync(req);
         stopwatch.Stop();
+        var sendCompletedAt = DateTimeOffset.UtcNow;
         if ((int)resp.StatusCode == 429 || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
         {
             var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
@@ -170,18 +182,19 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
         }
 
         var ack = await ReadAndValidateAck(resp, chunk);
-        state.SetCheckpoint(file, checkpoint.LineOffset + batch.Lines.Count);
+        state.SetCheckpoint(file, batch.NextLineOffset, batch.NextByteOffset);
         state.Save();
-        logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} file={Path.GetFileName(file)} new_offset={checkpoint.LineOffset + batch.Lines.Count}.");
-        await TrySendRuntimeMetric(config, http, logger, file, checkpoint.LineOffset, checkpoint.LineOffset + batch.Lines.Count, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed, chunk, ack);
-        TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset + batch.Lines.Count, logger);
+        logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} file={Path.GetFileName(file)} next_byte_offset={batch.NextByteOffset} next_line_offset={batch.NextLineOffset}.");
+        var timing = new SendTiming(jitterPlannedAt, scheduledSendAt, actualSendAt, sendStartedAt, sendCompletedAt);
+        await TrySendRuntimeMetric(config, http, logger, file, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed, chunk, ack, timing);
+        TryArchiveEmptyOrFullyReadFile(file, batch.NextByteOffset, logger);
         return true;
     }
 
     return false;
 }
 
-static string BuildChunkPayload(string spoolFile, int lineOffset, int nextLineOffset, Batch batch, out ChunkMetadata chunk)
+static string BuildChunkPayload(ShipperConfig config, string spoolFile, Batch batch, UploadLease lease, out ChunkMetadata chunk)
 {
     var eventsJson = "[" + string.Join(",", batch.Lines) + "]";
     using var eventDoc = JsonDocument.Parse(eventsJson);
@@ -190,8 +203,8 @@ static string BuildChunkPayload(string spoolFile, int lineOffset, int nextLineOf
     var agentId = GetAgentId();
     var hostId = GetHostId();
     var computerName = GetEndpointComputerName();
-    var sequenceNumber = Math.Max(0, lineOffset);
-    var chunkId = Sha256Hex($"{agentId}|{hostId}|{computerName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{checksum}");
+    var sequenceNumber = Math.Max(0, batch.StartLineOffset);
+    var chunkId = Sha256Hex($"{agentId}|{hostId}|{computerName}|{Path.GetFileName(spoolFile)}|{batch.StartByteOffset}|{batch.NextByteOffset}|{checksum}");
 
     chunk = new ChunkMetadata(
         ChunkId: chunkId,
@@ -199,11 +212,19 @@ static string BuildChunkPayload(string spoolFile, int lineOffset, int nextLineOf
         HostId: hostId,
         Computer: computerName,
         SpoolFile: Path.GetFileName(spoolFile),
-        LineOffset: lineOffset,
-        NextLineOffset: nextLineOffset,
+        LineOffset: batch.StartLineOffset,
+        NextLineOffset: batch.NextLineOffset,
+        ByteOffset: batch.StartByteOffset,
+        NextByteOffset: batch.NextByteOffset,
         SequenceNumber: sequenceNumber,
         EventCount: batch.Lines.Count,
-        Checksum: checksum);
+        Checksum: checksum,
+        LeaseId: lease.LeaseId,
+        LeaseIssuedAt: lease.IssuedAtUtc,
+        LeaseExpiresAt: lease.ExpiresAtUtc,
+        LeaseTtlSeconds: lease.LeaseTtlSeconds,
+        MaxBatchMb: lease.MaxBatchMb,
+        MaxUploadRateKbps: lease.MaxUploadRateKbps);
 
     using var stream = new MemoryStream();
     using (var writer = new Utf8JsonWriter(stream))
@@ -216,11 +237,25 @@ static string BuildChunkPayload(string spoolFile, int lineOffset, int nextLineOf
         writer.WriteString("host_id", chunk.HostId);
         writer.WriteString("computer", chunk.Computer);
         writer.WriteString("source_platform", "hosteye_windows_endpoint");
+        writer.WriteString("shipper_version", typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0");
         writer.WriteString("spool_file", chunk.SpoolFile);
         writer.WriteNumber("line_offset", chunk.LineOffset);
         writer.WriteNumber("next_line_offset", chunk.NextLineOffset);
+        writer.WriteNumber("byte_offset", chunk.ByteOffset);
+        writer.WriteNumber("next_byte_offset", chunk.NextByteOffset);
         writer.WriteNumber("sequence_number", chunk.SequenceNumber);
         writer.WriteNumber("event_count", chunk.EventCount);
+        writer.WriteNumber("normal_jitter_window_ms", Math.Max(0, config.NormalJitterWindowSeconds) * 1000);
+        writer.WriteNumber("recovery_jitter_window_ms", Math.Max(0, config.RecoveryJitterWindowSeconds) * 1000);
+        writer.WriteNumber("max_events", Math.Max(0, config.MaxEvents));
+        writer.WriteNumber("max_bytes", Math.Max(0, config.MaxBytes));
+        writer.WriteNumber("batch_bytes", batch.Bytes);
+        writer.WriteString("lease_id", chunk.LeaseId);
+        writer.WriteString("lease_issued_at", chunk.LeaseIssuedAt.ToString("O"));
+        writer.WriteString("lease_expires_at", chunk.LeaseExpiresAt.ToString("O"));
+        writer.WriteNumber("lease_ttl_seconds", chunk.LeaseTtlSeconds);
+        writer.WriteNumber("max_batch_mb", chunk.MaxBatchMb);
+        writer.WriteNumber("max_upload_rate_kbps", chunk.MaxUploadRateKbps);
         writer.WriteString("checksum", chunk.Checksum);
         writer.WriteString("checksum_algorithm", "sha256");
         writer.WriteString("created_at", DateTimeOffset.UtcNow.ToString("O"));
@@ -266,29 +301,308 @@ static async Task<ChunkAck> ReadAndValidateAck(HttpResponseMessage resp, ChunkMe
     {
         throw new Exception($"Gateway ACK event_count mismatch for chunk={chunk.ChunkId}. expected={chunk.EventCount} actual={ack.EventCount}");
     }
+    if (!string.IsNullOrWhiteSpace(chunk.LeaseId) &&
+        !string.Equals(ack.LeaseId, chunk.LeaseId, StringComparison.OrdinalIgnoreCase))
+    {
+        throw new Exception($"Gateway ACK lease_id mismatch for chunk={chunk.ChunkId}. expected={chunk.LeaseId} actual={ack.LeaseId}");
+    }
 
     return ack;
 }
 
-static async Task<Batch> ReadBatch(string file, int skipLines, int maxEvents, int maxBytes)
+static async Task TrySyncAgentConfig(ShipperConfig config, HttpClient http, ShipperState state, FileLogger logger)
+{
+    if (!config.EnableConfigSync) return;
+    var configUri = string.IsNullOrWhiteSpace(config.ConfigUri)
+        ? DeriveEndpointUri(config.GatewayUri, "/api/v1/agent/config")
+        : config.ConfigUri;
+
+    try
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Get, configUri);
+        if (!string.IsNullOrWhiteSpace(state.AgentConfigEtag))
+        {
+            req.Headers.TryAddWithoutValidation("If-None-Match", state.AgentConfigEtag);
+        }
+        using var resp = await http.SendAsync(req);
+        if (resp.StatusCode == HttpStatusCode.NotModified)
+        {
+            logger.Info($"Agent config unchanged etag={state.AgentConfigEtag}.");
+            return;
+        }
+        if (!resp.IsSuccessStatusCode)
+        {
+            logger.Warn($"Agent config sync skipped: {(int)resp.StatusCode} {resp.ReasonPhrase}.");
+            return;
+        }
+
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+        ApplyServerConfig(config, root);
+        if (resp.Headers.ETag is not null)
+        {
+            state.AgentConfigEtag = resp.Headers.ETag.Tag;
+        }
+        logger.Info($"Agent config synced from {configUri}; etag={state.AgentConfigEtag}; MaxEvents={config.MaxEvents}; MaxBytes={config.MaxBytes}; NormalJitter={config.NormalJitterWindowSeconds}s; RecoveryJitter={config.RecoveryJitterWindowSeconds}s.");
+    }
+    catch (Exception ex)
+    {
+        logger.Warn($"Agent config sync skipped: {ex.Message}");
+    }
+}
+
+static void ApplyServerConfig(ShipperConfig config, JsonElement root)
+{
+    if (TryGetInt(root, "max_events", out var maxEvents) && maxEvents > 0) config.MaxEvents = maxEvents;
+    if (TryGetInt(root, "max_bytes", out var maxBytes) && maxBytes > 0) config.MaxBytes = maxBytes;
+    if (TryGetInt(root, "normal_jitter_window_ms", out var normalJitterMs)) config.NormalJitterWindowSeconds = MillisecondsToSeconds(normalJitterMs);
+    if (TryGetInt(root, "recovery_jitter_window_ms", out var recoveryJitterMs)) config.RecoveryJitterWindowSeconds = MillisecondsToSeconds(recoveryJitterMs);
+}
+
+static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpClient http, FileLogger logger, Batch batch, SpoolStats spoolStats, int retryAttempt)
+{
+    if (!config.EnableAdmissionControl) return UploadLease.Disabled();
+    var admissionUri = string.IsNullOrWhiteSpace(config.AdmissionUri)
+        ? DeriveEndpointUri(config.GatewayUri, "/api/v1/admission/request")
+        : config.AdmissionUri;
+
+    var request = new Dictionary<string, object?>
+    {
+        ["agent_id"] = GetAgentId(),
+        ["host_id"] = GetHostId(),
+        ["computer"] = GetEndpointComputerName(),
+        ["queue_used_mb"] = Math.Round(spoolStats.Bytes / 1024d / 1024d, 3),
+        ["next_chunk_size_mb"] = Math.Round(batch.Bytes / 1024d / 1024d, 3),
+        ["retry_count"] = retryAttempt,
+        ["rank"] = Math.Max(0, retryAttempt)
+    };
+
+    try
+    {
+        using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+        using var resp = await http.PostAsync(admissionUri, content);
+        var body = await resp.Content.ReadAsStringAsync();
+        if (resp.StatusCode == HttpStatusCode.NotFound || resp.StatusCode == HttpStatusCode.MethodNotAllowed)
+        {
+            if (config.RequireUploadLease)
+            {
+                throw new BackpressureException(503, 30);
+            }
+            logger.Warn($"Admission endpoint unavailable at {admissionUri}; continuing without enforced lease.");
+            return UploadLease.Disabled();
+        }
+        if ((int)resp.StatusCode == 429 || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
+        {
+            var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
+            throw new BackpressureException((int)resp.StatusCode, retryAfter is null ? 15 : (int)Math.Ceiling(retryAfter.Value));
+        }
+        if (!resp.IsSuccessStatusCode)
+        {
+            if (config.RequireUploadLease)
+            {
+                throw new Exception($"Admission request failed: {(int)resp.StatusCode} {resp.ReasonPhrase}; body={body}");
+            }
+            logger.Warn($"Admission request returned {(int)resp.StatusCode} {resp.ReasonPhrase}; continuing without enforced lease. Body={body}");
+            return UploadLease.Disabled();
+        }
+
+        using var doc = JsonDocument.Parse(body);
+        var admission = doc.RootElement.TryGetProperty("admission", out var value) ? value.GetString() : "";
+        if (string.Equals(admission, "ng", StringComparison.OrdinalIgnoreCase))
+        {
+            var retryAfter = doc.RootElement.TryGetProperty("retry_after_seconds", out var retryValue) && retryValue.TryGetInt32(out var seconds)
+                ? seconds
+                : 15;
+            throw new BackpressureException(429, retryAfter);
+        }
+        var issuedAt = DateTimeOffset.UtcNow;
+        var ttlSeconds = GetJsonInt(doc.RootElement, "lease_ttl_seconds");
+        var expiresAt = GetJsonDateTimeOffset(doc.RootElement, "lease_expires_at") ?? issuedAt.AddSeconds(Math.Max(1, ttlSeconds));
+        var lease = new UploadLease(
+            LeaseId: GetJsonString(doc.RootElement, "lease_id"),
+            IssuedAtUtc: issuedAt,
+            ExpiresAtUtc: expiresAt,
+            LeaseTtlSeconds: ttlSeconds,
+            MaxBatchMb: GetJsonDouble(doc.RootElement, "max_batch_mb"),
+            MaxUploadRateKbps: GetJsonInt(doc.RootElement, "max_upload_rate_kbps"),
+            Required: config.RequireUploadLease);
+
+        if (config.RequireUploadLease && string.IsNullOrWhiteSpace(lease.LeaseId))
+        {
+            throw new Exception("Admission response did not include lease_id.");
+        }
+
+        EnsureUploadLeaseUsable(lease, batch);
+        logger.Info($"Admission OK lease={lease.LeaseId} ttl={lease.LeaseTtlSeconds}s max_batch_mb={lease.MaxBatchMb:F3} max_upload_rate_kbps={lease.MaxUploadRateKbps}.");
+        return lease;
+    }
+    catch (BackpressureException)
+    {
+        throw;
+    }
+    catch (Exception ex)
+    {
+        if (config.RequireUploadLease)
+        {
+            throw;
+        }
+        logger.Warn($"Admission request skipped: {ex.Message}");
+        return UploadLease.Disabled();
+    }
+}
+
+static void EnsureUploadLeaseUsable(UploadLease lease, Batch batch)
+{
+    if (!lease.Required) return;
+    if (string.IsNullOrWhiteSpace(lease.LeaseId))
+    {
+        throw new Exception("Upload lease is required but lease_id is empty.");
+    }
+    if (lease.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+    {
+        throw new BackpressureException(429, 5);
+    }
+    if (lease.MaxBatchMb > 0)
+    {
+        var batchMb = batch.Bytes / 1024d / 1024d;
+        if (batchMb > lease.MaxBatchMb)
+        {
+            throw new Exception($"Batch size {batchMb:F3} MB exceeds upload lease max_batch_mb={lease.MaxBatchMb:F3}.");
+        }
+    }
+}
+
+static string DeriveEndpointUri(string gatewayUri, string path)
+{
+    if (!Uri.TryCreate(gatewayUri, UriKind.Absolute, out var uri)) return path;
+    var builder = new UriBuilder(uri)
+    {
+        Path = path,
+        Query = "",
+        Fragment = ""
+    };
+    return builder.Uri.ToString();
+}
+
+static bool TryGetInt(JsonElement root, string name, out int value)
+{
+    value = 0;
+    if (!root.TryGetProperty(name, out var property)) return false;
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetInt32(out value)) return true;
+    return property.ValueKind == JsonValueKind.String && int.TryParse(property.GetString(), out value);
+}
+
+static int GetJsonInt(JsonElement root, string name)
+{
+    return TryGetInt(root, name, out var value) ? value : 0;
+}
+
+static double GetJsonDouble(JsonElement root, string name)
+{
+    if (!root.TryGetProperty(name, out var property)) return 0;
+    if (property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var value)) return value;
+    return property.ValueKind == JsonValueKind.String && double.TryParse(property.GetString(), out value) ? value : 0;
+}
+
+static string GetJsonString(JsonElement root, string name)
+{
+    return root.TryGetProperty(name, out var property) ? property.GetString() ?? "" : "";
+}
+
+static DateTimeOffset? GetJsonDateTimeOffset(JsonElement root, string name)
+{
+    if (!root.TryGetProperty(name, out var property)) return null;
+    var value = property.GetString();
+    return DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+}
+
+static int MillisecondsToSeconds(int value)
+{
+    return value <= 0 ? 0 : Math.Max(1, (int)Math.Ceiling(value / 1000d));
+}
+
+static long ResolveStartByteOffset(string file, FileCheckpoint checkpoint, FileLogger logger)
+{
+    if (checkpoint.ByteOffset > 0) return checkpoint.ByteOffset;
+    if (checkpoint.LineOffset <= 0) return 0;
+
+    var migratedOffset = ComputeByteOffsetForLine(file, checkpoint.LineOffset);
+    logger.Info($"Migrated checkpoint for {Path.GetFileName(file)} line_offset={checkpoint.LineOffset} to byte_offset={migratedOffset}.");
+    return migratedOffset;
+}
+
+static long ComputeByteOffsetForLine(string file, int targetLineOffset)
+{
+    if (targetLineOffset <= 0) return 0;
+    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+    var line = 0;
+    while (stream.Position < stream.Length)
+    {
+        var value = stream.ReadByte();
+        if (value == -1) break;
+        if (value == '\n')
+        {
+            line++;
+            if (line >= targetLineOffset) return stream.Position;
+        }
+    }
+    return stream.Length;
+}
+
+static Batch ReadBatch(string file, int startLineOffset, long startByteOffset, int maxEvents, int maxBytes)
 {
     var lines = new List<string>();
     var bytes = 2;
-    var index = 0;
+    var nextByteOffset = Math.Max(0, startByteOffset);
+    var nextLineOffset = Math.Max(0, startLineOffset);
     using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-    using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-    while (await reader.ReadLineAsync() is { } line)
+    if (nextByteOffset > stream.Length)
     {
-        if (index++ < skipLines) continue;
-        if (string.IsNullOrWhiteSpace(line)) continue;
+        return new Batch(lines, bytes, startByteOffset, stream.Length, startLineOffset, startLineOffset);
+    }
+    stream.Seek(nextByteOffset, SeekOrigin.Begin);
+
+    while (stream.Position < stream.Length)
+    {
+        var lineStart = stream.Position;
+        using var lineBuffer = new MemoryStream();
+        while (stream.Position < stream.Length)
+        {
+            var value = stream.ReadByte();
+            if (value == -1 || value == '\n') break;
+            lineBuffer.WriteByte((byte)value);
+        }
+
+        var lineEnd = stream.Position;
+        var rawLine = lineBuffer.ToArray();
+        if (rawLine.Length > 0 && rawLine[^1] == '\r')
+        {
+            Array.Resize(ref rawLine, rawLine.Length - 1);
+        }
+        if (lineStart == 0 && rawLine.Length >= 3 && rawLine[0] == 0xEF && rawLine[1] == 0xBB && rawLine[2] == 0xBF)
+        {
+            rawLine = rawLine[3..];
+        }
+
+        var line = Encoding.UTF8.GetString(rawLine);
+        if (string.IsNullOrWhiteSpace(line))
+        {
+            nextByteOffset = lineEnd;
+            nextLineOffset++;
+            continue;
+        }
         using (JsonDocument.Parse(line)) { }
         var lineBytes = Encoding.UTF8.GetByteCount(line) + (lines.Count > 0 ? 1 : 0);
         if (lines.Count > 0 && (lines.Count >= maxEvents || bytes + lineBytes > maxBytes)) break;
         lines.Add(line);
         bytes += lineBytes;
+        nextByteOffset = lineEnd;
+        nextLineOffset++;
         if (lines.Count >= maxEvents || bytes >= maxBytes) break;
     }
-    return new Batch(lines, bytes);
+
+    return new Batch(lines, bytes, startByteOffset, nextByteOffset, startLineOffset, nextLineOffset);
 }
 
 static async Task TrySendRuntimeMetric(
@@ -296,8 +610,6 @@ static async Task TrySendRuntimeMetric(
     HttpClient http,
     FileLogger logger,
     string spoolFile,
-    int lineOffset,
-    int nextLineOffset,
     Batch batch,
     long compressedBytes,
     int plannedJitterSeconds,
@@ -307,7 +619,8 @@ static async Task TrySendRuntimeMetric(
     int statusCode,
     TimeSpan sendDuration,
     ChunkMetadata chunk,
-    ChunkAck ack)
+    ChunkAck ack,
+    SendTiming timing)
 {
     try
     {
@@ -328,17 +641,36 @@ static async Task TrySendRuntimeMetric(
             ["gateway_uri"] = config.GatewayUri,
             ["spool_directory"] = config.SpoolDirectory,
             ["spool_file"] = Path.GetFileName(spoolFile),
-            ["line_offset"] = lineOffset,
-            ["next_line_offset"] = nextLineOffset,
+            ["line_offset"] = batch.StartLineOffset,
+            ["next_line_offset"] = batch.NextLineOffset,
+            ["byte_offset"] = batch.StartByteOffset,
+            ["next_byte_offset"] = batch.NextByteOffset,
             ["chunk_id"] = chunk.ChunkId,
             ["chunk_checksum"] = chunk.Checksum,
             ["sequence_number"] = chunk.SequenceNumber,
             ["ack_status"] = ack.Status,
+            ["lease_id"] = chunk.LeaseId,
+            ["lease_issued_at"] = chunk.LeaseIssuedAt.ToString("O"),
+            ["lease_expires_at"] = chunk.LeaseExpiresAt.ToString("O"),
+            ["lease_ttl_seconds"] = chunk.LeaseTtlSeconds,
+            ["max_batch_mb"] = chunk.MaxBatchMb,
+            ["max_upload_rate_kbps"] = chunk.MaxUploadRateKbps,
             ["batch_size"] = batch.Lines.Count,
             ["batch_bytes"] = batch.Bytes,
             ["compressed_bytes"] = compressedBytes,
             ["planned_jitter_ms"] = plannedJitterSeconds * 1000,
             ["jitter_window_ms"] = jitterWindowSeconds * 1000,
+            ["normal_jitter_window_ms"] = Math.Max(0, config.NormalJitterWindowSeconds) * 1000,
+            ["recovery_jitter_window_ms"] = Math.Max(0, config.RecoveryJitterWindowSeconds) * 1000,
+            ["max_events"] = Math.Max(0, config.MaxEvents),
+            ["max_bytes"] = Math.Max(0, config.MaxBytes),
+            ["scheduled_send_at"] = timing.ScheduledSendAt.ToString("O"),
+            ["actual_send_at"] = timing.ActualSendAt.ToString("O"),
+            ["send_started_at"] = timing.SendStartedAt.ToString("O"),
+            ["send_completed_at"] = timing.SendCompletedAt.ToString("O"),
+            ["jitter_delay_ms"] = Math.Max(0, (int)Math.Round((timing.ActualSendAt - timing.JitterPlannedAt).TotalMilliseconds)),
+            ["backoff_delay_ms"] = 0,
+            ["next_retry_at"] = timing.SendCompletedAt.ToString("O"),
             ["retry_attempt"] = retryAttempt,
             ["planned_backoff_ms"] = 0,
             ["spool_depth_bytes"] = spoolStats.Bytes,
@@ -351,7 +683,7 @@ static async Task TrySendRuntimeMetric(
             ["success"] = statusCode >= 200 && statusCode < 300,
             ["data_loss"] = maxSpoolBytes > 0 && spoolStats.Bytes > maxSpoolBytes,
             ["message"] = "HostEyeShipper batch sent",
-            ["idempotency_key"] = Sha256Hex($"{computerName}|{Path.GetFileName(spoolFile)}|{lineOffset}|{nextLineOffset}|{metricTimestamp:O}")
+            ["idempotency_key"] = Sha256Hex($"{computerName}|{Path.GetFileName(spoolFile)}|{batch.StartByteOffset}|{batch.NextByteOffset}|{metricTimestamp:O}")
         };
 
         var payload = "[" + JsonSerializer.Serialize(metric) + "]";
@@ -530,12 +862,12 @@ static IEnumerable<QuotaFile> GetDeletionCandidates(ShipperConfig config)
     }
 }
 
-static void TryArchiveEmptyOrFullyReadFile(string file, int lineOffset, FileLogger logger)
+static void TryArchiveEmptyOrFullyReadFile(string file, long byteOffset, FileLogger logger)
 {
     try
     {
-        var total = File.ReadLines(file).Count(l => !string.IsNullOrWhiteSpace(l));
-        if (total == 0 || lineOffset >= total)
+        var length = new FileInfo(file).Length;
+        if (length == 0 || byteOffset >= length)
         {
             var sentDir = Path.Combine(Path.GetDirectoryName(file)!, "sent");
             Directory.CreateDirectory(sentDir);
@@ -638,9 +970,15 @@ static string Sha256Hex(string value)
     return Convert.ToHexString(hash).ToLowerInvariant();
 }
 
-record Batch(List<string> Lines, int Bytes);
+record Batch(List<string> Lines, int Bytes, long StartByteOffset, long NextByteOffset, int StartLineOffset, int NextLineOffset);
 record QuotaFile(string FullName, bool IsSent);
 record SpoolStats(long Bytes, int FileCount, int PendingFileCount);
+record SendTiming(
+    DateTimeOffset JitterPlannedAt,
+    DateTimeOffset ScheduledSendAt,
+    DateTimeOffset ActualSendAt,
+    DateTimeOffset SendStartedAt,
+    DateTimeOffset SendCompletedAt);
 record ChunkMetadata(
     string ChunkId,
     string AgentId,
@@ -649,9 +987,36 @@ record ChunkMetadata(
     string SpoolFile,
     int LineOffset,
     int NextLineOffset,
+    long ByteOffset,
+    long NextByteOffset,
     int SequenceNumber,
     int EventCount,
-    string Checksum);
+    string Checksum,
+    string LeaseId,
+    DateTimeOffset LeaseIssuedAt,
+    DateTimeOffset LeaseExpiresAt,
+    int LeaseTtlSeconds,
+    double MaxBatchMb,
+    int MaxUploadRateKbps);
+
+record UploadLease(
+    string LeaseId,
+    DateTimeOffset IssuedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    int LeaseTtlSeconds,
+    double MaxBatchMb,
+    int MaxUploadRateKbps,
+    bool Required)
+{
+    public static UploadLease Disabled() => new(
+        LeaseId: "",
+        IssuedAtUtc: DateTimeOffset.UtcNow,
+        ExpiresAtUtc: DateTimeOffset.MaxValue,
+        LeaseTtlSeconds: 0,
+        MaxBatchMb: 0,
+        MaxUploadRateKbps: 0,
+        Required: false);
+}
 
 class ChunkAck
 {
@@ -675,6 +1040,9 @@ class ChunkAck
 
     [JsonPropertyName("sequence_number")]
     public int SequenceNumber { get; set; }
+
+    [JsonPropertyName("lease_id")]
+    public string LeaseId { get; set; } = "";
 }
 
 class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception($"Backpressure {statusCode}")
@@ -686,6 +1054,8 @@ class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception(
 class ShipperConfig
 {
     public string GatewayUri { get; set; } = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry";
+    public string ConfigUri { get; set; } = "";
+    public string AdmissionUri { get; set; } = "";
     public string SpoolDirectory { get; set; } = "C:\\ProgramData\\HostEye\\spool";
     public string StateDirectory { get; set; } = "C:\\ProgramData\\HostEye\\shipper_state";
     public string LogDirectory { get; set; } = "C:\\ProgramData\\HostEye\\logs";
@@ -704,6 +1074,9 @@ class ShipperConfig
     public int SpoolCheckIntervalSeconds { get; set; } = 30;
     public bool PreferDeletingSentFirst { get; set; } = true;
     public int SentRetentionDays { get; set; } = 2;
+    public bool EnableConfigSync { get; set; } = true;
+    public bool EnableAdmissionControl { get; set; } = true;
+    public bool RequireUploadLease { get; set; } = true;
     public bool RunOnce { get; set; }
 
     public static ShipperConfig Load(string path)
@@ -717,6 +1090,7 @@ class ShipperConfig
 class ShipperState
 {
     public Dictionary<string, FileCheckpoint> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string AgentConfigEtag { get; set; } = "";
     [JsonIgnore]
     public string PathOnDisk { get; private set; } = "";
 
@@ -734,16 +1108,16 @@ class ShipperState
         var key = System.IO.Path.GetFullPath(file);
         if (!Files.TryGetValue(key, out var cp))
         {
-            cp = new FileCheckpoint { LineOffset = 0 };
+            cp = new FileCheckpoint { LineOffset = 0, ByteOffset = 0 };
             Files[key] = cp;
         }
         return cp;
     }
 
-    public void SetCheckpoint(string file, int lineOffset)
+    public void SetCheckpoint(string file, int lineOffset, long byteOffset)
     {
         var key = System.IO.Path.GetFullPath(file);
-        Files[key] = new FileCheckpoint { LineOffset = lineOffset, UpdatedAtUtc = DateTimeOffset.UtcNow };
+        Files[key] = new FileCheckpoint { LineOffset = lineOffset, ByteOffset = byteOffset, UpdatedAtUtc = DateTimeOffset.UtcNow };
     }
 
     public void Save()
@@ -755,6 +1129,7 @@ class ShipperState
 class FileCheckpoint
 {
     public int LineOffset { get; set; }
+    public long ByteOffset { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 
@@ -776,17 +1151,19 @@ class GzipContent : HttpContent
 {
     readonly HttpContent _inner;
     readonly MemoryStream _compressed;
+    readonly int _maxUploadRateKbps;
     public long CompressedLength => _compressed.Length;
 
-    GzipContent(HttpContent inner, MemoryStream compressed)
+    GzipContent(HttpContent inner, MemoryStream compressed, int maxUploadRateKbps)
     {
         _inner = inner;
         _compressed = compressed;
+        _maxUploadRateKbps = Math.Max(0, maxUploadRateKbps);
         Headers.ContentType = inner.Headers.ContentType;
         Headers.ContentEncoding.Add("gzip");
     }
 
-    public static async Task<GzipContent> Create(HttpContent inner)
+    public static async Task<GzipContent> Create(HttpContent inner, int maxUploadRateKbps = 0)
     {
         var compressed = new MemoryStream();
         await using (var gzip = new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
@@ -794,10 +1171,35 @@ class GzipContent : HttpContent
             await inner.CopyToAsync(gzip);
         }
         compressed.Position = 0;
-        return new GzipContent(inner, compressed);
+        return new GzipContent(inner, compressed, maxUploadRateKbps);
     }
 
-    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => _compressed.CopyToAsync(stream);
+    protected override async Task SerializeToStreamAsync(Stream stream, TransportContext? context)
+    {
+        _compressed.Position = 0;
+        if (_maxUploadRateKbps <= 0)
+        {
+            await _compressed.CopyToAsync(stream);
+            return;
+        }
+
+        var bytesPerSecond = Math.Max(1024L, _maxUploadRateKbps * 1024L);
+        var buffer = new byte[8192];
+        long sent = 0;
+        var stopwatch = Stopwatch.StartNew();
+        int read;
+        while ((read = await _compressed.ReadAsync(buffer)) > 0)
+        {
+            await stream.WriteAsync(buffer.AsMemory(0, read));
+            sent += read;
+            var expectedElapsedMs = sent * 1000d / bytesPerSecond;
+            var delayMs = expectedElapsedMs - stopwatch.Elapsed.TotalMilliseconds;
+            if (delayMs > 1)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(delayMs));
+            }
+        }
+    }
     protected override bool TryComputeLength(out long length)
     {
         length = _compressed.Length;

@@ -22,6 +22,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/overview\/event-types$/, overviewEventTypes],
   ["GET", /^\/api\/dashboard\/overview\/security-timeline$/, overviewSecurityTimeline],
   ["GET", /^\/api\/dashboard\/hosts\/summary$/, hostsSummary],
+  ["GET", /^\/api\/dashboard\/agents\/registered$/, registeredAgents],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -212,6 +213,47 @@ async function hostsSummary(ctx, res) {
   });
 
   sendJson(res, 200, { hosts, groups });
+}
+
+async function registeredAgents(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const rows = await queryRows(`
+    SELECT
+      agent_id AS agentId,
+      host_id AS hostId,
+      computer,
+      argMax(cert_serial, last_seen) AS certSerial,
+      min(first_seen) AS firstSeen,
+      max(last_seen) AS lastSeen,
+      argMaxIf(schema_version, last_seen, schema_version != 'legacy') AS schemaVersion,
+      argMax(source_platform, last_seen) AS sourcePlatform,
+      argMax(shipper_version, last_seen) AS shipperVersion,
+      argMax(status, last_seen) AS status,
+      argMax(enrollment_status, last_seen) AS enrollmentStatus,
+      argMax(last_chunk_id, last_seen) AS lastChunkId,
+      argMax(last_ack_status, last_seen) AS lastAckStatus,
+      argMax(last_event_count, last_seen) AS lastEventCount,
+      argMax(normal_jitter_window_ms, last_seen) AS normalJitterWindowMs,
+      argMax(recovery_jitter_window_ms, last_seen) AS recoveryJitterWindowMs,
+      argMax(max_events, last_seen) AS maxEvents,
+      argMax(max_bytes, last_seen) AS maxBytes
+    FROM default.registered_agents
+    GROUP BY agent_id, host_id, computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => {
+      const status = hostStatus(row.lastSeen);
+      return {
+        ...row,
+        statusLevel: status.level,
+        statusLabel: status.label,
+        ageSeconds: status.ageSeconds,
+      };
+    }),
+  });
 }
 
 async function processTopProcesses(ctx, res) {
@@ -477,6 +519,11 @@ async function jitterHosts(ctx, res) {
       max(spool_depth_bytes) AS spoolDepthBytes,
       max(pending_file_count) AS pendingFileCount,
       max(send_duration_ms) AS maxSendDurationMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
       max(metric_timestamp) AS lastSeen
     FROM default.shipper_runtime_metrics
     ${where.sql}
@@ -543,6 +590,8 @@ async function chunksHosts(ctx, res) {
       argMax(spool_file, metric_timestamp) AS lastChunk,
       argMax(line_offset, metric_timestamp) AS lineOffset,
       argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
+      argMax(byte_offset, metric_timestamp) AS byteOffset,
+      argMax(next_byte_offset, metric_timestamp) AS nextByteOffset,
       argMax(batch_size, metric_timestamp) AS batchSize,
       argMax(batch_bytes, metric_timestamp) AS batchBytes,
       argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
@@ -551,6 +600,18 @@ async function chunksHosts(ctx, res) {
       argMax(data_loss, metric_timestamp) AS dataLoss,
       argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
       argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      argMax(backoff_delay_ms, metric_timestamp) AS backoffDelayMs,
+      argMax(next_retry_at, metric_timestamp) AS nextRetryAt,
+      argMax(lease_id, metric_timestamp) AS leaseId,
+      argMax(lease_expires_at, metric_timestamp) AS leaseExpiresAt,
+      argMax(lease_ttl_seconds, metric_timestamp) AS leaseTtlSeconds,
+      argMax(max_batch_mb, metric_timestamp) AS maxBatchMb,
+      argMax(max_upload_rate_kbps, metric_timestamp) AS maxUploadRateKbps,
       argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
       argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
       argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
@@ -714,11 +775,18 @@ async function hostsHeatmapCell(ctx, res) {
         spool_file AS spoolFile,
         line_offset AS lineOffset,
         next_line_offset AS nextLineOffset,
+        byte_offset AS byteOffset,
+        next_byte_offset AS nextByteOffset,
         batch_size AS batchSize,
         batch_bytes AS batchBytes,
         compressed_bytes AS compressedBytes,
         planned_jitter_ms AS plannedJitterMs,
         jitter_window_ms AS jitterWindowMs,
+        lease_id AS leaseId,
+        lease_expires_at AS leaseExpiresAt,
+        lease_ttl_seconds AS leaseTtlSeconds,
+        max_batch_mb AS maxBatchMb,
+        max_upload_rate_kbps AS maxUploadRateKbps,
         retry_attempt AS retryAttempt,
         planned_backoff_ms AS plannedBackoffMs,
         spool_depth_bytes AS spoolDepthBytes,

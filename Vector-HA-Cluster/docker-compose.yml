@@ -53,11 +53,21 @@ services:
       VECTOR_URL: "http://vector-gateway-1:8686/"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
+      RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
+      CONFIG_ARTIFACT_DIR: "/var/lib/hosteye/agent_config"
+      AGENT_CONFIG_VERSION: "1.0.0"
+      ADMISSION_MAX_ACTIVE_UPLOADS: "64"
+      ADMISSION_LEASE_TTL_SECONDS: "30"
+      ADMISSION_MAX_BATCH_MB: "5"
+      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
+      REQUIRE_UPLOAD_LEASE: "true"
       NODE_ENV: "production"
     ports:
       - "127.0.0.1:8088:8088"
     volumes:
       - ../VectorIngestAckGateway:/app:ro
+      - ./raw_chunks:/var/lib/hosteye/raw_chunks
+      - ../VectorBuild:/var/lib/hosteye/agent_config:ro
     depends_on:
       - clickhouse
       - vector-gateway-1
