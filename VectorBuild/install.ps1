@@ -62,6 +62,64 @@ function Ensure-MachineEnv([string]$Name, [string]$Value) {
     }
 }
 
+function Enable-HostEyeAuditTelemetry {
+    Write-InstallLog "Enabling HostEye audit telemetry policy."
+
+    $processAuditKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"
+    New-Item -Path $processAuditKey -Force | Out-Null
+    New-ItemProperty -Path $processAuditKey -Name "ProcessCreationIncludeCmdLine_Enabled" -Value 1 -PropertyType DWord -Force | Out-Null
+    Write-InstallLog "Enabled command line capture for Security EID 4688."
+
+    $powerShellPolicyRoot = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+    $moduleLoggingKey = Join-Path $powerShellPolicyRoot "ModuleLogging"
+    $moduleNamesKey = Join-Path $moduleLoggingKey "ModuleNames"
+    $scriptBlockLoggingKey = Join-Path $powerShellPolicyRoot "ScriptBlockLogging"
+    New-Item -Path $moduleNamesKey -Force | Out-Null
+    New-Item -Path $scriptBlockLoggingKey -Force | Out-Null
+    New-ItemProperty -Path $moduleLoggingKey -Name "EnableModuleLogging" -Value 1 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $moduleNamesKey -Name "*" -Value "*" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $scriptBlockLoggingKey -Name "EnableScriptBlockLogging" -Value 1 -PropertyType DWord -Force | Out-Null
+    Write-InstallLog "Enabled PowerShell module logging EID 4103 and script block logging EID 4104."
+
+    $channelsToEnable = @(
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-DNS-Client/Operational",
+        "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
+        "Microsoft-Windows-TaskScheduler/Operational",
+        "Microsoft-Windows-Windows Defender/Operational"
+    )
+    foreach ($channelName in $channelsToEnable) {
+        try {
+            & wevtutil.exe sl $channelName /e:true 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-InstallLog "Enabled Windows Event Log channel: $channelName"
+            } else {
+                Write-InstallLog "WARNING: could not enable channel $channelName; wevtutil exit code $LASTEXITCODE"
+            }
+        } catch {
+            Write-InstallLog "WARNING: could not enable channel ${channelName}: $($_.Exception.Message)"
+        }
+    }
+
+    $auditSubcategories = @(
+        "Process Creation",
+        "Filtering Platform Connection",
+        "Filtering Platform Packet Drop"
+    )
+    foreach ($subcategory in $auditSubcategories) {
+        try {
+            & auditpol.exe /set /subcategory:"$subcategory" /success:enable /failure:enable 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-InstallLog "Enabled audit policy subcategory: $subcategory"
+            } else {
+                Write-InstallLog "WARNING: could not enable audit policy subcategory $subcategory; auditpol exit code $LASTEXITCODE"
+            }
+        } catch {
+            Write-InstallLog "WARNING: could not enable audit policy subcategory ${subcategory}: $($_.Exception.Message)"
+        }
+    }
+}
+
 function Get-StableJitterSeconds([string]$Seed, [int]$WindowSeconds) {
     if ($WindowSeconds -le 0) { return 0 }
     if ([string]::IsNullOrWhiteSpace($Seed)) { $Seed = [guid]::NewGuid().ToString() }
@@ -240,6 +298,10 @@ $Acl.ResetAccessRule($AdminRule)
 $Acl.ResetAccessRule($SystemRule)
 Set-Acl -Path $TargetDir $Acl
 Write-InstallLog "Applied ACL hardening to $TargetDir"
+
+# Enable local audit sources required by the telemetry baseline. In domain deployments,
+# GPO can enforce the same settings; this keeps standalone/lab endpoints covered.
+Enable-HostEyeAuditTelemetry
 
 # Install or update Sysmon if bundled.
 $sysmonExe = Join-Path $SysmonDir "Sysmon64.exe"

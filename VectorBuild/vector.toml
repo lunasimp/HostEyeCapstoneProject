@@ -15,7 +15,9 @@ channels = [
   "Microsoft-Windows-Windows Defender/Operational",
   "Microsoft-Windows-WMI-Activity/Operational",
   "Microsoft-Windows-DNS-Client/Operational",
-  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+  "Microsoft-Windows-Windows Defender/Operational",
+  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
+  "Microsoft-Windows-TaskScheduler/Operational"
 ]
 
 # =============================================================================
@@ -66,6 +68,7 @@ raw_record_id = .record_id
 .record_id = to_int(raw_record_id) ?? raw_record_id
 
 .provider_name = .provider_name
+.source = to_string(.provider_name) ?? to_string(.channel) ?? "unknown"
 .level = .level
 if (to_string(.process_path) ?? "") == "" {
     .process_path = to_string(.event_data.Image) ?? to_string(.event_data.SourceImage) ?? to_string(.event_data.NewProcessName) ?? ""
