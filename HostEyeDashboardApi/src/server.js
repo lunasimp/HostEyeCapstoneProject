@@ -1,4 +1,4 @@
-import http from "node:http";
+﻿import http from "node:http";
 import { URL } from "node:url";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -12,6 +12,10 @@ const config = {
   username: process.env.CLICKHOUSE_USERNAME || "default",
   password: process.env.CLICKHOUSE_PASSWORD || "",
   corsOrigin: process.env.CORS_ORIGIN || "*",
+  registrationUrl: process.env.HOSTEYE_REGISTRATION_URL || "http://localhost:5054",
+  registrationAdminToken: process.env.HOSTEYE_REGISTRATION_ADMIN_TOKEN || "hosteye-admin-demo",
+  dynamicConfigUrl: process.env.HOSTEYE_DYNAMIC_CONFIG_URL || "http://localhost:5063",
+  dynamicConfigAdminToken: process.env.HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN || "hosteye-admin-demo",
 };
 
 const routes = [
@@ -33,6 +37,12 @@ const routes = [
   ["GET", /^\/api\/dashboard\/powershell\/volume$/, powershellVolume],
   ["GET", /^\/api\/dashboard\/powershell\/recent$/, powershellRecent],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap$/, hostsHeatmap],
+  ["GET", /^\/api\/dashboard\/registrations\/summary$/, registrationsSummary],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/summary$/, dynamicConfigSummary],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigPolicies],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/agents$/, dynamicConfigAgents],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
+  ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
   ["GET", /^\/api\/logs\/raw\/([^/]+)$/, logsRaw],
@@ -57,7 +67,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const match = url.pathname.match(route[1]);
-    await route[2]({ url, params: match?.slice(1) || [] }, res);
+    await route[2]({ req, url, params: match?.slice(1) || [] }, res);
   } catch (error) {
     const status = error.statusCode || 500;
     sendJson(res, status, {
@@ -372,6 +382,253 @@ async function powershellRecent(ctx, res) {
   sendJson(res, 200, { items: rows });
 }
 
+async function registrationsSummary(_ctx, res) {
+  const started = Date.now();
+  try {
+    const devices = await registrationRequest("/api/v1/admin/devices");
+    const rows = Array.isArray(devices) ? devices : [];
+    const byStatus = new Map();
+    for (const device of rows) {
+      const status = String(device.status || "Unknown");
+      byStatus.set(status, (byStatus.get(status) || 0) + 1);
+    }
+
+    const latest = [...rows]
+      .sort((left, right) => Date.parse(right.updatedAt || right.createdAt || 0) - Date.parse(left.updatedAt || left.createdAt || 0))
+      .slice(0, 100)
+      .map(mapRegistrationDevice);
+
+    sendJson(res, 200, {
+      status: "ok",
+      latencyMs: Date.now() - started,
+      totals: {
+        devices: rows.length,
+        pending: byStatus.get("Pending") || 0,
+        active: byStatus.get("Active") || 0,
+        revoked: byStatus.get("Revoked") || 0,
+        expired: byStatus.get("Expired") || 0,
+        quarantined: byStatus.get("Quarantined") || 0,
+      },
+      groups: [...byStatus.entries()].map(([status, count]) => ({ status, count })),
+      items: latest,
+    });
+  } catch (cause) {
+    sendJson(res, 200, {
+      status: "offline",
+      message: cause.message || "Registration service is not reachable",
+      totals: { devices: 0, pending: 0, active: 0, revoked: 0, expired: 0, quarantined: 0 },
+      groups: [],
+      items: [],
+    });
+  }
+}
+
+function mapRegistrationDevice(device) {
+  return {
+    deviceRecordId: device.deviceRecordId || "",
+    agentId: device.agentId || "",
+    hostId: device.hostId || "",
+    staffId: device.staffId || "",
+    deviceId: device.deviceId || "",
+    owner: device.owner || "",
+    expectedHostname: device.expectedHostname || "",
+    actualHostname: device.actualHostname || "",
+    policyId: device.policyId || "",
+    agentVersion: device.agentVersion || "",
+    status: device.status || "Unknown",
+    certificateThumbprint: device.certificateThumbprint || "",
+    certificateNotAfter: device.certificateNotAfter || null,
+    createdAt: device.createdAt || null,
+    updatedAt: device.updatedAt || null,
+    enrolledAt: device.enrolledAt || null,
+    tokenExpiresAt: device.enrollmentTokenExpiresAt || null,
+  };
+}
+
+async function dynamicConfigSummary(_ctx, res) {
+  const started = Date.now();
+  try {
+    const [policies, agents] = await Promise.all([
+      dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
+      dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
+    ]);
+    const policyRows = Array.isArray(policies) ? policies : [];
+    const agentRows = Array.isArray(agents) ? agents : [];
+    const activePolicies = policyRows.filter((policy) => policy.enabled !== false).length;
+    const groups = countBy(agentRows, (agent) => agent.group_id || "unknown");
+    sendJson(res, 200, {
+      status: "ok",
+      latencyMs: Date.now() - started,
+      totals: {
+        policies: policyRows.length,
+        activePolicies,
+        agents: agentRows.length,
+        groups: groups.length,
+      },
+      groups,
+      policies: policyRows,
+      agents: agentRows,
+    });
+  } catch (cause) {
+    sendJson(res, 200, {
+      status: "offline",
+      message: cause.message || "Dynamic Config service is not reachable",
+      totals: { policies: 0, activePolicies: 0, agents: 0, groups: 0 },
+      groups: [],
+      policies: [],
+      agents: [],
+    });
+  }
+}
+
+async function dynamicConfigPolicies(_ctx, res) {
+  const policies = await dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true });
+  sendJson(res, 200, { items: Array.isArray(policies) ? policies : [] });
+}
+
+async function dynamicConfigAgents(_ctx, res) {
+  const agents = await dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true });
+  sendJson(res, 200, { items: Array.isArray(agents) ? agents : [] });
+}
+
+async function dynamicConfigAudit(_ctx, res) {
+  const audit = await dynamicConfigRequest("/api/v1/dynamic-config/audit", { admin: true });
+  sendJson(res, 200, { items: Array.isArray(audit) ? audit : [] });
+}
+
+async function dynamicConfigUpsertPolicy(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const policy = buildDynamicPolicy(body);
+  const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
+    method: "POST",
+    admin: true,
+    body: policy,
+  });
+  sendJson(res, 200, saved);
+}
+
+function buildDynamicPolicy(input) {
+  const targetType = String(input.targetType || "default");
+  const targetValue = String(input.targetValue || "").trim();
+  if ((targetType === "group" || targetType === "agent") && !targetValue) {
+    badRequest("targetValue is required for group/agent policy");
+  }
+
+  const policyId = String(input.policyId || "").trim() || `policy-${targetType}-${targetValue || "default"}-${Date.now()}`;
+  const version = Math.max(1, Number.parseInt(input.version || "1", 10));
+  const target = targetType === "group"
+    ? { type: "group", group_id: targetValue }
+    : targetType === "agent"
+      ? { type: "agent", agent_id: targetValue }
+      : { type: "default" };
+
+  const channels = String(input.channels || "Application,System,Security,Microsoft-Windows-Sysmon/Operational")
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  return {
+    policy_id: policyId,
+    version,
+    name: String(input.name || policyId),
+    enabled: input.enabled !== false,
+    target,
+    rollout: {
+      enabled: input.rolloutEnabled !== false,
+      percent: clampNumber(input.rolloutPercent, 1, 100, 100),
+      min_agent_version: String(input.minAgentVersion || "0.1.0"),
+    },
+    config: {
+      config_schema_version: 1,
+      vector: {
+        enabled: input.vectorEnabled !== false,
+        channels,
+        batch_max_events: clampNumber(input.batchMaxEvents, 1, 100000, 1000),
+        batch_timeout_secs: clampNumber(input.batchTimeoutSecs, 1, 3600, 10),
+      },
+      shipper: {
+        enabled: input.shipperEnabled !== false,
+        gateway_url: String(input.gatewayUrl || "https://soc-gateway.yourcorporate.com/api/v1/telemetry"),
+        normal_jitter_window_seconds: clampNumber(input.normalJitterWindowSeconds, 0, 86400, 300),
+        recovery_jitter_window_seconds: clampNumber(input.recoveryJitterWindowSeconds, 0, 86400, 1800),
+        base_backoff_seconds: clampNumber(input.baseBackoffSeconds, 1, 3600, 2),
+        max_backoff_seconds: clampNumber(input.maxBackoffSeconds, 1, 86400, 300),
+        max_spool_size_mb: clampNumber(input.maxSpoolSizeMb, 1, 102400, 8192),
+      },
+      sensors: {
+        sysmon_enabled: input.sysmonEnabled !== false,
+        powershell_enabled: input.powershellEnabled !== false,
+        network_events_enabled: input.networkEventsEnabled !== false,
+      },
+    },
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function dynamicConfigRequest(path, options = {}) {
+  const base = config.dynamicConfigUrl.replace(/\/$/, "");
+  const headers = { "content-type": "application/json" };
+  if (options.admin) headers["x-hosteye-admin-token"] = config.dynamicConfigAdminToken;
+
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, {
+      method: options.method || "GET",
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (cause) {
+    const error = new Error(`Dynamic Config service is not reachable: ${cause?.message || cause}`);
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    const error = new Error(`Dynamic Config service returned ${response.status}`);
+    error.statusCode = response.status;
+    error.detail = text;
+    throw error;
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+function countBy(rows, keyFn) {
+  const map = new Map();
+  for (const row of rows) {
+    const key = keyFn(row);
+    map.set(key, (map.get(key) || 0) + 1);
+  }
+  return Array.from(map.entries()).map(([key, count]) => ({ key, count }));
+}
+
+function clampNumber(value, min, max, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+async function registrationRequest(path) {
+  const base = config.registrationUrl.replace(/\/$/, "");
+  let response;
+  try {
+    response = await fetch(`${base}${path}`, {
+      headers: { "x-hosteye-admin-token": config.registrationAdminToken },
+    });
+  } catch (cause) {
+    const error = new Error(`Registration service is not reachable: ${cause?.message || cause}`);
+    error.statusCode = 503;
+    throw error;
+  }
+
+  const text = await response.text();
+  if (!response.ok) {
+    const error = new Error(`Registration service returned ${response.status}`);
+    error.statusCode = response.status;
+    error.detail = text;
+    throw error;
+  }
+  return text ? JSON.parse(text) : null;
+}
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
@@ -732,6 +989,22 @@ function sqlString(value) {
   return `'${String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'")}'`;
 }
 
+
+async function readJsonBody(req) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > 1024 * 1024) badRequest("Request body is too large");
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch (_error) {
+    badRequest("Request body must be valid JSON");
+  }
+}
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, jsonReplacer);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -744,7 +1017,7 @@ function jsonReplacer(_key, value) {
 
 function setCors(res) {
   res.setHeader("access-control-allow-origin", config.corsOrigin);
-  res.setHeader("access-control-allow-methods", "GET,OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type,authorization");
 }
 
@@ -778,3 +1051,10 @@ function loadDotEnv() {
     }
   }
 }
+
+
+
+
+
+
+
