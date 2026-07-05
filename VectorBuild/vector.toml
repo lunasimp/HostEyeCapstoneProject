@@ -13,7 +13,9 @@ channels = [
   "Microsoft-Windows-PowerShell/Operational",
   "Microsoft-Windows-WMI-Activity/Operational",
   "Microsoft-Windows-DNS-Client/Operational",
-  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+  "Microsoft-Windows-Windows Defender/Operational",
+  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
+  "Microsoft-Windows-TaskScheduler/Operational"
 ]
 
 # =============================================================================
@@ -64,6 +66,7 @@ raw_record_id = .record_id
 .record_id = to_int(raw_record_id) ?? raw_record_id
 
 .provider_name = .provider_name
+.source = to_string(.provider_name) ?? to_string(.channel) ?? "unknown"
 .level = .level
 
 # 5. Sinh Idempotency Key bÃ¡ÂºÂ¥t biÃ¡ÂºÂ¿n tÃ¡ÂºÂ¡i nguÃ¡Â»â€œn phÃƒÂ¡t

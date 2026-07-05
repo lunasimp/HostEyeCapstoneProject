@@ -8,12 +8,27 @@
     <NetworkConnect onmatch="include">
       <Image condition="is not">-</Image>
     </NetworkConnect>
+    <ImageLoad onmatch="include">
+      <ImageLoaded condition="is not">-</ImageLoaded>
+    </ImageLoad>
+    <CreateRemoteThread onmatch="include">
+      <SourceImage condition="is not">-</SourceImage>
+    </CreateRemoteThread>
+    <ProcessAccess onmatch="include">
+      <CallTrace condition="is not">-</CallTrace>
+    </ProcessAccess>
+    <FileCreate onmatch="include">
+      <TargetFilename condition="is not">-</TargetFilename>
+    </FileCreate>
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="is not">-</TargetObject>
+    </RegistryEvent>
     <DnsQuery onmatch="include">
       <Image condition="is not">-</Image>
     </DnsQuery>
+    <ProcessTampering onmatch="include">
+      <Image condition="is not">-</Image>
+    </ProcessTampering>
     <ProcessTerminate onmatch="exclude" />
-    <FileCreate onmatch="exclude" />
-    <ProcessAccess onmatch="exclude" />
-    <RegistryEvent onmatch="exclude" />
   </EventFiltering>
 </Sysmon>
