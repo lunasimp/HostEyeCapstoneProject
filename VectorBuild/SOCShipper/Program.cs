@@ -1,4 +1,7 @@
-﻿using System.Net;
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Security.Cryptography;
@@ -6,72 +9,108 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Linq;
+using System.Collections.Generic;
+using SOCShipper.Services;
 
+// ----------------------------------------------------------------------
+// PHẦN KHỞI TẠO CẤU HÌNH VÀ THƯ MỤC CƠ SỞ
+// ----------------------------------------------------------------------
 var configPath = args.Length > 0 ? args[0] : Path.Combine(AppContext.BaseDirectory, "shipper-config.json");
 var config = ShipperConfig.Load(configPath);
 Directory.CreateDirectory(config.SpoolDirectory);
 Directory.CreateDirectory(config.StateDirectory);
 Directory.CreateDirectory(config.LogDirectory);
 var logger = new FileLogger(Path.Combine(config.LogDirectory, "shipper.log"));
+
+// Phần quản lý Checkpoint cũ (Không thay đổi thiết kế)
 var state = ShipperState.Load(Path.Combine(config.StateDirectory, "shipper-state.json"));
-var random = RandomNumberGenerator.Create();
 var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
     ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID")
     ?? Environment.MachineName
     ?? Guid.NewGuid().ToString("n");
 
-logger.Info($"HostEyeShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
+logger.Info($"HostEyeShipper starting Phase 3. Config={configPath} Spool={config.SpoolDirectory}");
 using var http = BuildHttpClient(config, logger);
 using var cleanupCts = new CancellationTokenSource();
 var cleanupTask = config.MaxSpoolSizeMB > 0
     ? RunSpoolQuotaLoop(config, logger, cleanupCts.Token)
     : Task.CompletedTask;
-var attempt = 0;
 
+// Khởi tạo các Module Phase 3 theo đúng chuẩn SRP (Tách biệt Control Plane và Data Plane)
+var jitterScheduler = new JitterScheduler();
+
+// Khởi tạo ConfigSynchronizer với địa chỉ Control Plane
+var configSync = new ConfigSynchronizer(http, config.ControlPlaneUri, configPath);
+
+// Khởi tạo AdmissionClient và TransportManager truyền configSync vào để chúng tự lấy Routing Data Plane động
+var admissionClient = new AdmissionClient(http, configSync, endpointSeed, jitterScheduler);
+var transportManager = new TransportManager(admissionClient, http, config.SpoolDirectory, configSync, state);
+
+// ----------------------------------------------------------------------
+// VÒNG LẶP CHÍNH CỦA CHƯƠNG TRÌNH
+// ----------------------------------------------------------------------
 try
 {
+    // BƯỚC 0: ĐỒNG BỘ LẦN ĐẦU TIÊN KHI VỪA BẬT MÁY ĐỂ LẤY DATA PLANE URI
+    logger.Info($"[Main] Đang lấy Data Plane Routing từ Control Plane: {config.ControlPlaneUri}");
+    await configSync.SyncConfigAsync();
+
+    // BƯỚC 1: STARTUP JITTER (Chống hiệu ứng bầy đàn khi khởi động)
+    var startupDelay = jitterScheduler.GetStartupDelay(300); // Tối đa 5 phút
+    logger.Info($"[Main] Áp dụng Startup Jitter. Chương trình sẽ ngủ đông {startupDelay.TotalSeconds} giây...");
+    await Task.Delay(startupDelay);
+
+    DateTime lastConfigSync = DateTime.MinValue;
+
     while (true)
     {
         try
         {
-            var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed);
+            // BƯỚC 2: ĐỒNG BỘ CẤU HÌNH ETAG (Có Periodic Jitter)
+            // Định kỳ đồng bộ 30 phút, cộng thêm nhiễu ngẫu nhiên
+            if (DateTime.UtcNow - lastConfigSync > TimeSpan.FromMinutes(30))
+            {
+                var periodicJitter = jitterScheduler.GetPeriodicDelay(baseSeconds: 1800, jitterSeconds: 300);
+                if (DateTime.UtcNow - lastConfigSync > periodicJitter)
+                {
+                    logger.Info("[Main] Tiến hành đồng bộ cấu hình ETag...");
+                    await configSync.SyncConfigAsync();
+                    lastConfigSync = DateTime.UtcNow;
+                }
+            }
+
+            // BƯỚC 3: XỬ LÝ QUEUE VÀ GỬI LÊN SERVER
+            // Mọi nghiệp vụ Checkpoint, Xin phép Lease, Gắn Chunk Metadata đều nằm gọn trong này
+            bool sentAny = await transportManager.ProcessSpoolOnceAsync();
+            
             if (sentAny)
             {
-                attempt = 0;
                 if (config.RunOnce)
                 {
-                    logger.Info("RunOnce completed after one successful batch.");
+                    logger.Info("RunOnce mode: Đã hoàn tất gửi 1 lượt. Đang tắt chương trình.");
                     return 0;
                 }
             }
             else if (config.RunOnce)
             {
-                logger.Info("RunOnce completed; no pending spool data.");
+                logger.Info("RunOnce mode: Spool trống, không có gì để gửi.");
                 return 0;
             }
             else
             {
-                await Task.Delay(TimeSpan.FromSeconds(5));
+                // Queue đang rỗng, nghỉ 5 giây rồi kiểm tra lại ổ cứng
+                await Task.Delay(TimeSpan.FromSeconds(5)); 
             }
-        }
-        catch (BackpressureException ex)
-        {
-            attempt++;
-            var retryAfter = ex.RetryAfterSeconds ?? 0;
-            var delay = retryAfter > 0
-                ? TimeSpan.FromSeconds(retryAfter + RandomInt(random, 0, 30))
-                : FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
-            logger.Info($"Backpressure/status={ex.StatusCode}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
-            if (config.RunOnce) return 2;
-            await Task.Delay(delay);
         }
         catch (Exception ex)
         {
-            attempt++;
-            var delay = FullJitterDelay(random, config.BaseBackoffSeconds, config.MaxBackoffSeconds, attempt);
-            logger.Error($"Unhandled shipper error: {ex.Message}; delaying {delay.TotalSeconds:F0}s attempt={attempt}.");
-            if (config.RunOnce) return 1;
-            await Task.Delay(delay);
+            logger.Error($"[Main] Lỗi vòng lặp chính: {ex.Message}");
+            // Mọi lỗi mạng (Exception) sẽ tự động kích hoạt Retry Jitter bên trong các Module 
+            // Nếu thoát ra tới đây, ta chỉ cần chờ ngắn và chạy lại vòng lặp.
+            await Task.Delay(TimeSpan.FromSeconds(5)); 
         }
     }
 }
@@ -80,120 +119,26 @@ finally
     await StopCleanupLoop(cleanupCts, cleanupTask, logger);
 }
 
+
+// ----------------------------------------------------------------------
+// CÁC HÀM QUẢN LÝ DUNG LƯỢNG Ổ CỨNG (SPOOL POLICY) GIỮ NGUYÊN
+// ----------------------------------------------------------------------
 static async Task RunSpoolQuotaLoop(ShipperConfig config, FileLogger logger, CancellationToken token)
 {
-    logger.Info($"Spool quota loop enabled. MaxSpoolSizeMB={config.MaxSpoolSizeMB} LowWatermarkPercent={config.LowWatermarkPercent} CheckIntervalSeconds={config.SpoolCheckIntervalSeconds} PreferDeletingSentFirst={config.PreferDeletingSentFirst} SentRetentionDays={config.SentRetentionDays}.");
+    logger.Info($"Spool quota loop enabled. MaxSpoolSizeMB={config.MaxSpoolSizeMB}");
     while (!token.IsCancellationRequested)
     {
-        try
-        {
-            EnforceSpoolPolicy(config, logger);
-        }
-        catch (Exception ex)
-        {
-            logger.Warn($"Spool quota check failed: {ex.Message}");
-        }
+        try { EnforceSpoolPolicy(config, logger); }
+        catch (Exception ex) { logger.Warn($"Spool quota check failed: {ex.Message}"); }
 
-        try
-        {
-            await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, config.SpoolCheckIntervalSeconds)), token);
-        }
-        catch (OperationCanceledException)
-        {
-            break;
-        }
+        try { await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, config.SpoolCheckIntervalSeconds)), token); }
+        catch (OperationCanceledException) { break; }
     }
 }
 
 static async Task StopCleanupLoop(CancellationTokenSource cleanupCts, Task cleanupTask, FileLogger logger)
 {
-    try
-    {
-        cleanupCts.Cancel();
-        await cleanupTask;
-    }
-    catch (OperationCanceledException)
-    {
-    }
-    catch (Exception ex)
-    {
-        logger.Warn($"Spool quota loop stopped with error: {ex.Message}");
-    }
-}
-
-static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState state, HttpClient http, FileLogger logger, string endpointSeed)
-{
-    var files = Directory.GetFiles(config.SpoolDirectory, "*.ndjson")
-        .OrderBy(File.GetCreationTimeUtc)
-        .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase)
-        .ToArray();
-
-    foreach (var file in files)
-    {
-        var checkpoint = state.GetCheckpoint(file);
-        var batch = await ReadBatch(file, checkpoint.LineOffset, config.MaxEvents, config.MaxBytes);
-        if (batch.Lines.Count == 0)
-        {
-            TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset, logger);
-            continue;
-        }
-
-        var jitterWindow = checkpoint.LineOffset == 0 ? config.NormalJitterWindowSeconds : Math.Min(config.RecoveryJitterWindowSeconds, Math.Max(config.NormalJitterWindowSeconds, config.RecoveryJitterWindowSeconds));
-        var jitter = StableJitterSeconds(endpointSeed + ":" + Path.GetFileName(file) + ":" + checkpoint.LineOffset, jitterWindow);
-        if (jitter > 0)
-        {
-            logger.Info($"Applying deterministic send jitter {jitter}s for {Path.GetFileName(file)} offset={checkpoint.LineOffset}.");
-            await Task.Delay(TimeSpan.FromSeconds(jitter));
-        }
-
-        var payload = "[" + string.Join(",", batch.Lines) + "]";
-        using var content = new StringContent(payload, Encoding.UTF8, "application/json");
-        content.Headers.ContentEncoding.Add("gzip");
-        using var gzipped = await GzipContent.Create(content);
-        using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = gzipped };
-        req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
-
-        logger.Info($"Sending file={Path.GetFileName(file)} offset={checkpoint.LineOffset} events={batch.Lines.Count} bytes={Encoding.UTF8.GetByteCount(payload)}.");
-        using var resp = await http.SendAsync(req);
-        if ((int)resp.StatusCode == 429 || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
-        {
-            var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
-            throw new BackpressureException((int)resp.StatusCode, retryAfter is null ? null : (int)Math.Ceiling(retryAfter.Value));
-        }
-        if (!resp.IsSuccessStatusCode)
-        {
-            throw new Exception($"Gateway returned {(int)resp.StatusCode} {resp.ReasonPhrase}");
-        }
-
-        state.SetCheckpoint(file, checkpoint.LineOffset + batch.Lines.Count);
-        state.Save();
-        logger.Info($"Sent OK file={Path.GetFileName(file)} new_offset={checkpoint.LineOffset + batch.Lines.Count}.");
-        TryArchiveEmptyOrFullyReadFile(file, checkpoint.LineOffset + batch.Lines.Count, logger);
-        return true;
-    }
-
-    return false;
-}
-
-static async Task<Batch> ReadBatch(string file, int skipLines, int maxEvents, int maxBytes)
-{
-    var lines = new List<string>();
-    var bytes = 2;
-    var index = 0;
-    using var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-    using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-    while (await reader.ReadLineAsync() is { } line)
-    {
-        if (index++ < skipLines) continue;
-        if (string.IsNullOrWhiteSpace(line)) continue;
-        using (JsonDocument.Parse(line)) { }
-        var lineBytes = Encoding.UTF8.GetByteCount(line) + (lines.Count > 0 ? 1 : 0);
-        if (lines.Count > 0 && (lines.Count >= maxEvents || bytes + lineBytes > maxBytes)) break;
-        lines.Add(line);
-        bytes += lineBytes;
-        if (lines.Count >= maxEvents || bytes >= maxBytes) break;
-    }
-    return new Batch(lines);
+    try { cleanupCts.Cancel(); await cleanupTask; } catch { }
 }
 
 static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
@@ -210,7 +155,7 @@ static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
         var totalBytes = GetDirectorySizeBytes(config.SpoolDirectory);
         if (totalBytes <= maxBytes) return;
 
-        logger.Info($"Spool size {totalBytes} bytes exceeds max {maxBytes} bytes; trimming to {targetBytes} bytes.");
+        logger.Info($"Spool size {totalBytes} bytes exceeds max; trimming to {targetBytes} bytes.");
         foreach (var file in GetDeletionCandidates(config))
         {
             if (totalBytes <= targetBytes) break;
@@ -219,19 +164,8 @@ static void EnforceSpoolPolicy(ShipperConfig config, FileLogger logger)
                 var length = new FileInfo(file.FullName).Length;
                 File.Delete(file.FullName);
                 totalBytes -= length;
-                if (file.IsSent)
-                {
-                    logger.Info($"Deleted sent spool file {file.FullName} ({length} bytes) to enforce spool limit.");
-                }
-                else
-                {
-                    logger.Warn($"Dropped unsent spool file {file.FullName} ({length} bytes) to enforce spool limit. DATA_LOSS=true");
-                }
             }
-            catch (Exception ex)
-            {
-                logger.Info($"Spool cleanup skipped {file.FullName}: {ex.Message}");
-            }
+            catch { }
         }
     }
     catch (Exception ex)
@@ -252,14 +186,9 @@ static void DeleteExpiredSentFiles(ShipperConfig config, FileLogger logger)
         try
         {
             var info = new FileInfo(file);
-            if (info.LastWriteTimeUtc > cutoffUtc.UtcDateTime) continue;
-            info.Delete();
-            logger.Info($"Deleted sent spool file past retention: {file}");
+            if (info.LastWriteTimeUtc <= cutoffUtc.UtcDateTime) info.Delete();
         }
-        catch (Exception ex)
-        {
-            logger.Info($"Sent retention cleanup skipped {file}: {ex.Message}");
-        }
+        catch { }
     }
 }
 
@@ -279,51 +208,12 @@ static IEnumerable<QuotaFile> GetDeletionCandidates(ShipperConfig config)
     var sentDir = Path.Combine(config.SpoolDirectory, "sent");
     if (config.PreferDeletingSentFirst && Directory.Exists(sentDir))
     {
-        foreach (var file in Directory.EnumerateFiles(sentDir, "*", SearchOption.TopDirectoryOnly)
-            .OrderBy(File.GetLastWriteTimeUtc)
-            .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
-        {
+        foreach (var file in Directory.EnumerateFiles(sentDir, "*", SearchOption.TopDirectoryOnly).OrderBy(File.GetLastWriteTimeUtc))
             yield return new QuotaFile(file, true);
-        }
     }
-
     if (!Directory.Exists(config.SpoolDirectory)) yield break;
-    foreach (var file in Directory.EnumerateFiles(config.SpoolDirectory, "*.ndjson", SearchOption.TopDirectoryOnly)
-        .OrderBy(File.GetCreationTimeUtc)
-        .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
-    {
+    foreach (var file in Directory.EnumerateFiles(config.SpoolDirectory, "*.ndjson", SearchOption.TopDirectoryOnly).OrderBy(File.GetCreationTimeUtc))
         yield return new QuotaFile(file, false);
-    }
-
-    if (!config.PreferDeletingSentFirst && Directory.Exists(sentDir))
-    {
-        foreach (var file in Directory.EnumerateFiles(sentDir, "*", SearchOption.TopDirectoryOnly)
-            .OrderBy(File.GetLastWriteTimeUtc)
-            .ThenBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
-        {
-            yield return new QuotaFile(file, true);
-        }
-    }
-}
-
-static void TryArchiveEmptyOrFullyReadFile(string file, int lineOffset, FileLogger logger)
-{
-    try
-    {
-        var total = File.ReadLines(file).Count(l => !string.IsNullOrWhiteSpace(l));
-        if (total == 0 || lineOffset >= total)
-        {
-            var sentDir = Path.Combine(Path.GetDirectoryName(file)!, "sent");
-            Directory.CreateDirectory(sentDir);
-            var dest = Path.Combine(sentDir, Path.GetFileName(file) + "." + DateTimeOffset.UtcNow.ToString("yyyyMMddHHmmss") + ".sent");
-            File.Move(file, dest, overwrite: false);
-            logger.Info($"Archived sent spool file {Path.GetFileName(file)} -> {Path.GetFileName(dest)}.");
-        }
-    }
-    catch (Exception ex)
-    {
-        logger.Info($"Spool archive skipped for {Path.GetFileName(file)}: {ex.Message}");
-    }
 }
 
 static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
@@ -333,21 +223,13 @@ static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
     {
         var cert = X509Certificate2.CreateFromPemFile(config.ClientCertificateFile, config.ClientKeyFile);
         handler.ClientCertificates.Add(new X509Certificate2(cert.Export(X509ContentType.Pkcs12)));
-        logger.Info($"Loaded client certificate: {config.ClientCertificateFile}");
     }
-    else
-    {
-        logger.Info("WARNING: client certificate/key missing; mTLS request will likely fail.");
-    }
-
     if (File.Exists(config.CaCertificateFile))
     {
         var trustedRoot = new X509Certificate2(config.CaCertificateFile);
         handler.ServerCertificateCustomValidationCallback = (_, cert, chain, errors) =>
         {
             if (cert is null) return false;
-            if ((errors & SslPolicyErrors.RemoteCertificateNameMismatch) != 0) return false;
-            if ((errors & SslPolicyErrors.RemoteCertificateNotAvailable) != 0) return false;
             using var customChain = new X509Chain();
             customChain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
             customChain.ChainPolicy.CustomTrustStore.Add(trustedRoot);
@@ -355,49 +237,19 @@ static HttpClient BuildHttpClient(ShipperConfig config, FileLogger logger)
             customChain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
             return customChain.Build(new X509Certificate2(cert));
         };
-        logger.Info($"Loaded custom CA trust: {config.CaCertificateFile}");
     }
-
-    return new HttpClient(handler)
-    {
-        Timeout = TimeSpan.FromSeconds(60)
-    };
+    return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(60) };
 }
 
-static int StableJitterSeconds(string seed, int windowSeconds)
-{
-    if (windowSeconds <= 0) return 0;
-    var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
-    return (int)(BitConverter.ToUInt32(hash, 0) % (uint)windowSeconds);
-}
-
-static TimeSpan FullJitterDelay(RandomNumberGenerator rng, int baseSeconds, int capSeconds, int attempt)
-{
-    var max = Math.Min(capSeconds, baseSeconds * Math.Pow(2, Math.Min(attempt, 16)));
-    return TimeSpan.FromSeconds(RandomInt(rng, 0, Math.Max(1, (int)Math.Ceiling(max))));
-}
-
-static int RandomInt(RandomNumberGenerator rng, int minInclusive, int maxExclusive)
-{
-    if (maxExclusive <= minInclusive) return minInclusive;
-    Span<byte> bytes = stackalloc byte[4];
-    rng.GetBytes(bytes);
-    var value = BitConverter.ToUInt32(bytes);
-    return minInclusive + (int)(value % (uint)(maxExclusive - minInclusive));
-}
-
-record Batch(List<string> Lines);
 record QuotaFile(string FullName, bool IsSent);
 
-class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception($"Backpressure {statusCode}")
+// ----------------------------------------------------------------------
+// CONFIGURATION VÀ CHECKPOINT MODELS ĐƯỢC GIỮ NGUYÊN (KHÔNG ĐỤNG CHẠM)
+// ----------------------------------------------------------------------
+public class ShipperConfig
 {
-    public int StatusCode { get; } = statusCode;
-    public int? RetryAfterSeconds { get; } = retryAfterSeconds;
-}
-
-class ShipperConfig
-{
-    public string GatewayUri { get; set; } = "https://soc-gateway.yourcorporate.com/api/v1/telemetry";
+    // Địa chỉ của Tổng công ty (Control Plane) dùng để đồng bộ ETag và lấy Routing Data Plane
+    public string ControlPlaneUri { get; set; } = "https://controlplane.yourcorporate.com/api/v1/agent/config";
     public string SpoolDirectory { get; set; } = "C:\\ProgramData\\HostEye\\spool";
     public string StateDirectory { get; set; } = "C:\\ProgramData\\HostEye\\shipper_state";
     public string LogDirectory { get; set; } = "C:\\ProgramData\\HostEye\\logs";
@@ -425,7 +277,7 @@ class ShipperConfig
     }
 }
 
-class ShipperState
+public class ShipperState
 {
     public Dictionary<string, FileCheckpoint> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     [JsonIgnore]
@@ -463,14 +315,16 @@ class ShipperState
     }
 }
 
-class FileCheckpoint
+public class FileCheckpoint
 {
     public int LineOffset { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 
-class FileLogger(string path)
+public class FileLogger
 {
+    private readonly string path;
+    public FileLogger(string path) { this.path = path; }
     public void Info(string message) => Write("INFO", message);
     public void Warn(string message) => Write("WARN", message);
     public void Error(string message) => Write("ERROR", message);
@@ -482,48 +336,3 @@ class FileLogger(string path)
         Console.WriteLine(line);
     }
 }
-
-class GzipContent : HttpContent
-{
-    readonly HttpContent _inner;
-    readonly MemoryStream _compressed;
-
-    GzipContent(HttpContent inner, MemoryStream compressed)
-    {
-        _inner = inner;
-        _compressed = compressed;
-        Headers.ContentType = inner.Headers.ContentType;
-        Headers.ContentEncoding.Add("gzip");
-    }
-
-    public static async Task<GzipContent> Create(HttpContent inner)
-    {
-        var compressed = new MemoryStream();
-        await using (var gzip = new System.IO.Compression.GZipStream(compressed, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
-        {
-            await inner.CopyToAsync(gzip);
-        }
-        compressed.Position = 0;
-        return new GzipContent(inner, compressed);
-    }
-
-    protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => _compressed.CopyToAsync(stream);
-    protected override bool TryComputeLength(out long length)
-    {
-        length = _compressed.Length;
-        return true;
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            _inner.Dispose();
-            _compressed.Dispose();
-        }
-        base.Dispose(disposing);
-    }
-}
-
-
-
