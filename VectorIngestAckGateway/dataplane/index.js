@@ -13,6 +13,7 @@ const DEFAULTS = Object.freeze({
   leaseTtlSeconds: 30,
   maxBatchMb: 5,
   maxUploadRateKbps: 1024,
+  directVectorForward: true,
   agentConfig: Object.freeze({
     config_version: "1.0.0",
     schema_version: "1.0.0",
@@ -33,6 +34,7 @@ function createDataPlane(deps = {}, options = {}) {
     clickhouseInsert: deps.clickhouseInsert || missingDependency("clickhouseInsert"),
     getChunk: deps.getChunk || missingDependency("getChunk"),
     forwardToVector: deps.forwardToVector || missingDependency("forwardToVector"),
+    publishToBroker: deps.publishToBroker || null,
     validateAndConsumeUploadLease: deps.validateAndConsumeUploadLease || null
   };
 
@@ -179,16 +181,38 @@ async function handleChunk(state, payload, context) {
   await state.clickhouseInsert("default.raw_chunk_vault", buildRawChunkRow(state, payload, rawMeta, "stored", "raw chunk stored before ACK"));
   await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, "raw_stored", false, "raw chunk stored before ACK"));
 
+  let brokerStatus = "disabled";
+  let brokerMessage = "broker publish disabled";
+  if (state.publishToBroker) {
+    try {
+      const brokerJob = buildRawChunkBrokerJob(state, payload, rawMeta, validation, context);
+      const brokerResult = await state.publishToBroker(brokerJob);
+      brokerStatus = "broker_queued";
+      brokerMessage = `published raw chunk job to ${brokerResult.topic || "broker"}`;
+      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, brokerStatus, false, brokerMessage));
+    } catch (error) {
+      brokerStatus = "broker_failed";
+      brokerMessage = `broker publish failed: ${error?.message || String(error)}`;
+      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, brokerStatus, false, brokerMessage));
+    }
+  }
+
   const enrichedEvents = enrichEvents(state, payload);
   const invalidEvents = enrichedEvents.filter((event) => event.parser_status === "invalid").length;
-  let indexStatus = "index_queued";
-  let indexMessage = "forwarded to vector gateway";
-  try {
-    await state.forwardToVector(enrichedEvents);
-    await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
-  } catch (error) {
-    indexStatus = "index_failed";
-    indexMessage = `vector forward failed: ${error?.message || String(error)}`;
+  let indexStatus = "index_deferred";
+  let indexMessage = "indexing delegated to raw-chunk-worker";
+  if (state.options.directVectorForward) {
+    indexStatus = "index_queued";
+    indexMessage = "forwarded to vector gateway";
+    try {
+      await state.forwardToVector(enrichedEvents);
+      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
+    } catch (error) {
+      indexStatus = "index_failed";
+      indexMessage = `vector forward failed: ${error?.message || String(error)}`;
+      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
+    }
+  } else {
     await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
   }
 
@@ -198,6 +222,8 @@ async function handleChunk(state, payload, context) {
       ack: true,
       commit: true,
       status: "raw_stored",
+      broker_status: brokerStatus,
+      broker_message: brokerMessage,
       index_status: indexStatus,
       index_message: indexMessage,
       chunk_id: validation.chunkId,
@@ -208,6 +234,30 @@ async function handleChunk(state, payload, context) {
       lease_id: String(payload.lease_id || ""),
       agent_config: state.options.agentConfig
     }
+  };
+}
+
+function buildRawChunkBrokerJob(state, payload, rawMeta, validation, context) {
+  return {
+    protocol: "hosteye.raw_chunk.v1",
+    event_type: "raw_chunk_stored",
+    queued_at: state.now().toISOString(),
+    collector_id: String(context.collector_id || ""),
+    agent_id: validation.agentId,
+    host_id: String(payload.host_id || ""),
+    computer: String(payload.computer || ""),
+    chunk_id: validation.chunkId,
+    checksum: validation.checksum,
+    event_count: validation.eventCount,
+    sequence_number: Number(payload.sequence_number || 0),
+    lease_id: String(payload.lease_id || ""),
+    lease_expires_at: String(payload.lease_expires_at || ""),
+    raw_path: rawMeta.raw_path,
+    raw_sha256: rawMeta.raw_sha256,
+    raw_size_bytes: rawMeta.raw_size_bytes,
+    compressed_size_bytes: rawMeta.compressed_size_bytes,
+    compression: rawMeta.compression,
+    next_step: "process_raw_chunk"
   };
 }
 

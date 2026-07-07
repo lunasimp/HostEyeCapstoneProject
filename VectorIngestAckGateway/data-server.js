@@ -9,6 +9,8 @@ const PORT = Number(process.env.DATA_PORT || process.env.PORT || 8088);
 const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || 25 * 1024 * 1024);
 const CLICKHOUSE_URL = process.env.CLICKHOUSE_URL || "http://clickhouse:8123";
 const VECTOR_URL = process.env.VECTOR_URL || "http://vector-gateway-1:8686/";
+const REDPANDA_PROXY_URL = (process.env.REDPANDA_PROXY_URL || "").replace(/\/+$/, "");
+const RAW_CHUNK_TOPIC = process.env.RAW_CHUNK_TOPIC || "raw-chunk-jobs";
 const COLLECTOR_ID = process.env.COLLECTOR_ID || "collector-a";
 const COLLECTOR_PUBLIC_URL = process.env.COLLECTOR_PUBLIC_URL || "";
 const CONTROL_PLANE_URL = process.env.CONTROL_PLANE_URL || "";
@@ -33,15 +35,45 @@ async function forwardToVector(events) {
   }
 }
 
+async function publishToBroker(job) {
+  if (!REDPANDA_PROXY_URL) {
+    return { disabled: true, topic: RAW_CHUNK_TOPIC };
+  }
+  const response = await fetch(`${REDPANDA_PROXY_URL}/topics/${encodeURIComponent(RAW_CHUNK_TOPIC)}`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/vnd.kafka.json.v2+json",
+      "accept": "application/vnd.kafka.v2+json"
+    },
+    body: JSON.stringify({
+      records: [
+        {
+          key: String(job.chunk_id || ""),
+          value: job
+        }
+      ]
+    })
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    const err = new Error(`Redpanda ${response.status}: ${text}`);
+    err.statusCode = response.status;
+    throw err;
+  }
+  return { topic: RAW_CHUNK_TOPIC, response: text };
+}
+
 const dataplane = createDataPlane({
   clickhouseInsert: clickhouse.insert,
   getChunk: clickhouse.getChunk,
   forwardToVector,
+  publishToBroker: REDPANDA_PROXY_URL ? publishToBroker : null,
   validateAndConsumeUploadLease: async (payload) => leaseStore.validateAndConsume(payload, COLLECTOR_ID)
 }, {
   requiredSchemaVersion: process.env.REQUIRED_SCHEMA_VERSION || "1.0.0",
   rawChunkDir: process.env.RAW_CHUNK_DIR || "/var/lib/hosteye/raw_chunks",
   requireUploadLease: String(process.env.REQUIRE_UPLOAD_LEASE || "true").toLowerCase() !== "false",
+  directVectorForward: String(process.env.DIRECT_VECTOR_FORWARD || "true").toLowerCase() !== "false",
   maxActiveUploads: Number(process.env.ADMISSION_MAX_ACTIVE_UPLOADS || 64),
   leaseTtlSeconds: Number(process.env.ADMISSION_LEASE_TTL_SECONDS || 30),
   maxBatchMb: Number(process.env.ADMISSION_MAX_BATCH_MB || 5),
@@ -57,7 +89,7 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         service: "hosteye-data-plane",
         collector_id: COLLECTOR_ID,
-        active_leases: await leaseStore.countActive(COLLECTOR_ID),
+        active_leases: 0,
         active_uploads: activeTelemetryUploads,
         ready: isCollectorReady(),
         next_available_at: collectorNextAvailableAt().toISOString(),
@@ -123,7 +155,7 @@ async function sendHeartbeat() {
         health: "healthy",
         ready: isCollectorReady(),
         active_uploads: activeTelemetryUploads,
-        active_leases: await leaseStore.countActive(COLLECTOR_ID),
+        active_leases: 0,
         max_uploads: Number(process.env.ADMISSION_MAX_ACTIVE_UPLOADS || 64),
         next_available_at: collectorNextAvailableAt().toISOString(),
         upload_slot_ms: COLLECTOR_UPLOAD_SLOT_MS,

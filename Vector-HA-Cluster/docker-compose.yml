@@ -100,6 +100,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-a"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-1:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -120,6 +123,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -136,6 +140,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-b"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-2:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -156,6 +163,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -172,6 +180,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-c"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-1:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -192,6 +203,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -208,6 +220,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-d"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-2:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -228,6 +243,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -244,6 +260,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-e"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-1:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -264,6 +283,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -280,6 +300,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-f"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-2:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -300,6 +323,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -316,6 +340,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-g"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-1:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -336,6 +363,7 @@ services:
       - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
+      - redpanda-broker
       - vector-gateway-1
       - vector-gateway-2
     networks:
@@ -352,6 +380,9 @@ services:
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-h"
       CONTROL_PLANE_URL: "http://control-plane:8080"
       VECTOR_URL: "http://vector-gateway-2:8686/"
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      DIRECT_VECTOR_FORWARD: "false"
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
@@ -371,6 +402,31 @@ services:
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
       - ./leases:/var/lib/hosteye/leases
     depends_on:
+      - clickhouse
+      - redpanda-broker
+      - vector-gateway-1
+      - vector-gateway-2
+    networks:
+      - soc-network
+
+  raw-chunk-worker:
+    image: node:20-alpine
+    container_name: hosteye-raw-chunk-worker
+    working_dir: /app
+    command: ["node", "raw-chunk-worker.js"]
+    environment:
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      RAW_WORKER_GROUP: "raw-chunk-worker"
+      RAW_WORKER_AUTO_OFFSET_RESET: "${RAW_WORKER_AUTO_OFFSET_RESET:-earliest}"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      VECTOR_URL: "http://vector-gateway-1:8686/"
+      NODE_ENV: "production"
+    volumes:
+      - ../VectorIngestAckGateway:/app:ro
+      - ./raw_chunks:/var/lib/hosteye/raw_chunks
+    depends_on:
+      - redpanda-broker
       - clickhouse
       - vector-gateway-1
       - vector-gateway-2

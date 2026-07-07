@@ -60,7 +60,7 @@ if (-not $NoStart) {
     $env:CONTROL_SEND_AFTER_MS = [string][Math]::Max(0, $DemoSendDelayMs)
     $env:CONTROL_COLLECTOR_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
     $env:COLLECTOR_UPLOAD_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
-    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h | Out-Host
+    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h raw-chunk-worker | Out-Host
 }
 
 Wait-HttpOk -Url "http://127.0.0.1:8123/?query=SELECT%201" -Name "ClickHouse"
@@ -204,13 +204,15 @@ $ack = Invoke-RestMethod -Method Post -Uri $telemetryUrl -ContentType "applicati
 if (-not $ack.ack -or -not $ack.commit) {
     throw "Data Plane did not ACK commit: $(ConvertTo-CompactJson $ack)"
 }
-Write-Host "ACK status=$($ack.status) index_status=$($ack.index_status) chunk=$($ack.chunk_id) event_count=$($ack.event_count)"
+Write-Host "ACK status=$($ack.status) broker_status=$($ack.broker_status) index_status=$($ack.index_status) chunk=$($ack.chunk_id) event_count=$($ack.event_count)"
 
-Start-Sleep -Seconds 2
-$chunkQuery = [Uri]::EscapeDataString("SELECT status, duplicate, message FROM default.ingest_chunks FINAL WHERE agent_id='$agentId' AND chunk_id='$chunkId' ORDER BY last_seen DESC LIMIT 5 FORMAT JSONEachRow")
+Start-Sleep -Seconds 3
+$chunkQuery = [Uri]::EscapeDataString("SELECT last_seen, status, duplicate, message FROM default.ingest_chunks WHERE agent_id='$agentId' AND chunk_id='$chunkId' ORDER BY last_seen FORMAT JSONEachRow")
 $rawQuery = [Uri]::EscapeDataString("SELECT raw_path, status FROM default.raw_chunk_vault WHERE agent_id='$agentId' AND chunk_id='$chunkId' LIMIT 1 FORMAT JSONEachRow")
+$eventQuery = [Uri]::EscapeDataString("SELECT count() AS events FROM default.windows_system_logs WHERE agent_id='$agentId' AND chunk_id='$chunkId' FORMAT JSONEachRow")
 $chunkRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$chunkQuery"
 $rawRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$rawQuery"
+$eventRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$eventQuery"
 
 Write-Host ""
 Write-Host "Flow test OK"
@@ -219,8 +221,11 @@ Write-Host "  Chunk      : $chunkId"
 Write-Host "  Lease      : $($bootstrap.lease_id)"
 Write-Host "  Collector  : $($bootstrap.collector_id)"
 Write-Host "  ACK        : $($ack.status)"
+Write-Host "  Broker     : $($ack.broker_status)"
 Write-Host "  Index      : $($ack.index_status)"
 Write-Host "  Chunk rows :"
 Write-Host $chunkRows
 Write-Host "  Raw row    :"
 Write-Host $rawRows
+Write-Host "  Indexed events:"
+Write-Host $eventRows
