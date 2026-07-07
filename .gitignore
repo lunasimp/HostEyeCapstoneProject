@@ -4,6 +4,7 @@ Vector-HA-Cluster/clickhouse_data/
 Vector-HA-Cluster/grafana_data/
 Vector-HA-Cluster/soc_vault/
 Vector-HA-Cluster/raw_chunks/
+Vector-HA-Cluster/leases/
 Vector-HA-Cluster/*.log
 Vector-HA-Cluster/**/*.log
 

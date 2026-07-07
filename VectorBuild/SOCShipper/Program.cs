@@ -184,7 +184,7 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
         var ack = await ReadAndValidateAck(resp, chunk);
         state.SetCheckpoint(file, batch.NextLineOffset, batch.NextByteOffset);
         state.Save();
-        logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} file={Path.GetFileName(file)} next_byte_offset={batch.NextByteOffset} next_line_offset={batch.NextLineOffset}.");
+        logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} index_status={ack.IndexStatus} file={Path.GetFileName(file)} next_byte_offset={batch.NextByteOffset} next_line_offset={batch.NextLineOffset}.");
         var timing = new SendTiming(jitterPlannedAt, scheduledSendAt, actualSendAt, sendStartedAt, sendCompletedAt);
         await TrySendRuntimeMetric(config, http, logger, file, batch, gzipped.CompressedLength, jitter, jitterWindow, retryAttempt, spoolStats, (int)resp.StatusCode, stopwatch.Elapsed, chunk, ack, timing);
         TryArchiveEmptyOrFullyReadFile(file, batch.NextByteOffset, logger);
@@ -320,6 +320,7 @@ static async Task TrySyncAgentConfig(ShipperConfig config, HttpClient http, Ship
     try
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, configUri);
+        AddAgentConfigHeaders(req, config);
         if (!string.IsNullOrWhiteSpace(state.AgentConfigEtag))
         {
             req.Headers.TryAddWithoutValidation("If-None-Match", state.AgentConfigEtag);
@@ -339,11 +340,41 @@ static async Task TrySyncAgentConfig(ShipperConfig config, HttpClient http, Ship
         var body = await resp.Content.ReadAsStringAsync();
         using var doc = JsonDocument.Parse(body);
         var root = doc.RootElement;
-        ApplyServerConfig(config, root);
+        var ackStatus = "applied";
+        var ackMessage = "legacy config applied";
+        if (root.TryGetProperty("signed_policy", out var signedPolicy))
+        {
+            var verify = VerifySignedPolicy(signedPolicy, config, logger);
+            if (!verify.Valid)
+            {
+                logger.Error($"Agent config signature verification failed: {verify.Message}");
+                await TryAckAgentConfig(config, http, logger, root, "verify_failed", verify.Message);
+                return;
+            }
+
+            if (signedPolicy.TryGetProperty("config", out var signedConfig))
+            {
+                ApplyServerConfig(config, signedConfig);
+            }
+            ApplyServerConfig(config, root);
+            state.AgentConfigPolicyId = GetJsonString(signedPolicy, "policy_id");
+            state.AgentConfigPolicyVersion = GetJsonInt(signedPolicy, "version");
+            state.AgentConfigSha256 = GetJsonString(signedPolicy, "config_sha256");
+            state.AgentConfigCachedJson = signedPolicy.GetRawText();
+            ackMessage = "signed policy verified and applied";
+        }
+        else
+        {
+            ApplyServerConfig(config, root);
+            state.AgentConfigPolicyId = GetJsonString(root, "policy_id");
+            state.AgentConfigPolicyVersion = GetJsonInt(root, "policy_version");
+            state.AgentConfigCachedJson = root.GetRawText();
+        }
         if (resp.Headers.ETag is not null)
         {
             state.AgentConfigEtag = resp.Headers.ETag.Tag;
         }
+        await TryAckAgentConfig(config, http, logger, root, ackStatus, ackMessage);
         logger.Info($"Agent config synced from {configUri}; etag={state.AgentConfigEtag}; MaxEvents={config.MaxEvents}; MaxBytes={config.MaxBytes}; NormalJitter={config.NormalJitterWindowSeconds}s; RecoveryJitter={config.RecoveryJitterWindowSeconds}s.");
     }
     catch (Exception ex)
@@ -358,6 +389,116 @@ static void ApplyServerConfig(ShipperConfig config, JsonElement root)
     if (TryGetInt(root, "max_bytes", out var maxBytes) && maxBytes > 0) config.MaxBytes = maxBytes;
     if (TryGetInt(root, "normal_jitter_window_ms", out var normalJitterMs)) config.NormalJitterWindowSeconds = MillisecondsToSeconds(normalJitterMs);
     if (TryGetInt(root, "recovery_jitter_window_ms", out var recoveryJitterMs)) config.RecoveryJitterWindowSeconds = MillisecondsToSeconds(recoveryJitterMs);
+
+    if (root.TryGetProperty("routing", out var routing))
+    {
+        var telemetryUrl = GetJsonString(routing, "telemetry_url");
+        var admissionUrl = GetJsonString(routing, "admission_url");
+        var configUrl = GetJsonString(routing, "config_url");
+        if (Uri.TryCreate(telemetryUrl, UriKind.Absolute, out _)) config.GatewayUri = telemetryUrl;
+        if (Uri.TryCreate(admissionUrl, UriKind.Absolute, out _)) config.AdmissionUri = admissionUrl;
+        if (Uri.TryCreate(configUrl, UriKind.Absolute, out _)) config.ConfigUri = configUrl;
+    }
+
+    if (root.TryGetProperty("limits", out var limits))
+    {
+        if (TryGetInt(limits, "max_events", out maxEvents) && maxEvents > 0) config.MaxEvents = maxEvents;
+        if (TryGetInt(limits, "max_bytes", out maxBytes) && maxBytes > 0) config.MaxBytes = maxBytes;
+    }
+
+    if (root.TryGetProperty("jitter", out var jitter))
+    {
+        if (TryGetInt(jitter, "normal_jitter_window_ms", out normalJitterMs)) config.NormalJitterWindowSeconds = MillisecondsToSeconds(normalJitterMs);
+        if (TryGetInt(jitter, "recovery_jitter_window_ms", out recoveryJitterMs)) config.RecoveryJitterWindowSeconds = MillisecondsToSeconds(recoveryJitterMs);
+    }
+}
+
+static (bool Valid, string Message) VerifySignedPolicy(JsonElement signedPolicy, ShipperConfig config, FileLogger logger)
+{
+    var algorithm = GetJsonString(signedPolicy, "signature_algorithm");
+    if (!string.Equals(algorithm, "hmac-sha256", StringComparison.OrdinalIgnoreCase))
+    {
+        return (false, $"unsupported signature_algorithm={algorithm}");
+    }
+    if (!signedPolicy.TryGetProperty("config", out var policyConfig))
+    {
+        return (false, "signed policy missing config");
+    }
+
+    var expectedHash = GetJsonString(signedPolicy, "config_sha256");
+    var actualHash = Sha256Hex(policyConfig.GetRawText());
+    if (!string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
+    {
+        return (false, "config_sha256 mismatch");
+    }
+
+    var signature = GetJsonString(signedPolicy, "signature");
+    var expectedSignature = HmacSha256Hex(config.AgentConfigSigningKey, SignedPolicyText(signedPolicy));
+    if (!FixedTimeEqualsHex(signature, expectedSignature))
+    {
+        return (false, "signature mismatch");
+    }
+
+    logger.Info($"Verified signed policy id={GetJsonString(signedPolicy, "policy_id")} version={GetJsonInt(signedPolicy, "version")} key_id={GetJsonString(signedPolicy, "key_id")}.");
+    return (true, "ok");
+}
+
+static string SignedPolicyText(JsonElement envelope)
+{
+    return string.Join("\n", new[]
+    {
+        "HOSTEYE_DYNAMIC_CONFIG_V1",
+        GetJsonString(envelope, "signature_algorithm"),
+        GetJsonString(envelope, "key_id"),
+        GetJsonString(envelope, "policy_id"),
+        GetJsonInt(envelope, "version").ToString(),
+        GetJsonString(envelope, "issued_at"),
+        GetJsonString(envelope, "expires_at"),
+        GetJsonString(envelope, "agent_id"),
+        GetJsonString(envelope, "host_id"),
+        GetJsonString(envelope, "group_id"),
+        GetJsonString(envelope, "config_sha256")
+    });
+}
+
+static async Task TryAckAgentConfig(ShipperConfig config, HttpClient http, FileLogger logger, JsonElement root, string status, string message)
+{
+    try
+    {
+        var ackUri = DeriveEndpointUri(string.IsNullOrWhiteSpace(config.ConfigUri) ? config.GatewayUri : config.ConfigUri, "/api/v1/agent/config/ack");
+        var policy = root.TryGetProperty("signed_policy", out var signedPolicy) ? signedPolicy : root;
+        var payload = new Dictionary<string, object?>
+        {
+            ["agent_id"] = GetAgentId(),
+            ["host_id"] = GetHostId(),
+            ["computer"] = GetEndpointComputerName(),
+            ["source_platform"] = "hosteye_windows_endpoint",
+            ["policy_id"] = GetJsonString(policy, "policy_id"),
+            ["version"] = GetJsonInt(policy, "version") == 0 ? GetJsonInt(root, "policy_version") : GetJsonInt(policy, "version"),
+            ["status"] = status,
+            ["message"] = message,
+            ["applied_at"] = DateTimeOffset.UtcNow.ToString("O")
+        };
+        using var content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
+        using var req = new HttpRequestMessage(HttpMethod.Post, ackUri) { Content = content };
+        AddAgentConfigHeaders(req, config);
+        using var resp = await http.SendAsync(req);
+        if (!resp.IsSuccessStatusCode)
+        {
+            logger.Warn($"Agent config ACK returned {(int)resp.StatusCode} {resp.ReasonPhrase}.");
+        }
+    }
+    catch (Exception ex)
+    {
+        logger.Warn($"Agent config ACK skipped: {ex.Message}");
+    }
+}
+
+static void AddAgentConfigHeaders(HttpRequestMessage req, ShipperConfig config)
+{
+    req.Headers.TryAddWithoutValidation("x-hosteye-agent-id", GetAgentId());
+    req.Headers.TryAddWithoutValidation("x-hosteye-host-id", GetHostId());
+    req.Headers.TryAddWithoutValidation("x-hosteye-group-id", config.GroupId);
 }
 
 static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpClient http, FileLogger logger, Batch batch, SpoolStats spoolStats, int retryAttempt)
@@ -428,13 +569,32 @@ static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpCli
             MaxUploadRateKbps: GetJsonInt(doc.RootElement, "max_upload_rate_kbps"),
             Required: config.RequireUploadLease);
 
+        var collectorUrl = GetJsonString(doc.RootElement, "collector_url");
+        if (string.IsNullOrWhiteSpace(collectorUrl) &&
+            doc.RootElement.TryGetProperty("routing", out var routing))
+        {
+            collectorUrl = GetJsonString(routing, "telemetry_url");
+        }
+        if (Uri.TryCreate(collectorUrl, UriKind.Absolute, out _))
+        {
+            config.GatewayUri = collectorUrl;
+        }
+
         if (config.RequireUploadLease && string.IsNullOrWhiteSpace(lease.LeaseId))
         {
             throw new Exception("Admission response did not include lease_id.");
         }
 
         EnsureUploadLeaseUsable(lease, batch);
-        logger.Info($"Admission OK lease={lease.LeaseId} ttl={lease.LeaseTtlSeconds}s max_batch_mb={lease.MaxBatchMb:F3} max_upload_rate_kbps={lease.MaxUploadRateKbps}.");
+        var sendAfter = GetJsonDateTimeOffset(doc.RootElement, "send_after");
+        if (sendAfter is not null && sendAfter.Value > DateTimeOffset.UtcNow)
+        {
+            var delay = sendAfter.Value - DateTimeOffset.UtcNow;
+            logger.Info($"Admission send_after={sendAfter.Value:O}; delaying {delay.TotalSeconds:F0}s before upload.");
+            await Task.Delay(delay);
+            EnsureUploadLeaseUsable(lease, batch);
+        }
+        logger.Info($"Admission OK lease={lease.LeaseId} collector_url={config.GatewayUri} ttl={lease.LeaseTtlSeconds}s max_batch_mb={lease.MaxBatchMb:F3} max_upload_rate_kbps={lease.MaxUploadRateKbps}.");
         return lease;
     }
     catch (BackpressureException)
@@ -970,6 +1130,26 @@ static string Sha256Hex(string value)
     return Convert.ToHexString(hash).ToLowerInvariant();
 }
 
+static string HmacSha256Hex(string key, string value)
+{
+    using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(key));
+    return Convert.ToHexString(hmac.ComputeHash(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
+}
+
+static bool FixedTimeEqualsHex(string left, string right)
+{
+    try
+    {
+        var leftBytes = Convert.FromHexString(left);
+        var rightBytes = Convert.FromHexString(right);
+        return CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+    }
+    catch
+    {
+        return false;
+    }
+}
+
 record Batch(List<string> Lines, int Bytes, long StartByteOffset, long NextByteOffset, int StartLineOffset, int NextLineOffset);
 record QuotaFile(string FullName, bool IsSent);
 record SpoolStats(long Bytes, int FileCount, int PendingFileCount);
@@ -1029,6 +1209,9 @@ class ChunkAck
     [JsonPropertyName("status")]
     public string Status { get; set; } = "";
 
+    [JsonPropertyName("index_status")]
+    public string IndexStatus { get; set; } = "";
+
     [JsonPropertyName("chunk_id")]
     public string ChunkId { get; set; } = "";
 
@@ -1056,6 +1239,8 @@ class ShipperConfig
     public string GatewayUri { get; set; } = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry";
     public string ConfigUri { get; set; } = "";
     public string AdmissionUri { get; set; } = "";
+    public string GroupId { get; set; } = "default";
+    public string AgentConfigSigningKey { get; set; } = "hosteye-dynamic-config-demo-key";
     public string SpoolDirectory { get; set; } = "C:\\ProgramData\\HostEye\\spool";
     public string StateDirectory { get; set; } = "C:\\ProgramData\\HostEye\\shipper_state";
     public string LogDirectory { get; set; } = "C:\\ProgramData\\HostEye\\logs";
@@ -1091,6 +1276,10 @@ class ShipperState
 {
     public Dictionary<string, FileCheckpoint> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string AgentConfigEtag { get; set; } = "";
+    public string AgentConfigPolicyId { get; set; } = "";
+    public int AgentConfigPolicyVersion { get; set; }
+    public string AgentConfigSha256 { get; set; } = "";
+    public string AgentConfigCachedJson { get; set; } = "";
     [JsonIgnore]
     public string PathOnDisk { get; private set; } = "";
 
