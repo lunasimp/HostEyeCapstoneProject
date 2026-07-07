@@ -7,6 +7,7 @@ const DEFAULTS = Object.freeze({
   requiredSchemaVersion: "1.0.0",
   processingVersion: "server-processing-1.0.0",
   requiredEventFields: ["agent_id", "host_id", "computer", "timestamp", "channel", "event_id", "record_id"],
+  rawChunkDir: "/var/lib/hosteye/raw_chunks",
   requireUploadLease: true,
   maxActiveUploads: 64,
   leaseTtlSeconds: 30,
@@ -173,6 +174,10 @@ async function handleChunk(state, payload, context) {
       }
     };
   }
+
+  const rawMeta = await writeRawChunk(state, payload);
+  await state.clickhouseInsert("default.raw_chunk_vault", buildRawChunkRow(state, payload, rawMeta, "stored", "raw chunk stored before ACK"));
+  await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, "raw_stored", false, "raw chunk stored before ACK"));
 
   const enrichedEvents = enrichEvents(state, payload);
   const invalidEvents = enrichedEvents.filter((event) => event.parser_status === "invalid").length;
@@ -459,6 +464,56 @@ function buildChunkRow(state, payload, status, duplicate, message) {
   };
 }
 
+
+async function writeRawChunk(state, payload) {
+  const now = state.now();
+  const day = now.toISOString().slice(0, 10);
+  const agentId = safePathPart(payload.agent_id);
+  const chunkId = safePathPart(payload.chunk_id);
+  const dir = path.join(state.options.rawChunkDir, day, agentId);
+  await fs.promises.mkdir(dir, { recursive: true });
+
+  const canonical = JSON.stringify(payload);
+  const raw = Buffer.from(canonical, "utf8");
+  const compressed = zlib.gzipSync(raw);
+  const filePath = path.join(dir, `${chunkId}.json.gz`);
+  await fs.promises.writeFile(filePath, compressed, { flag: "wx" }).catch(async (error) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+
+  return {
+    raw_path: filePath,
+    raw_size_bytes: raw.length,
+    compressed_size_bytes: compressed.length,
+    compression: "gzip",
+    raw_sha256: sha256Hex(canonical)
+  };
+}
+
+function buildRawChunkRow(state, payload, rawMeta, status, message) {
+  return {
+    kafka_timestamp: state.now().toISOString(),
+    agent_id: String(payload.agent_id || ""),
+    host_id: String(payload.host_id || ""),
+    computer: String(payload.computer || ""),
+    chunk_id: String(payload.chunk_id || ""),
+    checksum: String(payload.checksum || ""),
+    event_count: Number(payload.event_count || 0),
+    sequence_number: Number(payload.sequence_number || 0),
+    schema_version: String(payload.schema_version || ""),
+    lease_id: String(payload.lease_id || ""),
+    lease_expires_at: isoDateOrNow(state, payload.lease_expires_at),
+    max_batch_mb: Number(payload.max_batch_mb || 0),
+    max_upload_rate_kbps: Number(payload.max_upload_rate_kbps || 0),
+    raw_path: rawMeta.raw_path,
+    raw_size_bytes: rawMeta.raw_size_bytes,
+    compressed_size_bytes: rawMeta.compressed_size_bytes,
+    compression: rawMeta.compression,
+    raw_sha256: rawMeta.raw_sha256,
+    status,
+    message: String(message || "")
+  };
+}
 
 function pruneExpiredLeases(state) {
   const now = state.now().getTime();

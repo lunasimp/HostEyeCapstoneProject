@@ -43,6 +43,7 @@ const dataplane = createDataPlane({
   validateAndConsumeUploadLease: async (payload) => leaseStore.validateAndConsume(payload, COLLECTOR_ID)
 }, {
   requiredSchemaVersion: process.env.REQUIRED_SCHEMA_VERSION || "1.0.0",
+  rawChunkDir: process.env.RAW_CHUNK_DIR || "/var/lib/hosteye/raw_chunks",
   requireUploadLease: String(process.env.REQUIRE_UPLOAD_LEASE || "true").toLowerCase() !== "false",
   maxActiveUploads: Number(process.env.ADMISSION_MAX_ACTIVE_UPLOADS || 64),
   leaseTtlSeconds: Number(process.env.ADMISSION_LEASE_TTL_SECONDS || 30),
