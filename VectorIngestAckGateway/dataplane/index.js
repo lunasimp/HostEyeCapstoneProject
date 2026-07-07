@@ -7,13 +7,11 @@ const DEFAULTS = Object.freeze({
   requiredSchemaVersion: "1.0.0",
   processingVersion: "server-processing-1.0.0",
   requiredEventFields: ["agent_id", "host_id", "computer", "timestamp", "channel", "event_id", "record_id"],
-  rawChunkDir: "/var/lib/hosteye/raw_chunks",
   requireUploadLease: true,
   maxActiveUploads: 64,
   leaseTtlSeconds: 30,
   maxBatchMb: 5,
   maxUploadRateKbps: 1024,
-  directVectorForward: true,
   agentConfig: Object.freeze({
     config_version: "1.0.0",
     schema_version: "1.0.0",
@@ -34,7 +32,6 @@ function createDataPlane(deps = {}, options = {}) {
     clickhouseInsert: deps.clickhouseInsert || missingDependency("clickhouseInsert"),
     getChunk: deps.getChunk || missingDependency("getChunk"),
     forwardToVector: deps.forwardToVector || missingDependency("forwardToVector"),
-    publishToBroker: deps.publishToBroker || null,
     validateAndConsumeUploadLease: deps.validateAndConsumeUploadLease || null
   };
 
@@ -177,42 +174,16 @@ async function handleChunk(state, payload, context) {
     };
   }
 
-  const rawMeta = await writeRawChunk(state, payload);
-  await state.clickhouseInsert("default.raw_chunk_vault", buildRawChunkRow(state, payload, rawMeta, "stored", "raw chunk stored before ACK"));
-  await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, "raw_stored", false, "raw chunk stored before ACK"));
-
-  let brokerStatus = "disabled";
-  let brokerMessage = "broker publish disabled";
-  if (state.publishToBroker) {
-    try {
-      const brokerJob = buildRawChunkBrokerJob(state, payload, rawMeta, validation, context);
-      const brokerResult = await state.publishToBroker(brokerJob);
-      brokerStatus = "broker_queued";
-      brokerMessage = `published raw chunk job to ${brokerResult.topic || "broker"}`;
-      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, brokerStatus, false, brokerMessage));
-    } catch (error) {
-      brokerStatus = "broker_failed";
-      brokerMessage = `broker publish failed: ${error?.message || String(error)}`;
-      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, brokerStatus, false, brokerMessage));
-    }
-  }
-
   const enrichedEvents = enrichEvents(state, payload);
   const invalidEvents = enrichedEvents.filter((event) => event.parser_status === "invalid").length;
-  let indexStatus = "index_deferred";
-  let indexMessage = "indexing delegated to raw-chunk-worker";
-  if (state.options.directVectorForward) {
-    indexStatus = "index_queued";
-    indexMessage = "forwarded to vector gateway";
-    try {
-      await state.forwardToVector(enrichedEvents);
-      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
-    } catch (error) {
-      indexStatus = "index_failed";
-      indexMessage = `vector forward failed: ${error?.message || String(error)}`;
-      await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
-    }
-  } else {
+  let indexStatus = "index_queued";
+  let indexMessage = "forwarded to vector gateway";
+  try {
+    await state.forwardToVector(enrichedEvents);
+    await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
+  } catch (error) {
+    indexStatus = "index_failed";
+    indexMessage = `vector forward failed: ${error?.message || String(error)}`;
     await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, indexStatus, false, indexMessage));
   }
 
@@ -222,8 +193,6 @@ async function handleChunk(state, payload, context) {
       ack: true,
       commit: true,
       status: "raw_stored",
-      broker_status: brokerStatus,
-      broker_message: brokerMessage,
       index_status: indexStatus,
       index_message: indexMessage,
       chunk_id: validation.chunkId,
@@ -237,29 +206,6 @@ async function handleChunk(state, payload, context) {
   };
 }
 
-function buildRawChunkBrokerJob(state, payload, rawMeta, validation, context) {
-  return {
-    protocol: "hosteye.raw_chunk.v1",
-    event_type: "raw_chunk_stored",
-    queued_at: state.now().toISOString(),
-    collector_id: String(context.collector_id || ""),
-    agent_id: validation.agentId,
-    host_id: String(payload.host_id || ""),
-    computer: String(payload.computer || ""),
-    chunk_id: validation.chunkId,
-    checksum: validation.checksum,
-    event_count: validation.eventCount,
-    sequence_number: Number(payload.sequence_number || 0),
-    lease_id: String(payload.lease_id || ""),
-    lease_expires_at: String(payload.lease_expires_at || ""),
-    raw_path: rawMeta.raw_path,
-    raw_sha256: rawMeta.raw_sha256,
-    raw_size_bytes: rawMeta.raw_size_bytes,
-    compressed_size_bytes: rawMeta.compressed_size_bytes,
-    compression: rawMeta.compression,
-    next_step: "process_raw_chunk"
-  };
-}
 
 async function handleExistingChunk(state, payload, context, validation, existing) {
   const sameChecksum = String(existing.checksum || "").toLowerCase() === validation.checksum;
@@ -466,30 +412,6 @@ function buildRegisteredAgentRow(state, payload, context, status, message) {
   };
 }
 
-async function writeRawChunk(state, payload) {
-  const now = state.now();
-  const day = now.toISOString().slice(0, 10);
-  const agentId = safePathPart(payload.agent_id);
-  const chunkId = safePathPart(payload.chunk_id);
-  const dir = path.join(state.options.rawChunkDir, day, agentId);
-  await fs.promises.mkdir(dir, { recursive: true });
-
-  const canonical = JSON.stringify(payload);
-  const raw = Buffer.from(canonical, "utf8");
-  const compressed = zlib.gzipSync(raw);
-  const filePath = path.join(dir, `${chunkId}.json.gz`);
-  await fs.promises.writeFile(filePath, compressed, { flag: "wx" }).catch(async (error) => {
-    if (error.code !== "EEXIST") throw error;
-  });
-
-  return {
-    raw_path: filePath,
-    raw_size_bytes: raw.length,
-    compressed_size_bytes: compressed.length,
-    compression: "gzip",
-    raw_sha256: sha256Hex(canonical)
-  };
-}
 
 function buildAdmissionRow(state, payload, decision, leaseId, retryAfterSeconds, message) {
   const lease = leaseId ? state.activeLeases.get(leaseId) : null;
@@ -537,30 +459,6 @@ function buildChunkRow(state, payload, status, duplicate, message) {
   };
 }
 
-function buildRawChunkRow(state, payload, rawMeta, status, message) {
-  return {
-    kafka_timestamp: state.now().toISOString(),
-    agent_id: String(payload.agent_id || ""),
-    host_id: String(payload.host_id || ""),
-    computer: String(payload.computer || ""),
-    chunk_id: String(payload.chunk_id || ""),
-    checksum: String(payload.checksum || ""),
-    event_count: Number(payload.event_count || 0),
-    sequence_number: Number(payload.sequence_number || 0),
-    schema_version: String(payload.schema_version || ""),
-    lease_id: String(payload.lease_id || ""),
-    lease_expires_at: isoDateOrNow(state, payload.lease_expires_at),
-    max_batch_mb: Number(payload.max_batch_mb || 0),
-    max_upload_rate_kbps: Number(payload.max_upload_rate_kbps || 0),
-    raw_path: rawMeta.raw_path,
-    raw_size_bytes: rawMeta.raw_size_bytes,
-    compressed_size_bytes: rawMeta.compressed_size_bytes,
-    compression: rawMeta.compression,
-    raw_sha256: rawMeta.raw_sha256,
-    status,
-    message: String(message || "")
-  };
-}
 
 function pruneExpiredLeases(state) {
   const now = state.now().getTime();
