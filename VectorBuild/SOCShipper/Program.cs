@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Security;
 using System.Diagnostics;
@@ -23,11 +23,20 @@ var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
 
 logger.Info($"HostEyeShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
 using var http = BuildHttpClient(config, logger);
+if (config.StartupJitterWindowSeconds > 0)
+{
+    var startupJitter = RandomInt(random, 0, config.StartupJitterWindowSeconds);
+    logger.Info($"Applying startup jitter of {startupJitter}s before contacting server.");
+    await Task.Delay(TimeSpan.FromSeconds(startupJitter));
+}
 await TrySyncAgentConfig(config, http, state, logger);
 state.Save();
 using var cleanupCts = new CancellationTokenSource();
 var cleanupTask = config.MaxSpoolSizeMB > 0
     ? RunSpoolQuotaLoop(config, logger, cleanupCts.Token)
+    : Task.CompletedTask;
+var configSyncTask = config.EnableConfigSync && !config.RunOnce
+    ? RunPeriodicConfigSyncLoop(config, http, state, logger, random, cleanupCts.Token)
     : Task.CompletedTask;
 var attempt = 0;
 
@@ -80,7 +89,34 @@ try
 }
 finally
 {
-    await StopCleanupLoop(cleanupCts, cleanupTask, logger);
+    await StopCleanupLoop(cleanupCts, cleanupTask, configSyncTask, logger);
+}
+
+static async Task RunPeriodicConfigSyncLoop(ShipperConfig config, HttpClient http, ShipperState state, FileLogger logger, RandomNumberGenerator random, CancellationToken token)
+{
+    logger.Info($"Periodic config sync loop enabled. Interval={config.ConfigSyncIntervalSeconds}s Jitter={config.ConfigSyncJitterSeconds}s.");
+    while (!token.IsCancellationRequested)
+    {
+        try
+        {
+            var baseInterval = Math.Max(60, config.ConfigSyncIntervalSeconds);
+            var jitter = config.ConfigSyncJitterSeconds > 0 ? RandomInt(random, -config.ConfigSyncJitterSeconds, config.ConfigSyncJitterSeconds) : 0;
+            var delaySeconds = Math.Max(60, baseInterval + jitter);
+            
+            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), token);
+            await TrySyncAgentConfig(config, http, state, logger);
+            state.Save();
+        }
+        catch (OperationCanceledException)
+        {
+            break;
+        }
+        catch (Exception ex)
+        {
+            logger.Warn($"Periodic config sync loop error: {ex.Message}");
+            await Task.Delay(TimeSpan.FromSeconds(60), token);
+        }
+    }
 }
 
 static async Task RunSpoolQuotaLoop(ShipperConfig config, FileLogger logger, CancellationToken token)
@@ -108,19 +144,19 @@ static async Task RunSpoolQuotaLoop(ShipperConfig config, FileLogger logger, Can
     }
 }
 
-static async Task StopCleanupLoop(CancellationTokenSource cleanupCts, Task cleanupTask, FileLogger logger)
+static async Task StopCleanupLoop(CancellationTokenSource cleanupCts, Task cleanupTask, Task configSyncTask, FileLogger logger)
 {
     try
     {
         cleanupCts.Cancel();
-        await cleanupTask;
+        await Task.WhenAll(cleanupTask, configSyncTask);
     }
     catch (OperationCanceledException)
     {
     }
     catch (Exception ex)
     {
-        logger.Warn($"Spool quota loop stopped with error: {ex.Message}");
+        logger.Warn($"Background tasks stopped with error: {ex.Message}");
     }
 }
 
@@ -136,32 +172,44 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
     {
         var checkpoint = state.GetCheckpoint(file);
         var startByteOffset = ResolveStartByteOffset(file, checkpoint, logger);
-        var batch = ReadBatch(file, checkpoint.LineOffset, startByteOffset, config.MaxEvents, config.MaxBytes);
+        
+        var fileLength = new FileInfo(file).Length;
+        if (fileLength == 0 || startByteOffset >= fileLength)
+        {
+            TryArchiveEmptyOrFullyReadFile(file, startByteOffset, logger);
+            continue;
+        }
+
+        var jitterPlannedAt = DateTimeOffset.UtcNow;
+        var jitterWindow = startByteOffset == 0 ? config.NormalJitterWindowSeconds : Math.Min(config.RecoveryJitterWindowSeconds, Math.Max(config.NormalJitterWindowSeconds, config.RecoveryJitterWindowSeconds));
+        var jitter = StableJitterSeconds(endpointSeed + ":" + Path.GetFileName(file) + ":" + startByteOffset, jitterWindow);
+        var scheduledSendAt = jitterPlannedAt.AddSeconds(jitter);
+        if (jitter > 0)
+        {
+            logger.Info($"Applying deterministic send jitter {jitter}s for {Path.GetFileName(file)} byte_offset={startByteOffset}.");
+            await Task.Delay(TimeSpan.FromSeconds(jitter));
+        }
+        var actualSendAt = DateTimeOffset.UtcNow;
+
+        var requestedChunkSizeMb = config.MaxBytes / 1024d / 1024d;
+        var lease = await TryRequestAdmission(config, http, logger, requestedChunkSizeMb, spoolStats, retryAttempt);
+        
+        var allowedBytes = lease.MaxBatchMb > 0 ? (int)Math.Min(config.MaxBytes, lease.MaxBatchMb * 1024 * 1024) : config.MaxBytes;
+        var batch = ReadBatch(file, checkpoint.LineOffset, startByteOffset, config.MaxEvents, allowedBytes);
+        
         if (batch.Lines.Count == 0)
         {
             TryArchiveEmptyOrFullyReadFile(file, batch.NextByteOffset, logger);
             continue;
         }
 
-        var jitterPlannedAt = DateTimeOffset.UtcNow;
-        var jitterWindow = batch.StartByteOffset == 0 ? config.NormalJitterWindowSeconds : Math.Min(config.RecoveryJitterWindowSeconds, Math.Max(config.NormalJitterWindowSeconds, config.RecoveryJitterWindowSeconds));
-        var jitter = StableJitterSeconds(endpointSeed + ":" + Path.GetFileName(file) + ":" + batch.StartByteOffset, jitterWindow);
-        var scheduledSendAt = jitterPlannedAt.AddSeconds(jitter);
-        if (jitter > 0)
-        {
-            logger.Info($"Applying deterministic send jitter {jitter}s for {Path.GetFileName(file)} byte_offset={batch.StartByteOffset}.");
-            await Task.Delay(TimeSpan.FromSeconds(jitter));
-        }
-        var actualSendAt = DateTimeOffset.UtcNow;
-
-        var lease = await TryRequestAdmission(config, http, logger, batch, spoolStats, retryAttempt);
-        EnsureUploadLeaseUsable(lease, batch);
+        EnsureUploadLeaseUsable(lease);
 
         var payload = BuildChunkPayload(config, file, batch, lease, out var chunk);
         using var content = new StringContent(payload, Encoding.UTF8, "application/json");
         content.Headers.ContentEncoding.Add("gzip");
         using var gzipped = await GzipContent.Create(content, lease.MaxUploadRateKbps);
-        EnsureUploadLeaseUsable(lease, batch);
+        EnsureUploadLeaseUsable(lease);
         using var req = new HttpRequestMessage(HttpMethod.Post, config.GatewayUri) { Content = gzipped };
         req.Headers.UserAgent.ParseAdd("HostEyeShipper/1.0");
 
@@ -183,6 +231,7 @@ static async Task<bool> ProcessSpoolOnce(ShipperConfig config, ShipperState stat
 
         var ack = await ReadAndValidateAck(resp, chunk);
         state.SetCheckpoint(file, batch.NextLineOffset, batch.NextByteOffset);
+        state.LastSuccessTime = DateTimeOffset.UtcNow;
         state.Save();
         logger.Info($"Sent OK chunk={chunk.ChunkId} ack_status={ack.Status} index_status={ack.IndexStatus} file={Path.GetFileName(file)} next_byte_offset={batch.NextByteOffset} next_line_offset={batch.NextLineOffset}.");
         var timing = new SendTiming(jitterPlannedAt, scheduledSendAt, actualSendAt, sendStartedAt, sendCompletedAt);
@@ -501,7 +550,7 @@ static void AddAgentConfigHeaders(HttpRequestMessage req, ShipperConfig config)
     req.Headers.TryAddWithoutValidation("x-hosteye-group-id", config.GroupId);
 }
 
-static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpClient http, FileLogger logger, Batch batch, SpoolStats spoolStats, int retryAttempt)
+static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpClient http, FileLogger logger, double nextChunkSizeMb, SpoolStats spoolStats, int retryAttempt)
 {
     if (!config.EnableAdmissionControl) return UploadLease.Disabled();
     var admissionUri = string.IsNullOrWhiteSpace(config.AdmissionUri)
@@ -514,9 +563,10 @@ static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpCli
         ["host_id"] = GetHostId(),
         ["computer"] = GetEndpointComputerName(),
         ["queue_used_mb"] = Math.Round(spoolStats.Bytes / 1024d / 1024d, 3),
-        ["next_chunk_size_mb"] = Math.Round(batch.Bytes / 1024d / 1024d, 3),
+        ["next_chunk_size_mb"] = Math.Round(nextChunkSizeMb, 3),
         ["retry_count"] = retryAttempt,
-        ["rank"] = Math.Max(0, retryAttempt)
+        ["rank"] = Math.Max(0, retryAttempt),
+        ["last_success_time"] = state.LastSuccessTime?.ToString("O")
     };
 
     try
@@ -585,14 +635,14 @@ static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpCli
             throw new Exception("Admission response did not include lease_id.");
         }
 
-        EnsureUploadLeaseUsable(lease, batch);
+        EnsureUploadLeaseUsable(lease);
         var sendAfter = GetJsonDateTimeOffset(doc.RootElement, "send_after");
         if (sendAfter is not null && sendAfter.Value > DateTimeOffset.UtcNow)
         {
             var delay = sendAfter.Value - DateTimeOffset.UtcNow;
             logger.Info($"Admission send_after={sendAfter.Value:O}; delaying {delay.TotalSeconds:F0}s before upload.");
             await Task.Delay(delay);
-            EnsureUploadLeaseUsable(lease, batch);
+            EnsureUploadLeaseUsable(lease);
         }
         logger.Info($"Admission OK lease={lease.LeaseId} collector_url={config.GatewayUri} ttl={lease.LeaseTtlSeconds}s max_batch_mb={lease.MaxBatchMb:F3} max_upload_rate_kbps={lease.MaxUploadRateKbps}.");
         return lease;
@@ -612,7 +662,7 @@ static async Task<UploadLease> TryRequestAdmission(ShipperConfig config, HttpCli
     }
 }
 
-static void EnsureUploadLeaseUsable(UploadLease lease, Batch batch)
+static void EnsureUploadLeaseUsable(UploadLease lease)
 {
     if (!lease.Required) return;
     if (string.IsNullOrWhiteSpace(lease.LeaseId))
@@ -622,14 +672,6 @@ static void EnsureUploadLeaseUsable(UploadLease lease, Batch batch)
     if (lease.ExpiresAtUtc <= DateTimeOffset.UtcNow)
     {
         throw new BackpressureException(429, 5);
-    }
-    if (lease.MaxBatchMb > 0)
-    {
-        var batchMb = batch.Bytes / 1024d / 1024d;
-        if (batchMb > lease.MaxBatchMb)
-        {
-            throw new Exception($"Batch size {batchMb:F3} MB exceeds upload lease max_batch_mb={lease.MaxBatchMb:F3}.");
-        }
     }
 }
 
@@ -1250,6 +1292,7 @@ class ShipperConfig
     public bool AllowSystemServerCertificateTrust { get; set; } = true;
     public int MaxEvents { get; set; } = 1000;
     public int MaxBytes { get; set; } = 1048576;
+    public int StartupJitterWindowSeconds { get; set; } = 300;
     public int NormalJitterWindowSeconds { get; set; } = 120;
     public int RecoveryJitterWindowSeconds { get; set; } = 900;
     public int BaseBackoffSeconds { get; set; } = 2;
@@ -1257,6 +1300,8 @@ class ShipperConfig
     public long MaxSpoolSizeMB { get; set; } = 8192;
     public int LowWatermarkPercent { get; set; } = 85;
     public int SpoolCheckIntervalSeconds { get; set; } = 30;
+    public int ConfigSyncIntervalSeconds { get; set; } = 1800;
+    public int ConfigSyncJitterSeconds { get; set; } = 300;
     public bool PreferDeletingSentFirst { get; set; } = true;
     public int SentRetentionDays { get; set; } = 2;
     public bool EnableConfigSync { get; set; } = true;
@@ -1280,6 +1325,7 @@ class ShipperState
     public int AgentConfigPolicyVersion { get; set; }
     public string AgentConfigSha256 { get; set; } = "";
     public string AgentConfigCachedJson { get; set; } = "";
+    public DateTimeOffset? LastSuccessTime { get; set; }
     [JsonIgnore]
     public string PathOnDisk { get; private set; } = "";
 
