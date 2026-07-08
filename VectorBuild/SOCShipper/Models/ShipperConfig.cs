@@ -28,6 +28,8 @@ public class ShipperConfig
     public int SpoolCheckIntervalSeconds { get; set; } = 30;
     public int ConfigSyncIntervalSeconds { get; set; } = 1800;
     public int ConfigSyncJitterSeconds { get; set; } = 300;
+    public int HeartbeatIntervalSeconds { get; set; } = 300;
+    public int HeartbeatJitterSeconds { get; set; } = 60;
     public bool PreferDeletingSentFirst { get; set; } = true;
     public int SentRetentionDays { get; set; } = 2;
     public bool EnableConfigSync { get; set; } = true;

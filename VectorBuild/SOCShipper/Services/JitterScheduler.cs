@@ -25,6 +25,13 @@ public class JitterScheduler
         return (TimeSpan.FromSeconds(StableJitterSeconds(seed, window)), window);
     }
 
+    public TimeSpan GetPeriodicDelay(int baseSeconds, int jitterSeconds)
+    {
+        var jitterOffset = jitterSeconds > 0 ? RandomInt(-jitterSeconds, jitterSeconds) : 0;
+        var delaySeconds = Math.Max(1, baseSeconds + jitterOffset);
+        return TimeSpan.FromSeconds(delaySeconds);
+    }
+
     private int StableJitterSeconds(string seed, int windowSeconds)
     {
         if (windowSeconds <= 0) return 0;

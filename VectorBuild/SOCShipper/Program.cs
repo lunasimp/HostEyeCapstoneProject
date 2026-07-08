@@ -71,7 +71,9 @@ try
             }
             else
             {
-                await Task.Delay(TimeSpan.FromSeconds(5));
+                var heartbeatDelay = jitterScheduler.GetPeriodicDelay(config.HeartbeatIntervalSeconds, config.HeartbeatJitterSeconds);
+                logger.Info($"Spool is empty. Sleeping for heartbeat periodic jitter: {heartbeatDelay.TotalSeconds}s.");
+                await Task.Delay(heartbeatDelay);
             }
         }
         catch (BackpressureException ex)
@@ -107,11 +109,8 @@ static async Task RunPeriodicConfigSyncLoop(ShipperConfig config, ConfigSynchron
     {
         try
         {
-            var baseInterval = Math.Max(60, config.ConfigSyncIntervalSeconds);
-            var jitterOffset = config.ConfigSyncJitterSeconds > 0 ? jitter.RandomInt(-config.ConfigSyncJitterSeconds, config.ConfigSyncJitterSeconds) : 0;
-            var delaySeconds = Math.Max(60, baseInterval + jitterOffset);
-            
-            await Task.Delay(TimeSpan.FromSeconds(delaySeconds), token);
+            var delay = jitter.GetPeriodicDelay(config.ConfigSyncIntervalSeconds, config.ConfigSyncJitterSeconds);
+            await Task.Delay(delay, token);
             await configSync.TrySyncAgentConfigAsync();
             state.Save();
         }
