@@ -8,10 +8,12 @@ $TargetDir = "C:\Program Files\HostEye"
 $ProgramDataDir = "C:\ProgramData\HostEye"
 $BackupDir = Join-Path $ProgramDataDir "config-backups"
 $PublicKeyPath = Join-Path $TargetDir "certs\updater_public.pem"
-$UpdateUrl = "https://soc-gateway.yourcorporate.com/api/v1/agent/config"
+$UpdateUrl = "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
 $VectorExe = Join-Path $TargetDir "vector.exe"
 $ActiveConfig = Join-Path $TargetDir "vector.toml"
 $VersionState = Join-Path $ProgramDataDir "config.version"
+$ManifestEtagState = Join-Path $ProgramDataDir "config.manifest.etag"
+$ConfigEtagState = Join-Path $ProgramDataDir "config.vector.etag"
 $LogDir = Join-Path $ProgramDataDir "logs"
 $LogPath = Join-Path $LogDir "updater.log"
 
@@ -41,6 +43,57 @@ function Get-CurrentVersion {
         return ((Get-Content -LiteralPath $VersionState -Raw).Trim())
     }
     return "0.0.0"
+}
+
+function Get-SavedEtag([string]$Path) {
+    if (Test-Path -LiteralPath $Path) {
+        return ((Get-Content -LiteralPath $Path -Raw).Trim())
+    }
+    return ""
+}
+
+function Set-SavedEtag([string]$Path, [string]$Etag) {
+    if (-not [string]::IsNullOrWhiteSpace($Etag)) {
+        Set-Content -LiteralPath $Path -Value $Etag -Encoding ASCII
+    }
+}
+
+function Get-ResponseStatusCode($Exception) {
+    try {
+        if ($Exception.Response -and $Exception.Response.StatusCode) {
+            return [int]$Exception.Response.StatusCode
+        }
+    } catch {}
+    return 0
+}
+
+function Invoke-ConditionalDownload([string]$Uri, [string]$OutFile, [string]$EtagStatePath) {
+    $headers = @{}
+    $savedEtag = Get-SavedEtag $EtagStatePath
+    if (-not [string]::IsNullOrWhiteSpace($savedEtag)) {
+        $headers["If-None-Match"] = $savedEtag
+    }
+
+    try {
+        $response = Invoke-WebRequest -Uri $Uri -OutFile $OutFile -Headers $headers -TimeoutSec 30 -ErrorAction Stop
+        $etag = ""
+        if ($response.Headers -and $response.Headers.ETag) {
+            $etag = [string]$response.Headers.ETag
+        }
+        return [pscustomobject]@{
+            Status = "Downloaded"
+            Etag = $etag
+        }
+    } catch {
+        $statusCode = Get-ResponseStatusCode $_.Exception
+        if ($statusCode -eq 304) {
+            return [pscustomobject]@{
+                Status = "NotModified"
+                Etag = $savedEtag
+            }
+        }
+        throw
+    }
 }
 
 function Test-VersionGreater([string]$Candidate, [string]$Current) {
@@ -193,11 +246,27 @@ Start-Sleep -Seconds $Jitter
 
 $useManifest = $false
 $manifest = $null
+$manifestDownload = $null
+$configDownload = $null
 
 try {
-    Invoke-WebRequest -Uri "$UpdateUrl/manifest.json" -OutFile $TmpManifest -TimeoutSec 30 -ErrorAction Stop | Out-Null
+    $manifestDownload = Invoke-ConditionalDownload -Uri "$UpdateUrl/manifest.json" -OutFile $TmpManifest -EtagStatePath $ManifestEtagState
+    if ($manifestDownload.Status -eq "NotModified") {
+        Write-UpdateLog "Policy manifest unchanged by ETag; skipping config download."
+        Remove-TempFiles
+        exit 0
+    }
+
     Invoke-WebRequest -Uri "$UpdateUrl/manifest.json.sig" -OutFile $TmpManifestSig -TimeoutSec 30 -ErrorAction Stop | Out-Null
-    Invoke-WebRequest -Uri "$UpdateUrl/vector.toml" -OutFile $TmpConfig -TimeoutSec 30 -ErrorAction Stop | Out-Null
+    $configDownload = Invoke-ConditionalDownload -Uri "$UpdateUrl/vector.toml" -OutFile $TmpConfig -EtagStatePath $ConfigEtagState
+    if ($configDownload.Status -eq "NotModified") {
+        if (Test-Path -LiteralPath $ActiveConfig) {
+            Copy-Item -LiteralPath $ActiveConfig -Destination $TmpConfig -Force
+            Write-UpdateLog "Policy config unchanged by ETag; validating active config against refreshed manifest."
+        } else {
+            throw "vector.toml returned 304 but no active config exists"
+        }
+    }
 
     if (-not (Test-Signature $TmpManifest $TmpManifestSig)) {
         Write-UpdateLog "Manifest signature verification failed; update rejected."
@@ -213,7 +282,12 @@ try {
 
 if (-not $useManifest) {
     try {
-        Invoke-WebRequest -Uri "$UpdateUrl/vector.toml" -OutFile $TmpConfig -TimeoutSec 30 -ErrorAction Stop | Out-Null
+        $configDownload = Invoke-ConditionalDownload -Uri "$UpdateUrl/vector.toml" -OutFile $TmpConfig -EtagStatePath $ConfigEtagState
+        if ($configDownload.Status -eq "NotModified") {
+            Write-UpdateLog "Legacy vector.toml unchanged by ETag; skipping config download."
+            Remove-TempFiles
+            exit 0
+        }
         Invoke-WebRequest -Uri "$UpdateUrl/vector.toml.sig" -OutFile $TmpConfigSig -TimeoutSec 30 -ErrorAction Stop | Out-Null
     } catch {
         Write-UpdateLog "Download skipped/failed: $($_.Exception.Message)"
@@ -257,6 +331,8 @@ if (-not (Test-MinimumAgentVersion ([string]$manifest.minimum_agent_version))) {
 $currentVersion = Get-CurrentVersion
 if (-not (Test-VersionGreater ([string]$manifest.version) $currentVersion)) {
     Write-UpdateLog "No newer config available. current=$currentVersion candidate=$($manifest.version)"
+    if ($useManifest -and $manifestDownload) { Set-SavedEtag $ManifestEtagState $manifestDownload.Etag }
+    if ($configDownload) { Set-SavedEtag $ConfigEtagState $configDownload.Etag }
     Remove-TempFiles
     exit 0
 }
@@ -274,6 +350,8 @@ try {
     }
     Copy-Item -LiteralPath $TmpConfig -Destination $ActiveConfig -Force
     Set-Content -LiteralPath $VersionState -Value ([string]$manifest.version) -Encoding ASCII
+    if ($useManifest -and $manifestDownload) { Set-SavedEtag $ManifestEtagState $manifestDownload.Etag }
+    if ($configDownload) { Set-SavedEtag $ConfigEtagState $configDownload.Etag }
     Write-UpdateLog "Config version $($manifest.version) applied after signature/hash/version/syntax checks."
 } catch {
     Write-UpdateLog "Config apply failed: $($_.Exception.Message)"

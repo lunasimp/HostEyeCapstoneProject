@@ -1,0 +1,18 @@
+services:
+  hosteye-all-in-one:
+    build:
+      context: ..
+      dockerfile: DockerAllInOne/Dockerfile
+    image: hosteye-all-in-one:domain
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - hosteye_clickhouse:/var/lib/clickhouse
+      - hosteye_vault:/var/log/soc_vault
+    environment:
+      TZ: Asia/Bangkok
+
+volumes:
+  hosteye_clickhouse:
+  hosteye_vault:

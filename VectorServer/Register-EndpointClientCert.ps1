@@ -6,11 +6,29 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]+$')]
     [string]$EndpointId,
 
-    [string]$AllowlistPath = "C:\Vector-HA-Cluster\certs\client_allowlist.conf"
+    [string]$AllowlistPath = ""
 )
 
 $ErrorActionPreference = "Stop"
-$OpenSSL = "C:\Program Files\Git\usr\bin\openssl.exe"
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+
+function Resolve-OpenSsl {
+    $candidates = @(
+        "C:\Program Files\Git\usr\bin\openssl.exe",
+        "C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+        "openssl.exe"
+    )
+    foreach ($candidate in $candidates) {
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) { return $cmd.Source }
+    }
+    throw "OpenSSL not found. Install Git for Windows or OpenSSL and retry."
+}
+
+$OpenSSL = Resolve-OpenSsl
+if ([string]::IsNullOrWhiteSpace($AllowlistPath)) {
+    $AllowlistPath = Join-Path $RepoRoot "Vector-HA-Cluster\certs\client_allowlist.conf"
+}
 
 if (-not (Test-Path $OpenSSL)) { throw "OpenSSL not found: $OpenSSL" }
 if (-not (Test-Path $CertPath)) { throw "Certificate not found: $CertPath" }
@@ -29,7 +47,7 @@ if (Test-Path $AllowlistPath) {
 }
 
 $Entry = "$Serial 1; # $EndpointId"
-$Content = @($Existing + $Entry) | Where-Object { $_ -ne $null }
+$Content = @(@($Existing) + $Entry) | Where-Object { $_ -ne $null }
 Set-Content -LiteralPath $AllowlistPath -Value $Content -Encoding ASCII
 
 Write-Host "Allowed endpoint certificate: $EndpointId"

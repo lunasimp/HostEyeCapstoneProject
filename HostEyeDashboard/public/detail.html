@@ -45,6 +45,14 @@
                 <option value="500">500 logs</option>
               </select>
             </label>
+            <label class="inline-control">
+              <span>View</span>
+              <select id="detailView" name="view">
+                <option value="both" selected>Both</option>
+                <option value="logs">Logs only</option>
+                <option value="chunks">Chunks only</option>
+              </select>
+            </label>
             <button class="refresh-btn" type="submit">Apply</button>
           </form>
         </section>
@@ -71,7 +79,14 @@
           </article>
         </section>
 
-        <section class="dashboard-section">
+        <section id="detailChunksSection" class="dashboard-section">
+          <div class="section-heading"><span></span><h2>Chunks sent by shipper</h2></div>
+          <article class="panel logs-panel">
+            <div id="detailChunks" class="table-shell logs"></div>
+          </article>
+        </section>
+
+        <section id="detailLogsSection" class="dashboard-section">
           <div class="section-heading"><span></span><h2>Recent logs in selected cell</h2></div>
           <article class="panel logs-panel">
             <div id="detailRecentLogs" class="table-shell logs"></div>

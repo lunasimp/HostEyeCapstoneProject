@@ -3,11 +3,15 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]+$')]
     [string]$EndpointId,
 
-    [string]$AllowlistPath = "C:\Vector-HA-Cluster\certs\client_allowlist.conf",
+    [string]$AllowlistPath = "",
     [switch]$ReloadNginx
 )
 
 $ErrorActionPreference = "Stop"
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+if ([string]::IsNullOrWhiteSpace($AllowlistPath)) {
+    $AllowlistPath = Join-Path $RepoRoot "Vector-HA-Cluster\certs\client_allowlist.conf"
+}
 
 if (-not (Test-Path $AllowlistPath)) {
     Write-Host "Allowlist does not exist: $AllowlistPath"

@@ -1,0 +1,24 @@
+﻿services:
+  hosteye-dynamic-config:
+    build: .
+    container_name: hosteye-dynamic-config
+    ports:
+      - "5063:5063"
+    environment:
+      HOSTEYE_DYNAMIC_CONFIG_PORT: "5063"
+      HOSTEYE_DYNAMIC_CONFIG_STORE: "/app/data/dynamic-config-state.json"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNATURE_ALGORITHM: "ed25519"
+      HOSTEYE_DYNAMIC_CONFIG_ED25519_KEY_ID: "hosteye-demo-ed25519-v1"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKENS: "hosteye-admin-demo=policy:read,policy:write,agent:read,audit:read;hosteye-readonly=policy:read"
+      HOSTEYE_DYNAMIC_CONFIG_REQUIRE_AGENT_IDENTITY: "true"
+      HOSTEYE_DYNAMIC_CONFIG_AGENT_IDENTITY_SECRET: "hosteye-agent-identity-demo-secret"
+    volumes:
+      - hosteye_dynamic_config_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  hosteye_dynamic_config_data:
+
+
+

@@ -11,6 +11,8 @@ channels = [
   "Security",
   "Microsoft-Windows-Sysmon/Operational",
   "Microsoft-Windows-PowerShell/Operational",
+  "Microsoft-Windows-TaskScheduler/Operational",
+  "Microsoft-Windows-Windows Defender/Operational",
   "Microsoft-Windows-WMI-Activity/Operational",
   "Microsoft-Windows-DNS-Client/Operational",
   "Microsoft-Windows-Windows Defender/Operational",
@@ -69,6 +71,46 @@ raw_record_id = .record_id
 .source = to_string(.provider_name) ?? to_string(.channel) ?? "unknown"
 .level = .level
 
+if (to_string(.process_path) ?? "") == "" {
+    .process_path = to_string(.event_data.Image) ?? to_string(.event_data.SourceImage) ?? to_string(.event_data.NewProcessName) ?? ""
+}
+if (to_string(.target_image) ?? "") == "" {
+    .target_image = to_string(.event_data.TargetImage) ?? ""
+}
+.process_id = to_int(.process_id) ?? to_int(.event_data.ProcessId) ?? to_int(.event_data.SourceProcessId) ?? 0
+.target_process_id = to_int(.target_process_id) ?? to_int(.event_data.TargetProcessId) ?? 0
+.process_guid = to_string(.process_guid) ?? to_string(.event_data.ProcessGuid) ?? to_string(.event_data.SourceProcessGuid) ?? ""
+.target_process_guid = to_string(.target_process_guid) ?? to_string(.event_data.TargetProcessGuid) ?? ""
+.granted_access = to_string(.granted_access) ?? to_string(.event_data.GrantedAccess) ?? ""
+.call_trace = to_string(.call_trace) ?? to_string(.event_data.CallTrace) ?? ""
+.user_name = to_string(.user_name) ?? to_string(.event_data.User) ?? ""
+if (to_string(.source_ip) ?? "") == "" {
+    .source_ip = to_string(.event_data.SourceIp) ?? to_string(.event_data.SourceIP) ?? to_string(.event_data.SourceAddress) ?? ""
+}
+if (to_string(.destination_ip) ?? "") == "" {
+    .destination_ip = to_string(.event_data.DestinationIp) ?? to_string(.event_data.DestinationIP) ?? to_string(.event_data.DestAddress) ?? ""
+}
+if (to_string(.target_filename) ?? "") == "" {
+    .target_filename = to_string(.event_data.TargetFilename) ?? ""
+}
+if (to_string(.target_object) ?? "") == "" {
+    .target_object = to_string(.event_data.TargetObject) ?? ""
+}
+if (to_string(.file_path) ?? "") == "" {
+    .file_path = to_string(.target_filename) ?? ""
+}
+if (to_string(.registry_key) ?? "") == "" {
+    .registry_key = to_string(.target_object) ?? ""
+}
+if (to_string(.process_name) ?? "") == "" {
+    process_path_for_name = to_string(.process_path) ?? ""
+    process_name_match = parse_regex(process_path_for_name, r'(?P<name>[^\\\\]+)$') ?? {}
+    .process_name = to_string(process_name_match.name)
+    if .process_name == "" {
+        .process_name = process_path_for_name
+    }
+}
+
 # 5. Sinh Idempotency Key bÃ¡ÂºÂ¥t biÃ¡ÂºÂ¿n tÃ¡ÂºÂ¡i nguÃ¡Â»â€œn phÃƒÂ¡t
 computer_str = to_string(.computer) ?? "unknown"
 channel_str = to_string(.channel) ?? "unknown"
@@ -83,7 +125,7 @@ string_to_hash = join([computer_str, channel_str, record_str], separator: "-") ?
 [sinks.emit_to_gateway_secure]
 type = "http"
 inputs = ["normalize_and_enrich"]
-uri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry"
+uri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"
 method = "post"
 compression = "gzip" 
 
