@@ -1,64 +1,49 @@
-using System;
 using System.Security.Cryptography;
+using System.Text;
 
-namespace SOCShipper.Services
+namespace SOCShipper.Services;
+
+public class JitterScheduler
 {
-    public class JitterScheduler
+    private readonly RandomNumberGenerator _rng = RandomNumberGenerator.Create();
+
+    public TimeSpan GetStartupDelay(int windowSeconds)
     {
-        private readonly RandomNumberGenerator _rng = RandomNumberGenerator.Create();
+        if (windowSeconds <= 0) return TimeSpan.Zero;
+        return TimeSpan.FromSeconds(RandomInt(0, windowSeconds));
+    }
 
-        /// <summary>
-        /// Tạo độ trễ khi Agent vừa khởi động (Mặc định cửa sổ 300 giây).
-        /// Giải quyết vấn đề "Startup Herd" (P1).
-        /// </summary>
-        public TimeSpan GetStartupDelay(int windowSeconds = 300)
-        {
-            if (windowSeconds <= 0) return TimeSpan.Zero;
-            int delaySeconds = RandomInt(0, windowSeconds);
-            return TimeSpan.FromSeconds(delaySeconds);
-        }
+    public (TimeSpan Delay, int WindowSeconds) GetSendDelay(string file, long startByteOffset, string endpointSeed, int normalWindow, int recoveryWindow)
+    {
+        var window = startByteOffset == 0 
+            ? normalWindow 
+            : Math.Min(recoveryWindow, Math.Max(normalWindow, recoveryWindow));
+        
+        if (window <= 0) return (TimeSpan.Zero, window);
+        
+        var seed = $"{endpointSeed}:{Path.GetFileName(file)}:{startByteOffset}";
+        return (TimeSpan.FromSeconds(StableJitterSeconds(seed, window)), window);
+    }
 
-        /// <summary>
-        /// Tạo khoảng thời gian ngẫu nhiên cộng trừ quanh một chu kỳ gốc.
-        /// Giải quyết vấn đề "Config Storm" (P2).
-        /// </summary>
-        public TimeSpan GetPeriodicDelay(int baseSeconds, int jitterSeconds)
-        {
-            if (jitterSeconds <= 0) return TimeSpan.FromSeconds(baseSeconds);
-            int offset = RandomInt(-jitterSeconds, jitterSeconds);
-            int total = Math.Max(1, baseSeconds + offset);
-            return TimeSpan.FromSeconds(total);
-        }
+    private int StableJitterSeconds(string seed, int windowSeconds)
+    {
+        if (windowSeconds <= 0) return 0;
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(seed));
+        return (int)(BitConverter.ToUInt32(hash, 0) % (uint)windowSeconds);
+    }
 
-        /// <summary>
-        /// Exponential Backoff kèm Jitter ngẫu nhiên khi Retry.
-        /// Giải quyết vấn đề "Retry Storm" (P8).
-        /// Công thức: U(0, min(C, B * 2^r))
-        /// </summary>
-        public TimeSpan GetRetryDelay(int retryCount, int baseSeconds = 10, int capSeconds = 600)
-        {
-            if (retryCount < 0) retryCount = 0;
-            
-            // Tính B * 2^r
-            // Hạn chế r tràn số (ví dụ r > 30)
-            int effectiveRetry = Math.Min(retryCount, 30);
-            double maxDelayForThisRetry = baseSeconds * Math.Pow(2, effectiveRetry);
-            
-            // Giới hạn bởi Cap C
-            int effectiveCap = (int)Math.Min((double)capSeconds, maxDelayForThisRetry);
-            
-            int delaySeconds = RandomInt(0, effectiveCap + 1); // Cần +1 vì RandomInt loại trừ cận trên
-            return TimeSpan.FromSeconds(delaySeconds);
-        }
+    public TimeSpan FullJitterDelay(int baseSeconds, int capSeconds, int attempt)
+    {
+        var max = Math.Min(capSeconds, baseSeconds * Math.Pow(2, Math.Min(attempt, 16)));
+        return TimeSpan.FromSeconds(RandomInt(0, Math.Max(1, (int)Math.Ceiling(max))));
+    }
 
-        private int RandomInt(int minInclusive, int maxExclusive)
-        {
-            if (maxExclusive <= minInclusive) return minInclusive;
-            Span<byte> bytes = stackalloc byte[4];
-            _rng.GetBytes(bytes);
-            uint value = BitConverter.ToUInt32(bytes);
-            long diff = (long)maxExclusive - minInclusive;
-            return minInclusive + (int)(value % diff);
-        }
+    public int RandomInt(int minInclusive, int maxExclusive)
+    {
+        if (maxExclusive <= minInclusive) return minInclusive;
+        Span<byte> bytes = stackalloc byte[4];
+        _rng.GetBytes(bytes);
+        var value = BitConverter.ToUInt32(bytes);
+        return minInclusive + (int)(value % (uint)(maxExclusive - minInclusive));
     }
 }

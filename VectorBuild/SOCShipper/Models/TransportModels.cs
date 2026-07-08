@@ -1,50 +1,85 @@
-using System;
 using System.Text.Json.Serialization;
 
-namespace SOCShipper.Models
+namespace SOCShipper.Models;
+
+public record Batch(List<string> Lines, int Bytes, long StartByteOffset, long NextByteOffset, int StartLineOffset, int NextLineOffset);
+
+public record QuotaFile(string FullName, bool IsSent);
+
+public record SpoolStats(long Bytes, int FileCount, int PendingFileCount);
+
+public record SendTiming(
+    DateTimeOffset JitterPlannedAt,
+    DateTimeOffset ScheduledSendAt,
+    DateTimeOffset ActualSendAt,
+    DateTimeOffset SendStartedAt,
+    DateTimeOffset SendCompletedAt);
+
+public record ChunkMetadata(
+    string ChunkId,
+    string AgentId,
+    string HostId,
+    string Computer,
+    string SpoolFile,
+    int LineOffset,
+    int NextLineOffset,
+    long ByteOffset,
+    long NextByteOffset,
+    int SequenceNumber,
+    int EventCount,
+    string Checksum,
+    string LeaseId,
+    DateTimeOffset LeaseIssuedAt,
+    DateTimeOffset LeaseExpiresAt,
+    int LeaseTtlSeconds,
+    double MaxBatchMb,
+    int MaxUploadRateKbps);
+
+public record UploadLease(
+    string LeaseId,
+    DateTimeOffset IssuedAtUtc,
+    DateTimeOffset ExpiresAtUtc,
+    int LeaseTtlSeconds,
+    double MaxBatchMb,
+    int MaxUploadRateKbps,
+    bool Required)
 {
-    public class PermissionRequest
-    {
-        [JsonPropertyName("client_id")]
-        public string ClientId { get; set; } = "";
+    public static UploadLease Disabled() => new(
+        LeaseId: "",
+        IssuedAtUtc: DateTimeOffset.UtcNow,
+        ExpiresAtUtc: DateTimeOffset.MaxValue,
+        LeaseTtlSeconds: 0,
+        MaxBatchMb: 0,
+        MaxUploadRateKbps: 0,
+        Required: false);
+}
 
-        [JsonPropertyName("queue_used_mb")]
-        public double QueueUsedMb { get; set; }
+public class ChunkAck
+{
+    [JsonPropertyName("ack")]
+    public bool Ack { get; set; }
 
-        [JsonPropertyName("next_chunk_size_mb")]
-        public double NextChunkSizeMb { get; set; }
+    [JsonPropertyName("commit")]
+    public bool Commit { get; set; }
 
-        [JsonPropertyName("retry_count")]
-        public int RetryCount { get; set; }
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
 
-        [JsonPropertyName("rank")]
-        public int Rank { get; set; }
+    [JsonPropertyName("index_status")]
+    public string IndexStatus { get; set; } = "";
 
-        [JsonPropertyName("last_success_time")]
-        public DateTimeOffset? LastSuccessTime { get; set; }
-    }
+    [JsonPropertyName("chunk_id")]
+    public string ChunkId { get; set; } = "";
 
-    public class UploadLease
-    {
-        [JsonPropertyName("status")]
-        public string Status { get; set; } = "";
+    [JsonPropertyName("checksum")]
+    public string Checksum { get; set; } = "";
 
-        [JsonPropertyName("lease_id")]
-        public string? LeaseId { get; set; }
+    [JsonPropertyName("event_count")]
+    public int EventCount { get; set; }
 
-        [JsonPropertyName("max_batch_mb")]
-        public double? MaxBatchMb { get; set; }
+    [JsonPropertyName("sequence_number")]
+    public int SequenceNumber { get; set; }
 
-        [JsonPropertyName("max_upload_rate_kbps")]
-        public int? MaxUploadRateKbps { get; set; }
-
-        [JsonPropertyName("lease_ttl_seconds")]
-        public int? LeaseTtlSeconds { get; set; }
-
-        [JsonPropertyName("retry_after_seconds")]
-        public int? RetryAfterSeconds { get; set; }
-
-        [JsonPropertyName("reason")]
-        public string? Reason { get; set; }
-    }
+    [JsonPropertyName("lease_id")]
+    public string LeaseId { get; set; } = "";
 }

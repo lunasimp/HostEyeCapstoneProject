@@ -1,109 +1,147 @@
-using System;
-using System.Net.Http;
-using System.Net.Http.Json;
-using System.Threading;
-using System.Threading.Tasks;
+using System.Net;
+using System.Text;
+using System.Text.Json;
 using SOCShipper.Models;
 
-namespace SOCShipper.Services
+namespace SOCShipper.Services;
+
+public class AdmissionClient
 {
-    public class AdmissionClient
+    private readonly ShipperConfig _config;
+    private readonly HttpClient _http;
+    private readonly FileLogger _logger;
+    private readonly ShipperState _state;
+
+    public AdmissionClient(ShipperConfig config, HttpClient http, FileLogger logger, ShipperState state)
     {
-        private readonly HttpClient _httpClient;
-        private readonly ConfigSynchronizer _configSync;
-        private readonly string _clientId;
-        private readonly JitterScheduler _jitterScheduler;
+        _config = config;
+        _http = http;
+        _logger = logger;
+        _state = state;
+    }
 
-        // Lưu giữ trạng thái (State) của Client
-        private int _retryCount = 0;
-        private DateTimeOffset? _lastSuccessTime = null;
+    public async Task<UploadLease> TryRequestAdmissionAsync(double nextChunkSizeMb, SpoolStats spoolStats, int retryAttempt)
+    {
+        if (!_config.EnableAdmissionControl) return UploadLease.Disabled();
+        var admissionUri = string.IsNullOrWhiteSpace(_config.AdmissionUri)
+            ? Utilities.DeriveEndpointUri(_config.GatewayUri, "/api/v1/admission/request")
+            : _config.AdmissionUri;
 
-        public AdmissionClient(HttpClient httpClient, ConfigSynchronizer configSync, string clientId, JitterScheduler jitterScheduler)
+        var request = new Dictionary<string, object?>
         {
-            _httpClient = httpClient;
-            _configSync = configSync;
-            _clientId = clientId;
-            _jitterScheduler = jitterScheduler;
-        }
+            ["agent_id"] = Utilities.GetAgentId(),
+            ["host_id"] = Utilities.GetHostId(),
+            ["computer"] = Utilities.GetEndpointComputerName(),
+            ["queue_used_mb"] = Math.Round(spoolStats.Bytes / 1024d / 1024d, 3),
+            ["next_chunk_size_mb"] = Math.Round(nextChunkSizeMb, 3),
+            ["retry_count"] = retryAttempt,
+            ["rank"] = Math.Max(0, retryAttempt),
+            ["last_success_time"] = _state.LastSuccessTime?.ToString("O")
+        };
 
-        /// <summary>
-        /// Gửi yêu cầu xin quyền Upload. Hàm này sẽ chặn (block) bằng Delay nếu bị NG, 
-        /// và chỉ trả về (return) khi Server đã đồng ý cấp Lease (OK).
-        /// </summary>
-        public async Task<UploadLease> AcquireLeaseAsync(double queueUsedMb, double nextChunkSizeMb, CancellationToken cancellationToken = default)
+        try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            using var content = new StringContent(JsonSerializer.Serialize(request), Encoding.UTF8, "application/json");
+            using var resp = await _http.PostAsync(admissionUri, content);
+            var body = await resp.Content.ReadAsStringAsync();
+            if (resp.StatusCode == HttpStatusCode.NotFound || resp.StatusCode == HttpStatusCode.MethodNotAllowed)
             {
-                // Lấy URL Data Plane mới nhất từ ConfigSynchronizer
-                string requestLeaseUrl = _configSync.CurrentDataPlaneUri.TrimEnd('/') + "/api/v1/telemetry/request-lease";
-                // 1. Tạo gói xin phép (Permission Request)
-                var requestPayload = new PermissionRequest
+                if (_config.RequireUploadLease)
                 {
-                    ClientId = _clientId,
-                    QueueUsedMb = queueUsedMb,
-                    NextChunkSizeMb = nextChunkSizeMb,
-                    RetryCount = _retryCount,
-                    Rank = _retryCount, // Trong phiên bản MVP, rank được tính bằng retry_count
-                    LastSuccessTime = _lastSuccessTime
-                };
-
-                try
-                {
-                    // 2. Gửi lên Gateway (Data Plane hiện hành)
-                    var response = await _httpClient.PostAsJsonAsync(requestLeaseUrl, requestPayload, cancellationToken);
-                    
-                    // 3. Phân tích kết quả
-                    if (response.IsSuccessStatusCode)
-                    {
-                        var lease = await response.Content.ReadFromJsonAsync<UploadLease>(cancellationToken: cancellationToken);
-                        
-                        // Server phản hồi trạng thái OK (Admission duyệt)
-                        if (lease != null && lease.Status == "OK")
-                        {
-                            Console.WriteLine($"[Admission] Được duyệt (OK)! LeaseID: {lease.LeaseId}, Cho phép gửi tối đa: {lease.MaxBatchMb}MB");
-                            return lease; // Thoát vòng lặp, đi gửi hàng thật
-                        }
-                        
-                        // Server chủ động phản hồi trạng thái NG
-                        if (lease != null && lease.Status == "NG")
-                        {
-                            Console.WriteLine($"[Admission] Bị Server từ chối duyệt (NG). Lý do: {lease.Reason}");
-                        }
-                    }
-                    else
-                    {
-                        // Lỗi cấu hình mạng hoặc Handler Overload trả về mã lỗi 429 Too Many Requests
-                        Console.WriteLine($"[Admission] Lỗi máy chủ ({(int)response.StatusCode}). Server đang bận.");
-                    }
+                    throw new BackpressureException(503, 30);
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[Admission] Lỗi mạng mất kết nối: {ex.Message}");
-                }
-
-                // 4. LUỒNG XỬ LÝ KHI BỊ TỪ CHỐI (NG) HOẶC LỖI MẠNG
-                _retryCount++; // Tăng Retry, đồng thời Rank cũng tăng lên ở vòng lặp sau
-                
-                // Lấy Jitter ngẫu nhiên từ JitterScheduler (Càng retry nhiều thời gian chờ tối đa càng tăng)
-                TimeSpan delay = _jitterScheduler.GetRetryDelay(_retryCount);
-                
-                Console.WriteLine($"[Admission] Đã bị từ chối {_retryCount} lần. Rank ưu tiên sẽ được thăng cấp. Đang lùi lại (Sleep) {delay.TotalSeconds} giây...");
-                
-                await Task.Delay(delay, cancellationToken);
+                _logger.Warn($"Admission endpoint unavailable at {admissionUri}; continuing without enforced lease.");
+                return UploadLease.Disabled();
             }
-            
-            throw new OperationCanceledException("Hành động xin phép đã bị hủy bỏ bởi hệ thống.");
-        }
+            if ((int)resp.StatusCode == 429 || resp.StatusCode == HttpStatusCode.ServiceUnavailable)
+            {
+                var retryAfter = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
+                throw new BackpressureException((int)resp.StatusCode, retryAfter is null ? 15 : (int)Math.Ceiling(retryAfter.Value));
+            }
+            if (!resp.IsSuccessStatusCode)
+            {
+                if (_config.RequireUploadLease)
+                {
+                    throw new Exception($"Admission request failed: {(int)resp.StatusCode} {resp.ReasonPhrase}; body={body}");
+                }
+                _logger.Warn($"Admission request returned {(int)resp.StatusCode} {resp.ReasonPhrase}; continuing without enforced lease. Body={body}");
+                return UploadLease.Disabled();
+            }
 
-        /// <summary>
-        /// Gọi hàm này khi Data Plane phản hồi ACK thành công ở chặng Upload.
-        /// Giúp Client "tẩy thẻ", đưa Rank về mức thấp nhất.
-        /// </summary>
-        public void ReportUploadSuccess()
+            using var doc = JsonDocument.Parse(body);
+            var admission = doc.RootElement.TryGetProperty("admission", out var value) ? value.GetString() : "";
+            if (string.Equals(admission, "ng", StringComparison.OrdinalIgnoreCase))
+            {
+                var retryAfter = doc.RootElement.TryGetProperty("retry_after_seconds", out var retryValue) && retryValue.TryGetInt32(out var seconds)
+                    ? seconds
+                    : 15;
+                throw new BackpressureException(429, retryAfter);
+            }
+            var issuedAt = DateTimeOffset.UtcNow;
+            var ttlSeconds = Utilities.GetJsonInt(doc.RootElement, "lease_ttl_seconds");
+            var expiresAt = Utilities.GetJsonDateTimeOffset(doc.RootElement, "lease_expires_at") ?? issuedAt.AddSeconds(Math.Max(1, ttlSeconds));
+            var lease = new UploadLease(
+                LeaseId: Utilities.GetJsonString(doc.RootElement, "lease_id"),
+                IssuedAtUtc: issuedAt,
+                ExpiresAtUtc: expiresAt,
+                LeaseTtlSeconds: ttlSeconds,
+                MaxBatchMb: Utilities.GetJsonDouble(doc.RootElement, "max_batch_mb"),
+                MaxUploadRateKbps: Utilities.GetJsonInt(doc.RootElement, "max_upload_rate_kbps"),
+                Required: _config.RequireUploadLease);
+
+            var collectorUrl = Utilities.GetJsonString(doc.RootElement, "collector_url");
+            if (string.IsNullOrWhiteSpace(collectorUrl) &&
+                doc.RootElement.TryGetProperty("routing", out var routing))
+            {
+                collectorUrl = Utilities.GetJsonString(routing, "telemetry_url");
+            }
+            if (Uri.TryCreate(collectorUrl, UriKind.Absolute, out _))
+            {
+                _config.GatewayUri = collectorUrl;
+            }
+
+            if (_config.RequireUploadLease && string.IsNullOrWhiteSpace(lease.LeaseId))
+            {
+                throw new Exception("Admission response did not include lease_id.");
+            }
+
+            EnsureUploadLeaseUsable(lease);
+            var sendAfter = Utilities.GetJsonDateTimeOffset(doc.RootElement, "send_after");
+            if (sendAfter is not null && sendAfter.Value > DateTimeOffset.UtcNow)
+            {
+                var delay = sendAfter.Value - DateTimeOffset.UtcNow;
+                _logger.Info($"Admission send_after={sendAfter.Value:O}; delaying {delay.TotalSeconds:F0}s before upload.");
+                await Task.Delay(delay);
+                EnsureUploadLeaseUsable(lease);
+            }
+            _logger.Info($"Admission OK lease={lease.LeaseId} collector_url={_config.GatewayUri} ttl={lease.LeaseTtlSeconds}s max_batch_mb={lease.MaxBatchMb:F3} max_upload_rate_kbps={lease.MaxUploadRateKbps}.");
+            return lease;
+        }
+        catch (BackpressureException)
         {
-            _retryCount = 0;
-            _lastSuccessTime = DateTimeOffset.UtcNow;
-            Console.WriteLine("[Admission] Gửi Chunk thành công! Hệ thống đã Reset Rank và Retry Count về 0.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            if (_config.RequireUploadLease)
+            {
+                throw;
+            }
+            _logger.Warn($"Admission request skipped: {ex.Message}");
+            return UploadLease.Disabled();
+        }
+    }
+
+    public void EnsureUploadLeaseUsable(UploadLease lease)
+    {
+        if (!lease.Required) return;
+        if (string.IsNullOrWhiteSpace(lease.LeaseId))
+        {
+            throw new Exception("Upload lease is required but lease_id is empty.");
+        }
+        if (lease.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+        {
+            throw new BackpressureException(429, 5);
         }
     }
 }
