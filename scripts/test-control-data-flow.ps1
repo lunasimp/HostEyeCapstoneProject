@@ -60,7 +60,7 @@ if (-not $NoStart) {
     $env:CONTROL_SEND_AFTER_MS = [string][Math]::Max(0, $DemoSendDelayMs)
     $env:CONTROL_COLLECTOR_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
     $env:COLLECTOR_UPLOAD_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
-    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h raw-chunk-worker | Out-Host
+    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h | Out-Host
 }
 
 Wait-HttpOk -Url "http://127.0.0.1:8123/?query=SELECT%201" -Name "ClickHouse"

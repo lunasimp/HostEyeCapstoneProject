@@ -409,29 +409,6 @@ services:
     networks:
       - soc-network
 
-  raw-chunk-worker:
-    image: node:20-alpine
-    container_name: hosteye-raw-chunk-worker
-    working_dir: /app
-    command: ["node", "raw-chunk-worker.js"]
-    environment:
-      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
-      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
-      RAW_WORKER_GROUP: "raw-chunk-worker"
-      RAW_WORKER_AUTO_OFFSET_RESET: "${RAW_WORKER_AUTO_OFFSET_RESET:-earliest}"
-      CLICKHOUSE_URL: "http://clickhouse:8123"
-      VECTOR_URL: "http://vector-gateway-1:8686/"
-      NODE_ENV: "production"
-    volumes:
-      - ../VectorIngestAckGateway:/app:ro
-      - ./raw_chunks:/var/lib/hosteye/raw_chunks
-    depends_on:
-      - redpanda-broker
-      - clickhouse
-      - vector-gateway-1
-      - vector-gateway-2
-    networks:
-      - soc-network
 
   # ===========================================================================
   # 3. TẦNG ĐỆM TRUNG GIAN GIẢM CHẤN XUNG LỰC (MESSAGE BROKER LAYER)
