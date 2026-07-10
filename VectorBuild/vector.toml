@@ -11,9 +11,13 @@ channels = [
   "Security",
   "Microsoft-Windows-Sysmon/Operational",
   "Microsoft-Windows-PowerShell/Operational",
+  "Microsoft-Windows-TaskScheduler/Operational",
+  "Microsoft-Windows-Windows Defender/Operational",
   "Microsoft-Windows-WMI-Activity/Operational",
   "Microsoft-Windows-DNS-Client/Operational",
-  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+  "Microsoft-Windows-Windows Defender/Operational",
+  "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
+  "Microsoft-Windows-TaskScheduler/Operational"
 ]
 
 # =============================================================================
@@ -64,7 +68,145 @@ raw_record_id = .record_id
 .record_id = to_int(raw_record_id) ?? raw_record_id
 
 .provider_name = .provider_name
+.source = to_string(.provider_name) ?? to_string(.channel) ?? "unknown"
 .level = .level
+if (to_string(.process_path) ?? "") == "" {
+    .process_path = to_string(.event_data.Image) ?? to_string(.event_data.SourceImage) ?? to_string(.event_data.NewProcessName) ?? ""
+}
+if (to_string(.target_image) ?? "") == "" {
+    .target_image = to_string(.event_data.TargetImage) ?? ""
+}
+.process_id = to_int(.process_id) ?? to_int(.event_data.ProcessId) ?? to_int(.event_data.SourceProcessId) ?? 0
+.target_process_id = to_int(.target_process_id) ?? to_int(.event_data.TargetProcessId) ?? 0
+.process_guid = to_string(.process_guid) ?? to_string(.event_data.ProcessGuid) ?? to_string(.event_data.SourceProcessGuid) ?? ""
+.target_process_guid = to_string(.target_process_guid) ?? to_string(.event_data.TargetProcessGuid) ?? ""
+.granted_access = to_string(.granted_access) ?? to_string(.event_data.GrantedAccess) ?? ""
+.call_trace = to_string(.call_trace) ?? to_string(.event_data.CallTrace) ?? ""
+.user_name = to_string(.user_name) ?? to_string(.event_data.User) ?? ""
+if (to_string(.source_ip) ?? "") == "" {
+    .source_ip = to_string(.event_data.SourceIp) ?? to_string(.event_data.SourceIP) ?? to_string(.event_data.SourceAddress) ?? ""
+}
+if (to_string(.destination_ip) ?? "") == "" {
+    .destination_ip = to_string(.event_data.DestinationIp) ?? to_string(.event_data.DestinationIP) ?? to_string(.event_data.DestAddress) ?? ""
+}
+if (to_string(.target_filename) ?? "") == "" {
+    .target_filename = to_string(.event_data.TargetFilename) ?? ""
+}
+if (to_string(.target_object) ?? "") == "" {
+    .target_object = to_string(.event_data.TargetObject) ?? ""
+}
+if (to_string(.file_path) ?? "") == "" {
+    .file_path = to_string(.target_filename) ?? ""
+}
+if (to_string(.registry_key) ?? "") == "" {
+    .registry_key = to_string(.target_object) ?? ""
+}
+if (to_string(.process_name) ?? "") == "" {
+    process_path_for_name = to_string(.process_path) ?? ""
+    process_name_match = parse_regex(process_path_for_name, r'(?P<name>[^\\\\]+)$') ?? {}
+    .process_name = to_string(process_name_match.name)
+    if .process_name == "" {
+        .process_name = process_path_for_name
+    }
+}
+
+sysmon_enabled_event_ids = [1, 3, 7, 8, 10, 11, 12, 13, 22, 25]
+is_sysmon = .channel == "Microsoft-Windows-Sysmon/Operational"
+.hosteye_collect_allowed = !is_sysmon || includes(sysmon_enabled_event_ids, .event_id)
+
+process_path_lc = downcase(to_string(.process_path) ?? "")
+target_image_lc = downcase(to_string(.target_image) ?? "")
+target_object_lc = downcase(to_string(.target_object) ?? "")
+event_type_lc = downcase(to_string(.event_data.EventType) ?? "")
+granted_access_lc = downcase(to_string(.granted_access))
+is_never_rate_limited_sysmon = is_sysmon && includes([8, 25], .event_id)
+is_registry_wbem_allowlisted_noise_path = starts_with(target_object_lc, "hklm\\\\software\\\\microsoft\\\\wbem")
+is_registry_wbem_eid12_noise = is_sysmon &&
+    .event_id == 12 &&
+    includes(["createkey", "deletekey"], event_type_lc) &&
+    ends_with(process_path_lc, "\\\\svchost.exe") &&
+    is_registry_wbem_allowlisted_noise_path
+is_sensitive_registry_path = contains(target_object_lc, "\\\\currentversion\\\\run") ||
+    contains(target_object_lc, "\\\\currentversion\\\\runonce") ||
+    contains(target_object_lc, "\\\\currentcontrolset\\\\services") ||
+    contains(target_object_lc, "\\\\currentversion\\\\winlogon") ||
+    contains(target_object_lc, "\\\\image file execution options") ||
+    contains(target_object_lc, "\\\\appinit_dlls") ||
+    contains(target_object_lc, "\\\\control\\\\lsa") ||
+    contains(target_object_lc, "\\\\lsa") ||
+    contains(target_object_lc, "\\\\security providers") ||
+    contains(target_object_lc, "\\\\windows defender\\\\exclusions") ||
+    contains(target_object_lc, "\\\\firewallpolicy") ||
+    contains(target_object_lc, "\\\\terminal server") ||
+    contains(target_object_lc, "\\\\schedule\\\\taskcache") ||
+    contains(target_object_lc, "\\\\subscription") ||
+    (contains(target_object_lc, "\\\\wmi") && !is_registry_wbem_allowlisted_noise_path)
+
+is_eid10_sensitive_target = is_sysmon &&
+    .event_id == 10 &&
+    (ends_with(target_image_lc, "\\\\lsass.exe") ||
+        ends_with(target_image_lc, "\\\\winlogon.exe") ||
+        ends_with(target_image_lc, "\\\\services.exe") ||
+        contains(target_image_lc, "\\\\sam") ||
+        contains(target_image_lc, "\\\\security"))
+is_eid10_suspicious_source = is_sysmon &&
+    .event_id == 10 &&
+    (ends_with(process_path_lc, "\\\\powershell.exe") ||
+        ends_with(process_path_lc, "\\\\cmd.exe") ||
+        ends_with(process_path_lc, "\\\\rundll32.exe") ||
+        ends_with(process_path_lc, "\\\\regsvr32.exe") ||
+        ends_with(process_path_lc, "\\\\mshta.exe") ||
+        ends_with(process_path_lc, "\\\\wscript.exe") ||
+        ends_with(process_path_lc, "\\\\cscript.exe") ||
+        ends_with(process_path_lc, "\\\\python.exe") ||
+        ends_with(process_path_lc, "\\\\node.exe"))
+is_eid10_suspicious_access = is_sysmon &&
+    .event_id == 10 &&
+    (contains(granted_access_lc, "0x1f0fff") ||
+        contains(granted_access_lc, "0x1fffff") ||
+        contains(granted_access_lc, "0x143a") ||
+        contains(granted_access_lc, "0x1410") ||
+        contains(granted_access_lc, "0x1010"))
+is_eid10_known_system_noise_source = ends_with(process_path_lc, "\\\\svchost.exe") ||
+    ends_with(process_path_lc, "\\\\csrss.exe") ||
+    ends_with(process_path_lc, "\\\\dwm.exe") ||
+    ends_with(process_path_lc, "\\\\taskhostw.exe") ||
+    ends_with(process_path_lc, "\\\\explorer.exe") ||
+    ends_with(process_path_lc, "\\\\runtimebroker.exe") ||
+    ends_with(process_path_lc, "\\\\searchindexer.exe")
+is_eid10_low_value_system_noise = is_sysmon &&
+    .event_id == 10 &&
+    is_eid10_known_system_noise_source &&
+    !is_eid10_sensitive_target &&
+    !is_eid10_suspicious_source &&
+    !is_eid10_suspicious_access
+
+.hosteye_suppression_candidate = !is_never_rate_limited_sysmon &&
+    ((is_registry_wbem_eid12_noise && !is_sensitive_registry_path) || is_eid10_low_value_system_noise)
+if .hosteye_suppression_candidate {
+    .suppression_rule_version = "1.0.0"
+    .original_event_count = 1
+    .first_seen = .timestamp
+    .last_seen = .timestamp
+    if is_registry_wbem_eid12_noise {
+        .suppression_rule_id = "SYS_REG_WBEM_SVCHOST_CREATEKEY_NOISE"
+        .suppression_reason = "Repeated low-value WMI registry CreateKey/DeleteKey activity from svchost.exe"
+        .event_name = "Registry object created/deleted"
+        .process_name = "svchost.exe"
+        .target_prefix = "HKLM\\\\SOFTWARE\\\\Microsoft\\\\Wbem"
+        .noise_group_key = join([to_string(.host_id), "12", "svchost.exe", .target_prefix, event_type_lc], separator: "|") ?? ""
+    } else if is_eid10_low_value_system_noise {
+        .suppression_rule_id = "SYS_PROC_ACCESS_SYSTEM_NOISE"
+        .suppression_reason = "Repeated low-value Sysmon process access from known Windows process"
+        .event_name = "Process accessed"
+        .process_name = .process_path
+        .target_prefix = .target_image
+        noise_host_id = to_string(.host_id)
+        noise_process_path = to_string(.process_path) ?? ""
+        noise_target_image = to_string(.target_image) ?? ""
+        .noise_group_key = join([noise_host_id, "10", noise_process_path, noise_target_image, "process_access"], separator: "|") ?? ""
+    }
+}
 
 # 5. Sinh Idempotency Key bÃ¡ÂºÂ¥t biÃ¡ÂºÂ¿n tÃ¡ÂºÂ¡i nguÃ¡Â»â€œn phÃƒÂ¡t
 computer_str = to_string(.computer) ?? "unknown"
@@ -74,12 +216,77 @@ string_to_hash = join([computer_str, channel_str, record_str], separator: "-") ?
 .idempotency_key = sha2(string_to_hash, "SHA-256")
 """
 
+[transforms.sysmon_event_allowlist]
+type = "filter"
+inputs = ["normalize_and_enrich"]
+condition = '.hosteye_collect_allowed == true'
+
+[transforms.route_sysmon_registry_suppression]
+type = "route"
+inputs = ["sysmon_event_allowlist"]
+reroute_unmatched = false
+
+[transforms.route_sysmon_registry_suppression.route.suppressible_noise]
+type = "vrl"
+source = '.hosteye_suppression_candidate == true'
+
+[transforms.route_sysmon_registry_suppression.route.keep_full_fidelity]
+type = "vrl"
+source = '.hosteye_suppression_candidate != true'
+
+[transforms.aggregate_registry_wbem_noise]
+type = "reduce"
+inputs = ["route_sysmon_registry_suppression.suppressible_noise"]
+group_by = ["agent_id", "host_id", "computer", "channel", "event_id", "process_path", "target_image", "target_prefix", "event_name", "process_name", "suppression_rule_id", "noise_group_key"]
+expire_after_ms = 60000
+flush_period_ms = 10000
+
+[transforms.aggregate_registry_wbem_noise.merge_strategies]
+original_event_count = "sum"
+first_seen = "min"
+last_seen = "max"
+
+[transforms.prepare_registry_wbem_summary]
+type = "remap"
+inputs = ["aggregate_registry_wbem_noise"]
+source = """
+.event_type = "suppressed_summary"
+.source = "Sysmon"
+.source_type = "hosteye_suppression_summary"
+.provider_name = "HostEye Agent"
+.level = "Information"
+suppressed_count = to_string(.original_event_count) ?? "0"
+.message = "Suppressed " + suppressed_count + " repeated low-value Sysmon events by rule " + (to_string(.suppression_rule_id) ?? "unknown")
+.raw_log = encode_json(.)
+.event_data = {
+    "event_type": .event_type,
+    "source": .source,
+    "event_id": .event_id,
+    "event_name": .event_name,
+    "process_name": .process_name,
+    "source_image": .process_path,
+    "target_image": .target_image,
+    "target_prefix": .target_prefix,
+    "count": .original_event_count,
+    "window_seconds": 60,
+    "host_id": .host_id,
+    "first_seen": .first_seen,
+    "last_seen": .last_seen,
+    "suppression_rule_id": .suppression_rule_id,
+    "suppression_rule_version": .suppression_rule_version,
+    "suppression_reason": .suppression_reason,
+    "noise_group_key": .noise_group_key,
+    "original_event_count": .original_event_count
+}
+.idempotency_key = sha2(join([to_string(.computer) ?? "unknown", to_string(.event_id) ?? "0", to_string(.suppression_rule_id) ?? "none", to_string(.first_seen) ?? "", to_string(.last_seen) ?? ""], separator: "-") ?? "", "SHA-256")
+"""
+
 # =============================================================================
 # 3. TÃ¡ÂºÂ¦NG TRUYÃ¡Â»â‚¬N TÃ¡ÂºÂ¢I BÃ¡ÂºÂ¢O MÃ¡ÂºÂ¬T VÃƒâ‚¬ GIÃ¡ÂºÂ¢M CHÃ¡ÂºÂ¤N HÃ¡ÂºÂ  TÃ¡ÂºÂ¦NG (SECURE SINK LAYER)
 # =============================================================================
 [sinks.local_spool]
 type = "file"
-inputs = ["normalize_and_enrich"]
+inputs = ["route_sysmon_registry_suppression.keep_full_fidelity", "prepare_registry_wbem_summary"]
 path = "C:\\ProgramData\\HostEye\\spool\\events-%Y-%m-%d-%H-%M.ndjson"
 
 [sinks.local_spool.encoding]

@@ -15,6 +15,8 @@ const pages = {
   network: { title: "Network & DNS", eyebrow: "[ NETWORK TELEMETRY ]" },
   registry: { title: "Registry & File", eyebrow: "[ ENDPOINT CHANGES ]" },
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
+  jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
+  chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
 };
 
@@ -81,15 +83,38 @@ async function loadDashboard() {
       loadNetworkDns(),
       loadRegistryFileAccess(),
       loadPowerShell(),
+      loadJitter(),
+      loadChunks(),
       loadHeatmap(),
     ]);
   } catch (error) {
     console.error(error);
-    setStatus("Demo mode", false, "API offline");
-    renderDemoDashboard();
+    setStatus("API offline", false, "Check dashboard API");
+    resetKpis();
+    renderErrorEverywhere(error.message || "API offline");
   } finally {
     state.loading = false;
   }
+}
+
+function resetKpis() {
+  [
+    "kpiEvents",
+    "kpiHosts",
+    "kpiEventIds",
+    "kpiLastSeen",
+    "jitterHosts",
+    "jitterAvg",
+    "jitterP95",
+    "jitterWorst",
+    "chunkCount",
+    "chunkHosts",
+    "chunkEvents",
+    "chunkFailed",
+  ].forEach((id) => {
+    const node = el(id);
+    if (node) node.textContent = "-";
+  });
 }
 
 function renderDemoDashboard() {
@@ -418,6 +443,104 @@ async function loadPowerShell() {
   ]);
 }
 
+async function loadJitter() {
+  const [summary, hosts] = await Promise.all([
+    api(`/api/dashboard/jitter/summary${query()}`),
+    api(`/api/dashboard/jitter/hosts${query({ limit: 100 })}`),
+  ]);
+
+  const rows = hosts.items || [];
+  el("jitterHosts").textContent = formatNumber(summary.hosts);
+  el("jitterAvg").textContent = formatMs(summary.avgJitterMs);
+  el("jitterP95").textContent = formatMs(summary.p95JitterMs);
+  el("jitterWorst").textContent = summary.worstHost?.computer || "-";
+
+  renderBarChart(el("jitterChart"), rows.slice(0, 12), "computer", "p95JitterMs", "#3b82f6", formatMs);
+  renderTable(el("jitterHostsTable"), rows, [
+    ["Host", "computer"],
+    ["Status", "statusLabel"],
+    ["Samples", "samples", "numeric"],
+    ["Avg jitter", "avgJitterMs", "duration"],
+    ["P95 jitter", "p95JitterMs", "duration"],
+    ["Batch avg", "avgBatchSize", "numeric"],
+    ["Spool", "spoolDepthBytes", "bytes"],
+    ["Pending", "pendingFileCount", "numeric"],
+    ["Last seen", "lastSeen", "date"],
+  ]);
+}
+
+async function loadChunks() {
+  const [summary, hosts] = await Promise.all([
+    api(`/api/dashboard/chunks/summary${query()}`),
+    api(`/api/dashboard/chunks/hosts${query({ limit: 100 })}`),
+  ]);
+
+  const rows = hosts.items || [];
+  el("chunkCount").textContent = formatNumber(summary.chunks);
+  el("chunkHosts").textContent = formatNumber(summary.hosts);
+  el("chunkEvents").textContent = formatNumber(summary.eventsSent);
+  el("chunkFailed").textContent = formatNumber(summary.failedChunks);
+
+  renderBarChart(el("chunkSpoolChart"), rows.slice(0, 12), "computer", "spoolDepthBytes", "#17b26a", formatBytes);
+  renderChunkHostTable(el("chunkHostsTable"), rows);
+}
+
+function renderChunkHostTable(container, rows) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No chunks</div>`;
+    return;
+  }
+
+  const body = rows.map((row) => `
+    <tr class="clickable-row" data-host="${escapeAttr(row.computer)}" data-time="${escapeAttr(row.lastSeen)}">
+      <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+      <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
+      <td title="${escapeAttr(row.lastChunk)}">${escapeHtml(row.lastChunk || "-")}</td>
+      <td class="numeric">${formatNumber(row.statusCode)}</td>
+      <td class="numeric">${formatNumber(row.batchSize)}</td>
+      <td class="numeric">${formatBytes(row.spoolDepthBytes)}</td>
+      <td class="numeric">${formatMs(row.plannedJitterMs)}</td>
+      <td class="numeric">${formatMs(row.sendDurationMs)}</td>
+      <td class="numeric">${formatNumber(row.pendingFileCount)}</td>
+      <td title="${escapeAttr(row.lastSeen)}">${escapeHtml(formatDate(row.lastSeen))}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Host</th>
+          <th>Status</th>
+          <th>Last chunk</th>
+          <th class="numeric">HTTP</th>
+          <th class="numeric">Batch</th>
+          <th class="numeric">Spool</th>
+          <th class="numeric">Jitter</th>
+          <th class="numeric">Send</th>
+          <th class="numeric">Pending</th>
+          <th>Last seen</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+
+  container.querySelectorAll(".clickable-row").forEach((row) => {
+    row.addEventListener("click", () => openDetailForChunk(row.dataset.host, row.dataset.time));
+  });
+}
+
+function openDetailForChunk(host, time) {
+  if (!host || !time) return;
+  const url = new URL("./detail.html", window.location.href);
+  url.searchParams.set("host", host);
+  url.searchParams.set("time", minuteBucket(time));
+  url.searchParams.set("bucket", "minute");
+  url.searchParams.set("view", "both");
+  window.location.href = url.toString();
+}
+
 async function loadHeatmap() {
   const bucket = selectedHeatmapBucket();
   const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
@@ -434,13 +557,37 @@ function renderTable(container, rows, columns) {
   const body = rows.map((row) => {
     const cells = columns.map(([, key, type]) => {
       const raw = row[key] ?? "";
-      const value = type === "date" ? formatDate(raw) : type === "numeric" ? formatNumber(raw) : String(raw);
+      const value = type === "date" ? formatDate(raw) : type === "numeric" ? formatNumber(raw) : type === "duration" ? formatMs(raw) : type === "bytes" ? formatBytes(raw) : String(raw);
       return `<td class="${type === "numeric" ? "numeric" : ""}" title="${escapeAttr(String(raw))}">${escapeHtml(value)}</td>`;
     }).join("");
     return `<tr>${cells}</tr>`;
   }).join("");
 
   container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function renderBarChart(container, rows, labelKey, valueKey, color, formatter = formatNumber) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No data</div>`;
+    return;
+  }
+
+  const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
+  container.innerHTML = `
+    <div class="bar-list">
+      ${rows.map((row) => {
+        const value = Number(row[valueKey] || 0);
+        const width = Math.max(2, Math.round(value / max * 100));
+        return `
+          <div class="bar-row">
+            <span title="${escapeAttr(row[labelKey])}">${escapeHtml(row[labelKey] || "(empty)")}</span>
+            <div class="bar-track"><i style="width:${width}%;background:${color}"></i></div>
+            <strong>${escapeHtml(formatter(value))}</strong>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
 }
 
 function renderLineChart(container, rows, xKey, yKey, color) {
@@ -617,6 +764,26 @@ function formatAge(seconds) {
   return `${Math.round(value / 86400)}d`;
 }
 
+function formatMs(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0s";
+  if (number < 1000) return `${Math.round(number)}ms`;
+  return `${(number / 1000).toFixed(number < 10000 ? 1 : 0)}s`;
+}
+
+function formatBytes(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = number;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit++;
+  }
+  return `${size.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const normalized = String(value).includes("T") ? value : String(value).replace(" ", "T");
@@ -630,6 +797,16 @@ function shortDate(value) {
   const date = new Date(normalized);
   if (Number.isNaN(date.getTime())) return String(value);
   return `${String(date.getMonth() + 1).padStart(2, "0")}/${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function minuteBucket(value) {
+  if (!value) return "";
+  const normalized = String(value).includes("T") ? value : String(value).replace(" ", "T");
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 16) + ":00";
+  date.setSeconds(0, 0);
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:00`;
 }
 
 function describeArc(cx, cy, r, start, end) {

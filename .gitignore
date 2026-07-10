@@ -3,6 +3,8 @@ Vector-HA-Cluster/redpanda_data/
 Vector-HA-Cluster/clickhouse_data/
 Vector-HA-Cluster/grafana_data/
 Vector-HA-Cluster/soc_vault/
+Vector-HA-Cluster/raw_chunks/
+Vector-HA-Cluster/leases/
 Vector-HA-Cluster/*.log
 Vector-HA-Cluster/**/*.log
 
@@ -32,6 +34,9 @@ VectorBuild/Output/
 *.7z
 
 # Local IDE / OS files
+.appdata/
+.dotnet-home/
+.localappdata/
 .vs/
 .vscode/
 *.user
@@ -41,6 +46,14 @@ desktop.ini
 
 # Temporary and generated analysis outputs
 outputs/
+exports/
 work/
+sim-jitter/
+sim-recovery-local/
+tools/shipper_logs*/
+tools/*.log
+tools/local-shipper-runonce*.json
+tools/InnoSetup/Examples/
+VectorBuild/Sysmon/*-output.*
 *.tmp
 *.bak

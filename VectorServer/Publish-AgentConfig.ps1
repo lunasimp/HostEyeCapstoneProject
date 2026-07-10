@@ -1,14 +1,28 @@
 param(
-    [string]$ConfigPath = "C:\VectorServer\HostEye_UpdateServer\master-vector.toml",
+    [string]$ConfigPath = (Join-Path $PSScriptRoot "HostEye_UpdateServer\master-vector.toml"),
     [string]$Version,
-    [string]$MinimumAgentVersion = "1.0.0"
+    [string]$MinimumAgentVersion = "1.0.0",
+    [string]$OpenSsl = "",
+    [string]$PrivateKey = (Join-Path $PSScriptRoot "organization_private.pem"),
+    [string]$UpdateServerDir = (Join-Path $PSScriptRoot "HostEye_UpdateServer")
 )
 
 $ErrorActionPreference = "Stop"
 
-$OpenSsl = "C:\Program Files\Git\usr\bin\openssl.exe"
-$PrivateKey = "C:\VectorServer\organization_private.pem"
-$UpdateServerDir = "C:\VectorServer\HostEye_UpdateServer"
+if ([string]::IsNullOrWhiteSpace($OpenSsl)) {
+    $OpenSslCandidates = @(
+        "C:\Program Files\Git\usr\bin\openssl.exe",
+        "C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+        "openssl.exe"
+    )
+    $OpenSsl = $OpenSslCandidates | Where-Object {
+        if ($_ -eq "openssl.exe") {
+            $null -ne (Get-Command $_ -ErrorAction SilentlyContinue)
+        } else {
+            Test-Path -LiteralPath $_
+        }
+    } | Select-Object -First 1
+}
 $ManifestPath = Join-Path $UpdateServerDir "manifest.json"
 $ManifestSigPath = Join-Path $UpdateServerDir "manifest.json.sig"
 $ConfigSigPath = Join-Path $UpdateServerDir "master-vector.toml.sig"

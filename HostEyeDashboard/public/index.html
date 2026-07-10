@@ -20,6 +20,8 @@
           <a href="#network" class="nav-item">Network & DNS</a>
           <a href="#registry" class="nav-item">Registry & File</a>
           <a href="#powershell" class="nav-item">PowerShell</a>
+          <a href="#jitter" class="nav-item">Jitter</a>
+          <a href="#chunks" class="nav-item">Chunks</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
         </nav>
 
@@ -242,9 +244,67 @@
           </div>
         </section>
 
-        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+        <section id="jitter" class="dashboard-section section-card is-open page-view" data-page="jitter" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">06</span>
+            <span>
+              <strong>Shipper Jitter & Queue</strong>
+              <small>client-reported send jitter and spool pressure</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Metric hosts</span><strong id="jitterHosts">-</strong></article>
+              <article class="kpi"><span>Avg jitter</span><strong id="jitterAvg">-</strong></article>
+              <article class="kpi"><span>P95 jitter</span><strong id="jitterP95">-</strong></article>
+              <article class="kpi"><span>Worst host</span><strong id="jitterWorst">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title"><h3>Planned jitter by host</h3></div>
+                <div id="jitterChart" class="bar-chart"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Cluster jitter by host</h3></div>
+                <div id="jitterHostsTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="chunks" class="dashboard-section section-card is-open page-view" data-page="chunks" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">07</span>
+            <span>
+              <strong>Chunk Monitor</strong>
+              <small>latest batches sent by each endpoint</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Chunks</span><strong id="chunkCount">-</strong></article>
+              <article class="kpi"><span>Hosts</span><strong id="chunkHosts">-</strong></article>
+              <article class="kpi"><span>Events sent</span><strong id="chunkEvents">-</strong></article>
+              <article class="kpi"><span>Failed</span><strong id="chunkFailed">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title"><h3>Spool depth by host</h3></div>
+                <div id="chunkSpoolChart" class="bar-chart"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Latest chunks by host</h3><span>click host to drill down</span></div>
+                <div id="chunkHostsTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">08</span>
             <span>
               <strong>Host Activity Over Time</strong>
               <small>click a cell for drilldown</small>

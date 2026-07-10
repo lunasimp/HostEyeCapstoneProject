@@ -13,7 +13,7 @@
   "GuestReadyTimeoutSeconds": 600,
   "UseVBoxGuestControl": true,
   "UseWinRM": false,
-  "GatewayHostName": "soc-gateway.yourcorporate.com",
+  "GatewayHostName": "hosteye.iahn.hanoi.vn",
   "GatewayIp": "",
   "InstallerRelativePath": "../VectorBuild/Output/HostEye_Endpoint_Installer.exe",
   "InstallerFallbackPath": "C:/VectorBuild/Output/HostEye_Endpoint_Installer.exe",

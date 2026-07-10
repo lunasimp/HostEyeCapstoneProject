@@ -2,7 +2,7 @@
 # Requires Administrator. Installs HostEye collector as LocalSystem service, config updater, certs, and Sysmon.
 
 param(
-    [string]$GatewayUri = "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+    [string]$GatewayUri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
     [string]$CaCertificateFileName = "company_ca.crt",
     [switch]$NoStart
 )
@@ -34,6 +34,24 @@ function Copy-IfDifferent([string]$Source, [string]$Destination) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Copy-DirectoryContentsIfDifferent([string]$SourceDir, [string]$DestinationDir, [switch]$Recurse) {
+    if (-not (Test-Path $SourceDir)) { return $false }
+    $srcFull = [System.IO.Path]::GetFullPath($SourceDir).TrimEnd('\')
+    $dstFull = [System.IO.Path]::GetFullPath($DestinationDir).TrimEnd('\')
+    if ($srcFull -ieq $dstFull) {
+        Write-InstallLog "Source and destination are the same; skipping copy: $SourceDir"
+        return $true
+    }
+
+    New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
+    if ($Recurse) {
+        Copy-Item -Path (Join-Path $SourceDir "*") -Destination $DestinationDir -Force -Recurse
+    } else {
+        Copy-Item -Path (Join-Path $SourceDir "*") -Destination $DestinationDir -Force
+    }
+    return $true
+}
+
 function Ensure-MachineEnv([string]$Name, [string]$Value) {
     $current = [Environment]::GetEnvironmentVariable($Name, "Machine")
     if ([string]::IsNullOrWhiteSpace($current)) {
@@ -41,6 +59,64 @@ function Ensure-MachineEnv([string]$Name, [string]$Value) {
         Write-InstallLog "Created machine environment variable $Name=$Value"
     } else {
         Write-InstallLog "Machine environment variable $Name already exists: $current"
+    }
+}
+
+function Enable-HostEyeAuditTelemetry {
+    Write-InstallLog "Enabling HostEye audit telemetry policy."
+
+    $processAuditKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit"
+    New-Item -Path $processAuditKey -Force | Out-Null
+    New-ItemProperty -Path $processAuditKey -Name "ProcessCreationIncludeCmdLine_Enabled" -Value 1 -PropertyType DWord -Force | Out-Null
+    Write-InstallLog "Enabled command line capture for Security EID 4688."
+
+    $powerShellPolicyRoot = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+    $moduleLoggingKey = Join-Path $powerShellPolicyRoot "ModuleLogging"
+    $moduleNamesKey = Join-Path $moduleLoggingKey "ModuleNames"
+    $scriptBlockLoggingKey = Join-Path $powerShellPolicyRoot "ScriptBlockLogging"
+    New-Item -Path $moduleNamesKey -Force | Out-Null
+    New-Item -Path $scriptBlockLoggingKey -Force | Out-Null
+    New-ItemProperty -Path $moduleLoggingKey -Name "EnableModuleLogging" -Value 1 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -Path $moduleNamesKey -Name "*" -Value "*" -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $scriptBlockLoggingKey -Name "EnableScriptBlockLogging" -Value 1 -PropertyType DWord -Force | Out-Null
+    Write-InstallLog "Enabled PowerShell module logging EID 4103 and script block logging EID 4104."
+
+    $channelsToEnable = @(
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-DNS-Client/Operational",
+        "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall",
+        "Microsoft-Windows-TaskScheduler/Operational",
+        "Microsoft-Windows-Windows Defender/Operational"
+    )
+    foreach ($channelName in $channelsToEnable) {
+        try {
+            & wevtutil.exe sl $channelName /e:true 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-InstallLog "Enabled Windows Event Log channel: $channelName"
+            } else {
+                Write-InstallLog "WARNING: could not enable channel $channelName; wevtutil exit code $LASTEXITCODE"
+            }
+        } catch {
+            Write-InstallLog "WARNING: could not enable channel ${channelName}: $($_.Exception.Message)"
+        }
+    }
+
+    $auditSubcategories = @(
+        "Process Creation",
+        "Filtering Platform Connection",
+        "Filtering Platform Packet Drop"
+    )
+    foreach ($subcategory in $auditSubcategories) {
+        try {
+            & auditpol.exe /set /subcategory:"$subcategory" /success:enable /failure:enable 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-InstallLog "Enabled audit policy subcategory: $subcategory"
+            } else {
+                Write-InstallLog "WARNING: could not enable audit policy subcategory $subcategory; auditpol exit code $LASTEXITCODE"
+            }
+        } catch {
+            Write-InstallLog "WARNING: could not enable audit policy subcategory ${subcategory}: $($_.Exception.Message)"
+        }
     }
 }
 
@@ -77,6 +153,78 @@ function Stop-ExistingComponent([string]$Name) {
     }
 }
 
+function Invoke-HostEyeSetupCommand([string]$Description, [string]$FilePath, [string[]]$ArgumentList) {
+    try {
+        Write-InstallLog $Description
+        $output = & $FilePath @ArgumentList 2>&1
+        $exitCode = $LASTEXITCODE
+        if ($output) {
+            foreach ($line in $output) {
+                Write-InstallLog "  $line"
+            }
+        }
+        if ($exitCode -ne 0) {
+            Write-InstallLog "WARNING: command returned exit code ${exitCode}: $FilePath $($ArgumentList -join ' ')"
+        }
+    } catch {
+        Write-InstallLog "WARNING: $Description failed: $($_.Exception.Message)"
+    }
+}
+
+function Set-HostEyeDword([string]$Path, [string]$Name, [int]$Value) {
+    try {
+        New-Item -Path $Path -Force | Out-Null
+        New-ItemProperty -Path $Path -Name $Name -Value $Value -PropertyType DWord -Force | Out-Null
+        Write-InstallLog "Set registry DWORD $Path\$Name=$Value"
+    } catch {
+        Write-InstallLog "WARNING: failed to set registry DWORD $Path\${Name}: $($_.Exception.Message)"
+    }
+}
+
+function Enable-HostEyeAuditPolicy {
+    Write-InstallLog "Configuring HostEye audit policy prerequisites."
+
+    # Use stable audit subcategory GUIDs so the installer works on localized Windows builds.
+    Invoke-HostEyeSetupCommand "Enabling Security 4688 Process Creation auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE922B-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+    Invoke-HostEyeSetupCommand "Enabling Windows Filtering Platform connection auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE9226-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+    Invoke-HostEyeSetupCommand "Enabling Windows Filtering Platform packet drop auditing." "auditpol.exe" @(
+        "/set",
+        "/subcategory:{0CCE9225-69AE-11D9-BED3-505054503030}",
+        "/success:enable",
+        "/failure:enable"
+    )
+
+    Set-HostEyeDword "HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System\Audit" "ProcessCreationIncludeCmdLine_Enabled" 1
+    Set-HostEyeDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" "EnableScriptBlockLogging" 1
+    Set-HostEyeDword "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging" "EnableModuleLogging" 1
+    try {
+        New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" -Force | Out-Null
+        New-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging\ModuleNames" -Name "*" -Value "*" -PropertyType String -Force | Out-Null
+        Write-InstallLog "Enabled PowerShell module logging for all modules."
+    } catch {
+        Write-InstallLog "WARNING: failed to enable PowerShell module logging names: $($_.Exception.Message)"
+    }
+
+    foreach ($channel in @(
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-TaskScheduler/Operational",
+        "Microsoft-Windows-Windows Defender/Operational",
+        "Microsoft-Windows-Windows Firewall With Advanced Security/Firewall"
+    )) {
+        Invoke-HostEyeSetupCommand "Enabling Windows Event Log channel: $channel" "wevtutil.exe" @("sl", $channel, "/e:true")
+    }
+}
+
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "This installer must be run as Administrator."
     exit 1
@@ -85,6 +233,8 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 Write-InstallLog "Bat dau cai dat HostEye Endpoint Agent from $StagingDir"
 
 New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "data"), (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state") | Out-Null
+
+Enable-HostEyeAuditPolicy
 
 foreach ($existingComponent in @($ServiceName, $ShipperServiceName, "Vector", "SOCShipper")) {
     Stop-ExistingComponent $existingComponent
@@ -114,22 +264,18 @@ Copy-IfDifferent (Join-Path $StagingDir "vector.toml") (Join-Path $TargetDir "ve
 Copy-IfDifferent (Join-Path $StagingDir "HostEye_Updater.ps1") (Join-Path $TargetDir "HostEye_Updater.ps1")
 Copy-IfDifferent (Join-Path $StagingDir "SOC_Updater.ps1") (Join-Path $TargetDir "HostEye_Updater.ps1")
 Set-Content -LiteralPath (Join-Path $TargetDir "agent.version") -Value "1.0.0" -Encoding ASCII
-if (Test-Path (Join-Path $StagingDir "HostEyeShipper")) {
-    Copy-Item -Path (Join-Path $StagingDir "HostEyeShipper\*") -Destination $ShipperDir -Force -Recurse
-} elseif (Test-Path (Join-Path $StagingDir "SOCShipper")) {
-    Copy-Item -Path (Join-Path $StagingDir "SOCShipper\*") -Destination $ShipperDir -Force -Recurse
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "HostEyeShipper") $ShipperDir -Recurse) {
+} elseif (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "SOCShipper") $ShipperDir -Recurse) {
 } else {
     Write-InstallLog "WARNING: HostEyeShipper directory was not found in staging dir."
 }
 
-if (Test-Path (Join-Path $StagingDir "certs")) {
-    Copy-Item -Path (Join-Path $StagingDir "certs\*") -Destination $CertDir -Force
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "certs") $CertDir) {
 } else {
     Write-InstallLog "WARNING: certs directory was not found in staging dir."
 }
 
-if (Test-Path (Join-Path $StagingDir "Sysmon")) {
-    Copy-Item -Path (Join-Path $StagingDir "Sysmon\*") -Destination $SysmonDir -Force -Recurse
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "Sysmon") $SysmonDir -Recurse) {
 } else {
     Write-InstallLog "WARNING: Sysmon directory was not found in staging dir."
 }
@@ -152,6 +298,10 @@ $Acl.ResetAccessRule($AdminRule)
 $Acl.ResetAccessRule($SystemRule)
 Set-Acl -Path $TargetDir $Acl
 Write-InstallLog "Applied ACL hardening to $TargetDir"
+
+# Enable local audit sources required by the telemetry baseline. In domain deployments,
+# GPO can enforce the same settings; this keeps standalone/lab endpoints covered.
+Enable-HostEyeAuditTelemetry
 
 # Install or update Sysmon if bundled.
 $sysmonExe = Join-Path $SysmonDir "Sysmon64.exe"
@@ -280,23 +430,26 @@ $shipperExe = Join-Path $ShipperDir "HostEyeShipper.exe"
 $shipperConfig = Join-Path $ShipperDir "shipper-config.json"
 $shipperConfigObject = [ordered]@{
     GatewayUri = $GatewayUri
+    GroupId = "default"
+    AgentConfigSigningKey = "hosteye-dynamic-config-demo-key"
     SpoolDirectory = (Join-Path $ProgramDataDir "spool")
     StateDirectory = (Join-Path $ProgramDataDir "shipper_state")
     LogDirectory = $LogDir
     ClientCertificateFile = (Join-Path $CertDir "client.crt")
     ClientKeyFile = (Join-Path $CertDir "client.key")
     CaCertificateFile = (Join-Path $CertDir "company_ca.crt")
-    MaxEvents = 1000
-    MaxBytes = 1048576
-    NormalJitterWindowSeconds = 120
-    RecoveryJitterWindowSeconds = 900
+    AllowSystemServerCertificateTrust = $true
+    MaxEvents = 500
+    MaxBytes = 524288
+    NormalJitterWindowSeconds = 5
+    RecoveryJitterWindowSeconds = 30
     BaseBackoffSeconds = 2
-    MaxBackoffSeconds = 300
-    MaxSpoolSizeMB = 8192
-    LowWatermarkPercent = 85
-    SpoolCheckIntervalSeconds = 30
+    MaxBackoffSeconds = 120
+    MaxSpoolSizeMB = 2048
+    LowWatermarkPercent = 80
+    SpoolCheckIntervalSeconds = 10
     PreferDeletingSentFirst = $true
-    SentRetentionDays = 2
+    SentRetentionDays = 1
     RunOnce = $false
 }
 $shipperConfigObject | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $shipperConfig -Encoding UTF8
