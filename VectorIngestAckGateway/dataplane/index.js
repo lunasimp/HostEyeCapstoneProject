@@ -140,8 +140,7 @@ async function handleLegacyArray(state, payload, context) {
       ack: true,
       commit: true,
       status: "forwarded_legacy_array",
-      event_count: payload.length,
-      agent_config: state.options.agentConfig
+      event_count: payload.length
     }
   };
 }
@@ -231,8 +230,7 @@ async function handleChunk(state, payload, context) {
       event_count: validation.eventCount,
       invalid_event_count: invalidEvents,
       sequence_number: Number(payload.sequence_number || 0),
-      lease_id: String(payload.lease_id || ""),
-      agent_config: state.options.agentConfig
+      lease_id: String(payload.lease_id || "")
     }
   };
 }
@@ -292,8 +290,7 @@ async function handleExistingChunk(state, payload, context, validation, existing
       checksum: validation.checksum,
       event_count: validation.eventCount,
       sequence_number: Number(payload.sequence_number || 0),
-      lease_id: String(payload.lease_id || ""),
-      agent_config: state.options.agentConfig
+      lease_id: String(payload.lease_id || "")
     }
   };
 }
