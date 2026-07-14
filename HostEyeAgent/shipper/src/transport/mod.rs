@@ -14,39 +14,7 @@ use serde::Deserialize;
 // Transport data models (= TransportModels.cs)
 // ──────────────────────────────────────────────
 
-/// Một batch đọc từ spool file.
-#[derive(Debug, Clone)]
-pub struct Batch {
-    pub lines:             Vec<String>,
-    pub bytes:             usize,
-    pub start_byte_offset: u64,
-    pub next_byte_offset:  u64,
-    pub start_line_offset: i32,
-    pub next_line_offset:  i32,
-}
 
-/// Metadata gắn kèm mỗi chunk upload.
-#[derive(Debug, Clone)]
-pub struct ChunkMetadata {
-    pub chunk_id:          String,
-    pub agent_id:          String,
-    pub host_id:           String,
-    pub computer:          String,
-    pub spool_file:        String,
-    pub line_offset:       i32,
-    pub next_line_offset:  i32,
-    pub byte_offset:       u64,
-    pub next_byte_offset:  u64,
-    pub sequence_number:   i32,
-    pub event_count:       usize,
-    pub checksum:          String,
-    pub lease_id:          String,
-    pub lease_issued_at:   DateTime<Utc>,
-    pub lease_expires_at:  DateTime<Utc>,
-    pub lease_ttl_seconds: i32,
-    pub max_batch_mb:      f64,
-    pub max_upload_rate_kbps: i32,
-}
 
 /// Upload lease trả về từ admission endpoint.
 #[derive(Debug, Clone)]
@@ -98,12 +66,3 @@ pub struct ChunkAck {
     pub lease_id:        String,
 }
 
-/// Thời điểm send lifecycle dùng cho runtime metric.
-#[derive(Debug, Clone)]
-pub struct SendTiming {
-    pub jitter_planned_at:  DateTime<Utc>,
-    pub scheduled_send_at:  DateTime<Utc>,
-    pub actual_send_at:     DateTime<Utc>,
-    pub send_started_at:    DateTime<Utc>,
-    pub send_completed_at:  DateTime<Utc>,
-}

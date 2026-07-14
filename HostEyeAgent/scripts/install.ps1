@@ -426,7 +426,7 @@ if (-not $NoStart) {
 
 
 # Configure and install HostEye Shipper startup task. HostEye collector writes local spool; shipper sends batches with mTLS/backoff.
-$shipperExe = Join-Path $ShipperDir "HostEyeShipper.exe"
+$shipperExe = Join-Path $ShipperDir "hosteye-shipper.exe"
 $shipperConfig = Join-Path $ShipperDir "shipper-config.json"
 $shipperConfigObject = [ordered]@{
     GatewayUri = $GatewayUri
@@ -445,8 +445,8 @@ $shipperConfigObject = [ordered]@{
     RecoveryJitterWindowSeconds = 30
     BaseBackoffSeconds = 2
     MaxBackoffSeconds = 120
-    MaxSpoolSizeMB = 2048
-    LowWatermarkPercent = 80
+    MaxSpoolSizeMB = 256
+    LowWatermarkPercent = 70
     SpoolCheckIntervalSeconds = 10
     PreferDeletingSentFirst = $true
     SentRetentionDays = 1

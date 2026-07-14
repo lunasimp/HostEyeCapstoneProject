@@ -163,7 +163,7 @@ impl SpoolQuotaManager {
                     p.is_file()
                         && p.extension()
                             .and_then(|x| x.to_str())
-                            .map(|x| x.eq_ignore_ascii_case("ndjson"))
+                            .map(|x| x.eq_ignore_ascii_case("gz"))
                             .unwrap_or(false)
                 })
                 .map(|e| e.path())
@@ -221,10 +221,10 @@ fn count_files(dir: &Path, spool_root: &str, stats: &mut SpoolStats) {
             } else if let Ok(m) = fs::metadata(&p) {
                 stats.bytes += m.len();
                 stats.file_count += 1;
-                // pending = .ndjson ở thẳng spool root (không trong subdir)
+                // pending = .gz ở thẳng spool root (không trong subdir)
                 if p.extension()
                     .and_then(|x| x.to_str())
-                    .map(|x| x.eq_ignore_ascii_case("ndjson"))
+                    .map(|x| x.eq_ignore_ascii_case("gz"))
                     .unwrap_or(false)
                 {
                     if let Some(parent) = p.parent() {

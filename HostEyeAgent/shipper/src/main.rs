@@ -254,7 +254,7 @@ async fn run() -> anyhow::Result<u8> {
     let _ = stop_tx.send(true);
     if let Some(t) = spool_quota_loop   { let _ = t.await; }
     if let Some(t) = config_sync_loop   { let _ = t.await; }
-    let _ = ingestion_server_loop.await;
+    ingestion_server_loop.abort();
 
     Ok(exit_code)
 }

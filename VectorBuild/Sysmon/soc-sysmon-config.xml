@@ -1,0 +1,54 @@
+<Sysmon schemaversion="4.91">
+  <HashAlgorithms>SHA256,IMPHASH</HashAlgorithms>
+  <CheckRevocation>False</CheckRevocation>
+  <EventFiltering>
+    <!-- Sysmon EID 1: Process Creation -->
+    <ProcessCreate onmatch="include">
+      <Image condition="is not">-</Image>
+    </ProcessCreate>
+
+    <!-- Sysmon EID 3: Network Connection -->
+    <NetworkConnect onmatch="include">
+      <Image condition="is not">-</Image>
+    </NetworkConnect>
+
+    <!-- Sysmon EID 7: Image Loaded / DLL Loaded -->
+    <ImageLoad onmatch="include">
+      <ImageLoaded condition="is not">-</ImageLoaded>
+    </ImageLoad>
+
+    <!-- Sysmon EID 8: CreateRemoteThread. Never suppress in Vector. -->
+    <CreateRemoteThread onmatch="include">
+      <SourceImage condition="is not">-</SourceImage>
+    </CreateRemoteThread>
+
+    <!-- Sysmon EID 10: Process Access. Keep CallTrace and process identity fields. Never suppress in Vector. -->
+    <ProcessAccess onmatch="include">
+      <SourceImage condition="is not">-</SourceImage>
+      <CallTrace condition="is not">-</CallTrace>
+    </ProcessAccess>
+
+    <!-- Sysmon EID 11: File Create -->
+    <FileCreate onmatch="include">
+      <TargetFilename condition="is not">-</TargetFilename>
+    </FileCreate>
+
+    <!-- Sysmon EID 12/13/14: Registry object/value events. Vector aggregates low-value WMI noise only. -->
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="is not">-</TargetObject>
+    </RegistryEvent>
+
+    <!-- Sysmon EID 22: DNS Query -->
+    <DnsQuery onmatch="include">
+      <QueryName condition="is not">-</QueryName>
+    </DnsQuery>
+
+    <!-- Sysmon EID 25: Process Tampering. Never suppress in Vector. -->
+    <ProcessTampering onmatch="include">
+      <Image condition="is not">-</Image>
+    </ProcessTampering>
+
+    <!-- Sysmon EID 5: Process Terminate intentionally excluded to reduce noise. -->
+    <ProcessTerminate onmatch="exclude" />
+  </EventFiltering>
+</Sysmon>
