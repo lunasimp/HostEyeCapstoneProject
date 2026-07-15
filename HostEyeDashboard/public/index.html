@@ -22,6 +22,7 @@
           <a href="#powershell" class="nav-item">PowerShell</a>
           <a href="#jitter" class="nav-item">Jitter</a>
           <a href="#chunks" class="nav-item">Chunks</a>
+          <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
         </nav>
 
@@ -302,9 +303,45 @@
           </div>
         </section>
 
-        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+        <section id="dynamic-config" class="dashboard-section section-card is-open page-view" data-page="dynamic-config" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">08</span>
+            <span>
+              <strong>Cau hinh dong</strong>
+              <small>policy, agent state, and audit from control plane</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Policies</span><strong id="dynamicPolicyCount">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="dynamicActivePolicyCount">-</strong></article>
+              <article class="kpi"><span>Agents</span><strong id="dynamicAgentCount">-</strong></article>
+              <article class="kpi"><span>Groups</span><strong id="dynamicGroupCount">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title"><h3>Policies</h3><span id="dynamicConfigStatus">loading</span></div>
+                <div id="dynamicPoliciesTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Agents dang lay config</h3></div>
+                <div id="dynamicAgentsTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Nhom endpoint</h3></div>
+                <div id="dynamicGroupsTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Audit gan day</h3></div>
+                <div id="dynamicAuditTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
             <span>
               <strong>Host Activity Over Time</strong>
               <small>click a cell for drilldown</small>

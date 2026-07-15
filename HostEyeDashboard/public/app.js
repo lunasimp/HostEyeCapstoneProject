@@ -17,6 +17,7 @@ const pages = {
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
+  "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
 };
 
@@ -85,6 +86,7 @@ async function loadDashboard() {
       loadPowerShell(),
       loadJitter(),
       loadChunks(),
+      loadDynamicConfig(),
       loadHeatmap(),
     ]);
   } catch (error) {
@@ -111,6 +113,10 @@ function resetKpis() {
     "chunkHosts",
     "chunkEvents",
     "chunkFailed",
+    "dynamicPolicyCount",
+    "dynamicActivePolicyCount",
+    "dynamicAgentCount",
+    "dynamicGroupCount",
   ].forEach((id) => {
     const node = el(id);
     if (node) node.textContent = "-";
@@ -539,6 +545,134 @@ function openDetailForChunk(host, time) {
   url.searchParams.set("bucket", "minute");
   url.searchParams.set("view", "both");
   window.location.href = url.toString();
+}
+
+async function loadDynamicConfig() {
+  try {
+    const [summary, policies, agents, audit] = await Promise.all([
+      api("/api/dashboard/dynamic-config/summary"),
+      api("/api/dashboard/dynamic-config/policies"),
+      api("/api/dashboard/dynamic-config/agents"),
+      api("/api/dashboard/dynamic-config/audit"),
+    ]);
+
+    const totals = summary.totals || {};
+    el("dynamicPolicyCount").textContent = formatNumber(totals.policies);
+    el("dynamicActivePolicyCount").textContent = formatNumber(totals.activePolicies);
+    el("dynamicAgentCount").textContent = formatNumber(totals.agents);
+    el("dynamicGroupCount").textContent = formatNumber(totals.groups);
+    el("dynamicConfigStatus").textContent = summary.status === "ok" ? "control plane online" : (summary.message || "control plane offline");
+
+    renderDynamicPolicies(policies.items || summary.policies || []);
+    renderDynamicAgents(agents.items || summary.agents || []);
+    renderDynamicGroups(summary.groups || []);
+    renderDynamicAudit(audit.items || []);
+  } catch (error) {
+    el("dynamicPolicyCount").textContent = "-";
+    el("dynamicActivePolicyCount").textContent = "-";
+    el("dynamicAgentCount").textContent = "-";
+    el("dynamicGroupCount").textContent = "-";
+    el("dynamicConfigStatus").textContent = error.message || "control plane offline";
+    ["dynamicPoliciesTable", "dynamicAgentsTable", "dynamicGroupsTable", "dynamicAuditTable"].forEach((id) => {
+      el(id).innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
+    });
+  }
+}
+
+function renderDynamicPolicies(rows) {
+  const normalized = rows.map((policy) => ({
+    policyId: policy.policy_id || policy.id || "-",
+    name: policy.name || policy.policy_id || "-",
+    target: formatPolicyTarget(policy.target),
+    version: policy.version || 0,
+    enabled: policy.enabled === false ? "disabled" : "enabled",
+    rollout: policy.rollout?.enabled === false ? "off" : String(policy.rollout?.percent ?? 100) + "%",
+    channels: countChannels(policy.config?.vector?.channels),
+    updatedAt: policy.updated_at || policy.updatedAt || "",
+  }));
+  renderTable(el("dynamicPoliciesTable"), normalized, [
+    ["Policy", "policyId"],
+    ["Name", "name"],
+    ["Target", "target"],
+    ["Version", "version", "numeric"],
+    ["State", "enabled"],
+    ["Rollout", "rollout"],
+    ["Channels", "channels", "numeric"],
+    ["Updated", "updatedAt", "date"],
+  ]);
+}
+
+function renderDynamicAgents(rows) {
+  const normalized = rows.map((agent) => ({
+    agentId: agent.agent_id || agent.agentId || "-",
+    hostId: agent.host_id || agent.hostId || "-",
+    groupId: agent.group_id || agent.groupId || "unknown",
+    version: agent.agent_version || agent.agentVersion || "-",
+    policyId: agent.current_policy_id || agent.last_policy_id || agent.policy_id || "-",
+    policyVersion: agent.current_version || agent.last_version || agent.policy_version || 0,
+    lastSeen: agent.last_seen || agent.last_seen_at || agent.lastSeen || agent.updated_at || "",
+    status: agent.status || agent.last_ack_status || "seen",
+  }));
+  renderTable(el("dynamicAgentsTable"), normalized, [
+    ["Agent", "agentId"],
+    ["Host", "hostId"],
+    ["Group", "groupId"],
+    ["Agent ver", "version"],
+    ["Policy", "policyId"],
+    ["Config ver", "policyVersion", "numeric"],
+    ["Status", "status"],
+    ["Last seen", "lastSeen", "date"],
+  ]);
+}
+
+function renderDynamicGroups(rows) {
+  const normalized = rows.map((group) => ({
+    group: group.key || group.group || group.group_id || "unknown",
+    agents: group.count || group.agents || 0,
+  }));
+  renderTable(el("dynamicGroupsTable"), normalized, [
+    ["Group", "group"],
+    ["Agents", "agents", "numeric"],
+  ]);
+}
+
+function renderDynamicAudit(rows) {
+  const normalized = rows.slice(0, 80).map((entry) => ({
+    time: entry.timestamp || entry.time || entry.created_at || "",
+    actor: entry.actor || entry.admin || entry.agent_id || "-",
+    action: entry.action || entry.event || entry.type || "-",
+    target: entry.target || entry.policy_id || entry.agent_id || "-",
+    detail: entry.message || entry.detail || compactJson(entry),
+  }));
+  renderTable(el("dynamicAuditTable"), normalized, [
+    ["Time", "time", "date"],
+    ["Actor", "actor"],
+    ["Action", "action"],
+    ["Target", "target"],
+    ["Detail", "detail"],
+  ]);
+}
+
+function countChannels(channels) {
+  if (Array.isArray(channels)) return channels.length;
+  if (typeof channels === "string") return channels.split(/[\s,]+/).filter(Boolean).length;
+  return 0;
+}
+
+function formatPolicyTarget(target) {
+  if (!target) return "default";
+  if (typeof target === "string") return target;
+  if (target.type === "agent") return "agent:" + (target.agent_id || "");
+  if (target.type === "group") return "group:" + (target.group_id || "");
+  return target.type || "default";
+}
+
+function compactJson(value) {
+  try {
+    return JSON.stringify(value).slice(0, 180);
+  } catch {
+    return String(value || "-");
+  }
 }
 
 async function loadHeatmap() {
