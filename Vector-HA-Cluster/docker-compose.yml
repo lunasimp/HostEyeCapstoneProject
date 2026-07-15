@@ -13,6 +13,7 @@ services:
       - ./certs:/etc/nginx/certs:ro # Phân phối chứng chỉ mTLS an toàn vào Nginx
     depends_on:
       - control-plane
+      - hosteye-dynamic-config
       - collector-a
       - collector-b
       - collector-c
@@ -88,6 +89,28 @@ services:
       - clickhouse
     networks:
       - soc-network
+
+  hosteye-dynamic-config:
+    build:
+      context: ../HostEyeDynamicConfig
+    container_name: hosteye-dynamic-config
+    environment:
+      HOSTEYE_DYNAMIC_CONFIG_PORT: "5063"
+      HOSTEYE_DYNAMIC_CONFIG_STORE: "/app/data/dynamic-config-state.json"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNATURE_ALGORITHM: "ed25519"
+      HOSTEYE_DYNAMIC_CONFIG_ED25519_KEY_ID: "hosteye-demo-ed25519-v1"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKENS: "hosteye-admin-demo=policy:read,policy:write,agent:read,audit:read;hosteye-readonly=policy:read"
+      HOSTEYE_DYNAMIC_CONFIG_REQUIRE_AGENT_IDENTITY: "true"
+      HOSTEYE_DYNAMIC_CONFIG_AGENT_IDENTITY_SECRET: "hosteye-agent-identity-demo-secret"
+      NODE_ENV: "production"
+    ports:
+      - "127.0.0.1:5063:5063"
+    volumes:
+      - hosteye_dynamic_config_data:/app/data
+    networks:
+      - soc-network
+    restart: unless-stopped
 
   collector-a:
     image: node:20-alpine
@@ -498,6 +521,8 @@ services:
       CLICKHOUSE_USERNAME: "default"
       CLICKHOUSE_PASSWORD: ""
       CORS_ORIGIN: "*"
+      HOSTEYE_DYNAMIC_CONFIG_URL: "http://hosteye-dynamic-config:5063"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN: "hosteye-admin-demo"
       NODE_ENV: "production"
     ports:
       - "5055:5055"
@@ -505,6 +530,7 @@ services:
       - ../VectorDashboardApi:/app:ro
     depends_on:
       - clickhouse
+      - hosteye-dynamic-config
     networks:
       - soc-network
 
@@ -530,3 +556,4 @@ networks:
 
 volumes:
   clickhouse_data:
+  hosteye_dynamic_config_data:
