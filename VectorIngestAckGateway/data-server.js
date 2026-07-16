@@ -2,7 +2,7 @@ const http = require("http");
 const { createDataPlane } = require("./dataplane");
 const { createClickHouseClient } = require("./shared/clickhouse");
 const { buildAgentConfig } = require("./shared/config");
-const { createFileLeaseStore } = require("./shared/file-lease-store");
+// createFileLeaseStore removed: lease validation moved to Control Plane exclusively.
 const { readJson, sendJson } = require("./shared/http");
 
 const PORT = Number(process.env.DATA_PORT || process.env.PORT || 8088);
@@ -19,7 +19,7 @@ let activeTelemetryUploads = 0;
 let collectorBusyUntilMs = Date.now();
 
 const clickhouse = createClickHouseClient(CLICKHOUSE_URL);
-const leaseStore = createFileLeaseStore();
+// leaseStore removed: no longer needed at Data Plane layer.
 
 async function forwardToVector(events) {
   const response = await fetch(VECTOR_URL, {
@@ -63,21 +63,17 @@ async function publishToBroker(job) {
   return { topic: RAW_CHUNK_TOPIC, response: text };
 }
 
+// Lease validation removed from Data Plane: validateAndConsumeUploadLease injection dropped.
+// Rate limiting is now the exclusive responsibility of the Control Plane.
 const dataplane = createDataPlane({
   clickhouseInsert: clickhouse.insert,
   getChunk: clickhouse.getChunk,
   forwardToVector,
-  publishToBroker: REDPANDA_PROXY_URL ? publishToBroker : null,
-  validateAndConsumeUploadLease: async (payload) => leaseStore.validateAndConsume(payload, COLLECTOR_ID)
+  publishToBroker: REDPANDA_PROXY_URL ? publishToBroker : null
 }, {
   requiredSchemaVersion: process.env.REQUIRED_SCHEMA_VERSION || "1.0.0",
   rawChunkDir: process.env.RAW_CHUNK_DIR || "/var/lib/hosteye/raw_chunks",
-  requireUploadLease: String(process.env.REQUIRE_UPLOAD_LEASE || "true").toLowerCase() !== "false",
   directVectorForward: String(process.env.DIRECT_VECTOR_FORWARD || "true").toLowerCase() !== "false",
-  maxActiveUploads: Number(process.env.ADMISSION_MAX_ACTIVE_UPLOADS || 64),
-  leaseTtlSeconds: Number(process.env.ADMISSION_LEASE_TTL_SECONDS || 30),
-  maxBatchMb: Number(process.env.ADMISSION_MAX_BATCH_MB || 5),
-  maxUploadRateKbps: Number(process.env.ADMISSION_MAX_UPLOAD_RATE_KBPS || 1024),
   agentConfig: buildAgentConfig(process.env)
 });
 

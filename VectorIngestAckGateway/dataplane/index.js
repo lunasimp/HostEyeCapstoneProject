@@ -8,11 +8,9 @@ const DEFAULTS = Object.freeze({
   processingVersion: "server-processing-1.0.0",
   requiredEventFields: ["agent_id", "host_id", "computer", "timestamp", "channel", "event_id", "record_id"],
   rawChunkDir: "/var/lib/hosteye/raw_chunks",
-  requireUploadLease: true,
-  maxActiveUploads: 64,
-  leaseTtlSeconds: 30,
-  maxBatchMb: 5,
-  maxUploadRateKbps: 1024,
+  // Lease validation has been removed from Data Plane.
+  // Rate limiting and traffic shaping are enforced exclusively by the Control Plane
+  // (admission/request endpoint). Data Plane trusts that the Agent is well-behaved.
   directVectorForward: true,
   agentConfig: Object.freeze({
     config_version: "1.0.0",
@@ -26,22 +24,18 @@ const DEFAULTS = Object.freeze({
 });
 
 function createDataPlane(deps = {}, options = {}) {
+  // Note: activeLeases and randomUUID removed. Lease validation is now the sole
+  // responsibility of the Control Plane. Data Plane state is lean and stateless.
   const state = {
     options: mergeOptions(DEFAULTS, options),
-    activeLeases: deps.activeLeases || new Map(),
     now: deps.now || (() => new Date()),
-    randomUUID: deps.randomUUID || (() => crypto.randomUUID()),
     clickhouseInsert: deps.clickhouseInsert || missingDependency("clickhouseInsert"),
     getChunk: deps.getChunk || missingDependency("getChunk"),
     forwardToVector: deps.forwardToVector || missingDependency("forwardToVector"),
-    publishToBroker: deps.publishToBroker || null,
-    validateAndConsumeUploadLease: deps.validateAndConsumeUploadLease || null
+    publishToBroker: deps.publishToBroker || null
   };
 
   return {
-    handleAdmission(payload) {
-      return handleAdmission(state, payload);
-    },
     handleTelemetry(payload, context = {}) {
       if (Array.isArray(payload)) return handleLegacyArray(state, payload, context);
       if (payload && payload.protocol === "hosteye.telemetry.v1") return handleChunk(state, payload, context);
@@ -52,71 +46,13 @@ function createDataPlane(deps = {}, options = {}) {
     },
     validateEvent(event) {
       return validateEvent(state, event);
-    },
-    validateAndConsumeUploadLease(payload) {
-      return validateAndConsumeUploadLease(state, payload);
-    },
-    pruneExpiredLeases() {
-      return pruneExpiredLeases(state);
-    },
-    getActiveLeaseCount() {
-      pruneExpiredLeases(state);
-      return state.activeLeases.size;
     }
   };
 }
 
-async function handleAdmission(state, payload) {
-  pruneExpiredLeases(state);
-  const nextChunkSizeMb = Number(payload.next_chunk_size_mb || 0);
-  let decision = "ok";
-  let message = "upload lease granted";
-  let retryAfterSeconds = 0;
-  let leaseId = "";
-
-  if (nextChunkSizeMb > state.options.maxBatchMb) {
-    decision = "ng";
-    message = "next chunk is larger than max allowed batch";
-    retryAfterSeconds = 60;
-  } else if (state.activeLeases.size >= state.options.maxActiveUploads) {
-    decision = "ng";
-    message = "receiver upload slots are full";
-    retryAfterSeconds = 15;
-  } else {
-    leaseId = state.randomUUID();
-    const nowMs = state.now().getTime();
-    const expiresAt = new Date(nowMs + state.options.leaseTtlSeconds * 1000);
-    state.activeLeases.set(leaseId, {
-      agentId: String(payload.agent_id || ""),
-      hostId: String(payload.host_id || ""),
-      computer: String(payload.computer || ""),
-      issuedAt: nowMs,
-      expiresAt: expiresAt.getTime(),
-      expiresAtIso: expiresAt.toISOString(),
-      maxBatchMb: state.options.maxBatchMb,
-      maxUploadRateKbps: state.options.maxUploadRateKbps,
-      used: false
-    });
-  }
-
-  const row = buildAdmissionRow(state, payload, decision, leaseId, retryAfterSeconds, message);
-  await state.clickhouseInsert("default.admission_decisions", row);
-
-  return {
-    statusCode: decision === "ok" ? 200 : 429,
-    headers: retryAfterSeconds > 0 ? { "retry-after": String(retryAfterSeconds) } : {},
-    body: {
-      admission: decision,
-      lease_id: leaseId,
-      lease_ttl_seconds: row.lease_ttl_seconds,
-      lease_expires_at: row.lease_expires_at,
-      max_batch_mb: state.options.maxBatchMb,
-      max_upload_rate_kbps: state.options.maxUploadRateKbps,
-      retry_after_seconds: retryAfterSeconds,
-      message
-    }
-  };
-}
+// handleAdmission has been removed from Data Plane.
+// Admission control (lease issuance, rate limiting, batch size enforcement)
+// is now the exclusive responsibility of the Control Plane (controlplane/index.js).
 
 async function handleLegacyArray(state, payload, context) {
   const legacyPayload = payload.map((event, index) => ({
@@ -158,23 +94,9 @@ async function handleChunk(state, payload, context) {
     return handleExistingChunk(state, payload, context, validation, existing);
   }
 
-  const leaseResult = state.validateAndConsumeUploadLease
-    ? await state.validateAndConsumeUploadLease(payload, context)
-    : validateAndConsumeUploadLease(state, payload);
-  if (!leaseResult.ok) {
-    await state.clickhouseInsert("default.ingest_chunks", buildChunkRow(state, payload, leaseResult.status, false, leaseResult.message));
-    return {
-      statusCode: leaseResult.statusCode,
-      body: {
-        ack: false,
-        commit: false,
-        status: leaseResult.status,
-        chunk_id: validation.chunkId,
-        lease_id: String(payload.lease_id || ""),
-        message: leaseResult.message
-      }
-    };
-  }
+  // Lease validation removed: the Control Plane already enforced rate limits and
+  // issued the lease before the Agent was allowed to upload. The Data Plane trusts
+  // the validated chunk envelope (checksum + schema) as sufficient proof of legitimacy.
 
   const rawMeta = await writeRawChunk(state, payload);
   await state.clickhouseInsert("default.raw_chunk_vault", buildRawChunkRow(state, payload, rawMeta, "stored", "raw chunk stored before ACK"));
@@ -341,52 +263,10 @@ function invalidChunk(statusCode, body) {
   return { ok: false, statusCode, body };
 }
 
-function validateAndConsumeUploadLease(state, payload) {
-  if (!state.options.requireUploadLease) {
-    return { ok: true, status: "lease_not_required" };
-  }
-
-  pruneExpiredLeases(state);
-  const leaseId = String(payload.lease_id || "");
-  if (!leaseId) {
-    return { ok: false, statusCode: 428, status: "lease_required", message: "upload lease_id is required" };
-  }
-
-  const lease = state.activeLeases.get(leaseId);
-  if (!lease) {
-    return { ok: false, statusCode: 409, status: "lease_invalid", message: "upload lease is missing or expired" };
-  }
-  if (lease.used) {
-    return { ok: false, statusCode: 409, status: "lease_used", message: "upload lease was already used" };
-  }
-  if (lease.expiresAt <= state.now().getTime()) {
-    state.activeLeases.delete(leaseId);
-    return { ok: false, statusCode: 409, status: "lease_expired", message: "upload lease expired" };
-  }
-
-  const agentId = String(payload.agent_id || "");
-  const hostId = String(payload.host_id || "");
-  const computer = String(payload.computer || "");
-  if (lease.agentId && lease.agentId !== agentId) {
-    return { ok: false, statusCode: 403, status: "lease_agent_mismatch", message: "upload lease agent mismatch" };
-  }
-  if (lease.hostId && lease.hostId !== hostId) {
-    return { ok: false, statusCode: 403, status: "lease_host_mismatch", message: "upload lease host mismatch" };
-  }
-  if (lease.computer && lease.computer !== computer) {
-    return { ok: false, statusCode: 403, status: "lease_computer_mismatch", message: "upload lease computer mismatch" };
-  }
-
-  const batchMb = payloadBatchMb(payload);
-  if (lease.maxBatchMb > 0 && batchMb > lease.maxBatchMb) {
-    return { ok: false, statusCode: 413, status: "lease_batch_too_large", message: `batch ${batchMb.toFixed(3)} MB exceeds lease max ${lease.maxBatchMb} MB` };
-  }
-
-  lease.used = true;
-  lease.usedAt = state.now().getTime();
-  state.activeLeases.set(leaseId, lease);
-  return { ok: true, status: "lease_consumed", lease };
-}
+// validateAndConsumeUploadLease has been removed from Data Plane.
+// Lease validation is now the exclusive responsibility of the Control Plane.
+// The function body is retained below only in the shared/file-lease-store.js
+// which is used exclusively by the Control Plane (control-server.js).
 
 function enrichEvents(state, payload) {
   return payload.events.map((event, index) => {
@@ -559,23 +439,8 @@ function buildRawChunkRow(state, payload, rawMeta, status, message) {
   };
 }
 
-function pruneExpiredLeases(state) {
-  const now = state.now().getTime();
-  let removed = 0;
-  for (const [leaseId, lease] of state.activeLeases.entries()) {
-    if (lease.expiresAt <= now) {
-      state.activeLeases.delete(leaseId);
-      removed++;
-    }
-  }
-  return removed;
-}
-
-function payloadBatchMb(payload) {
-  const batchBytes = Number(payload.batch_bytes || 0);
-  if (batchBytes > 0) return batchBytes / 1024 / 1024;
-  return Buffer.byteLength(JSON.stringify(payload.events || []), "utf8") / 1024 / 1024;
-}
+// pruneExpiredLeases removed: no activeLeases Map in Data Plane state.
+// payloadBatchMb removed: no longer needed after lease validation removal.
 
 function safePathPart(value) {
   return String(value || "unknown").replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 128);
@@ -614,7 +479,6 @@ module.exports = {
   createDataPlane,
   validateEvent,
   enrichEvents,
-  validateAndConsumeUploadLease,
   buildChunkRow,
   buildRawChunkRow,
   sha256Hex
