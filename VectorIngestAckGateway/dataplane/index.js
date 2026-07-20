@@ -8,9 +8,6 @@ const DEFAULTS = Object.freeze({
   processingVersion: "server-processing-1.0.0",
   requiredEventFields: ["agent_id", "host_id", "computer", "timestamp", "channel", "event_id", "record_id"],
   rawChunkDir: "/var/lib/hosteye/raw_chunks",
-  // Lease validation has been removed from Data Plane.
-  // Rate limiting and traffic shaping are enforced exclusively by the Control Plane
-  // (admission/request endpoint). Data Plane trusts that the Agent is well-behaved.
   directVectorForward: true,
   agentConfig: Object.freeze({
     config_version: "1.0.0",
@@ -50,9 +47,7 @@ function createDataPlane(deps = {}, options = {}) {
   };
 }
 
-// handleAdmission has been removed from Data Plane.
-// Admission control (lease issuance, rate limiting, batch size enforcement)
-// is now the exclusive responsibility of the Control Plane (controlplane/index.js).
+
 
 async function handleLegacyArray(state, payload, context) {
   const legacyPayload = payload.map((event, index) => ({
