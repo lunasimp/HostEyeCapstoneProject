@@ -1,6 +1,3 @@
-// transport/manager.rs
-// Port từ: Services/TransportManager.cs
-
 use crate::{
     config::{ShipperConfig, ShipperState},
     spool::{SpoolQuotaManager, SpoolStats},
@@ -16,16 +13,35 @@ use crate::{
     },
 };
 use chrono::Utc;
-use flate2::{write::GzEncoder, Compression};
+use flate2::{
+    read::GzDecoder,
+    write::GzEncoder,
+    Compression,
+};
 use reqwest::Client;
+use serde_json::Value;
 use std::{
     collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
-    path::Path,
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
     sync::Mutex,
     time::Instant,
 };
+
+// transport/manager.rs
+// Port từ: Services/TransportManager.cs
+
+// ── Struct theo dõi lỗi chunk trong RAM ──────────────────────────────────
+
+/// Một bản ghi lỗi chunk chưa được gửi lên Backend.
+struct PendingErrorReport {
+    chunk_id:       String,
+    error_type:     String,  // "checksum_invalid" | "event_count_mismatch" | ...
+    quarantined_at: String,  // ISO 8601
+    /// Đường dẫn đến file spool cần xóa sau khi Backend xác nhận
+    spool_path:     PathBuf,
+}
 
 pub struct TransportManager<'a> {
     config:              &'a Mutex<ShipperConfig>,
@@ -36,6 +52,10 @@ pub struct TransportManager<'a> {
     spool_quota:         &'a SpoolQuotaManager,
     jitter:              &'a JitterScheduler,
     endpoint_seed:       &'a str,
+    /// Danh sách lỗi chunk đang chờ gửi lên Control Plane (flush khi đủ 5).
+    pending_errors:      Mutex<Vec<PendingErrorReport>>,
+    /// URL Control Plane để gửi báo cáo lỗi chunk.
+    control_plane_url:   String,
 }
 
 impl<'a> TransportManager<'a> {
@@ -49,7 +69,15 @@ impl<'a> TransportManager<'a> {
         endpoint_seed: &'a str,
     ) -> Self {
         let admission = AdmissionClient::new(config, http, logger, state);
-        Self { config, state, http, logger, admission, spool_quota, jitter, endpoint_seed }
+        let control_plane_url = std::env::var("CONTROL_PLANE_URL")
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string();
+        Self {
+            config, state, http, logger, admission, spool_quota, jitter, endpoint_seed,
+            pending_errors: Mutex::new(Vec::new()),
+            control_plane_url,
+        }
     }
 
     /// Xử lý một vòng spool — trả về true nếu có dữ liệu đã gửi.
@@ -164,17 +192,92 @@ impl<'a> TransportManager<'a> {
 
             let status = resp.status();
 
-            if status == reqwest::StatusCode::CONFLICT {
-                self.logger.error(&format!(
-                    "Chunk Data Conflict (409) for {}. Deleting file from spool to prevent Infinite Loop and skipping retry.",
-                    file_name
-                ));
+            // ── Xử lý HTTP response theo chuẩn bảng mã ──────────────────────────
+
+            // 200 ─ Gửi thành công → xóa file khỏi spool ngay
+            if status == reqwest::StatusCode::OK {
                 if let Err(e) = fs::remove_file(file_path) {
-                    self.logger.error(&format!("Failed to delete conflict chunk file {}: {}", file_name, e));
+                    self.logger.error(&format!("Failed to delete sent chunk {}: {}", file_name, e));
+                } else {
+                    self.logger.info(&format!("Sent OK chunk={} deleted from spool.", parsed_chunk_id));
+                }
+                // Cập nhật checkpoint
+                {
+                    let mut st = self.state.lock().unwrap();
+                    st.last_success_time = Some(Utc::now());
+                    st.save().ok();
                 }
                 return Ok(true);
             }
 
+            // 400 Bad Request hoặc 409 Conflict → Gom lỗi, flush nếu đủ 5
+            if status == reqwest::StatusCode::BAD_REQUEST
+                || status == reqwest::StatusCode::CONFLICT
+            {
+                // Đọc body để lấy loại lỗi cụ thể
+                let body_text = resp.text().await.unwrap_or_default();
+                let error_type = serde_json::from_str::<Value>(&body_text)
+                    .ok()
+                    .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| {
+                        if status == reqwest::StatusCode::CONFLICT {
+                            "conflict_409".to_string()
+                        } else {
+                            "unknown_400".to_string()
+                        }
+                    });
+
+                self.logger.error(&format!(
+                    "[ERROR] Server rejected chunk={} reason='{}'. Will report to Control Plane.",
+                    parsed_chunk_id, error_type
+                ));
+
+                let record = PendingErrorReport {
+                    chunk_id:       parsed_chunk_id.clone(),
+                    error_type,
+                    quarantined_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    spool_path:     file_path.clone(),
+                };
+
+                let should_flush = {
+                    let mut pending = self.pending_errors.lock().unwrap();
+                    pending.push(record);
+                    pending.len() >= 5
+                };
+
+                if should_flush {
+                    self.flush_errors().await;
+                }
+
+                // Tiếp tục file tiếp theo không abort
+                return Ok(true);
+            }
+
+            // 413 Payload Too Large → Cắt đôi file
+            if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+                self.logger.warn(&format!(
+                    "Chunk {} too large (413). Splitting into 2 smaller chunks.",
+                    file_name
+                ));
+                match self.split_chunk_file(file_path, &spool_dir) {
+                    Ok(_) => self.logger.info("Split OK, original file deleted."),
+                    Err(e) => self.logger.error(&format!("Split failed: {}", e)),
+                }
+                return Ok(true);
+            }
+
+            // 403 Forbidden → Log cảnh báo, giữ file, backoff
+            if status == reqwest::StatusCode::FORBIDDEN {
+                self.logger.error(&format!(
+                    "mTLS cert rejected (403) for chunk={}. Contact Control Plane to re-register.",
+                    parsed_chunk_id
+                ));
+                return Err(ShipperError::Gateway {
+                    message: "403 Forbidden: mTLS cert invalid".to_string(),
+                });
+            }
+
+            // 429 / 503 Backpressure → giữ file, đọc Retry-After
             if status.as_u16() == 429 || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
                 let retry_after = resp.headers()
                     .get("retry-after")
@@ -184,60 +287,11 @@ impl<'a> TransportManager<'a> {
                 return Err(ShipperError::backpressure(status.as_u16(), retry_after));
             }
 
-            if !status.is_success() {
-                return Err(ShipperError::Gateway {
-                    message: format!("Gateway returned {} {}", status.as_u16(), status.canonical_reason().unwrap_or("")),
-                });
-            }
-
-            // Đọc và validate ACK từ gateway
-            let body = resp.text().await?;
-            let ack: crate::transport::ChunkAck = serde_json::from_str(&body).map_err(|e| ShipperError::AckValidation {
-                message: format!("Gateway ACK was not valid JSON for chunk={}: {}", parsed_chunk_id, e),
-            })?;
-
-            // Bóc tách tên file để đối chiếu với ACK (không gỡ nén file, không dùng GzDecoder)
-            let ack_checksum = ack.checksum.to_lowercase();
-            let file_checksum = parsed_checksum.to_lowercase();
-
-            let matches = ack.ack 
-                && ack.chunk_id.eq_ignore_ascii_case(&parsed_chunk_id)
-                && ack_checksum == file_checksum
-                && ack.event_count == parsed_event_count;
-
-            if !matches {
-                self.logger.error(&format!(
-                    "Gateway ACK validation failed for {}. Expected chunk_id={}, checksum={}, event_count={}. Got ack={}, chunk_id={}, checksum={}, event_count={}. Deleting file to prevent infinite loop.",
-                    file_name, parsed_chunk_id, file_checksum, parsed_event_count,
-                    ack.ack, ack.chunk_id, ack_checksum, ack.event_count
-                ));
-                if let Err(e) = fs::remove_file(file_path) {
-                    self.logger.error(&format!("Failed to delete invalid chunk file {}: {}", file_name, e));
-                }
-                return Ok(true);
-            }
-
-            // Gửi thành công và đối chiếu thành công -> Xóa file .gz khỏi spool đĩa
-            if let Err(e) = fs::remove_file(file_path) {
-                self.logger.error(&format!("Failed to delete sent chunk file {}: {}", file_name, e));
-            } else {
-                self.logger.info(&format!(
-                    "Sent OK chunk={} and deleted from spool. ack_status={} index_status={}.",
-                    parsed_chunk_id, ack.status, ack.index_status
-                ));
-            }
-
-            // Cập nhật checkpoint thành công
-            {
-                let mut st = self.state.lock().unwrap();
-                st.last_success_time = Some(Utc::now());
-                st.save().ok();
-            }
-
-            return Ok(true);
-        }
-
-        Ok(false)
+            // 500 / mọi lỗi khác → giữ file, retry sau
+            Err(ShipperError::Gateway {
+                message: format!("Gateway returned {} {}",
+                    status.as_u16(), status.canonical_reason().unwrap_or("")),
+            })
     }
 
 
@@ -265,5 +319,133 @@ impl<'a> TransportManager<'a> {
         reqwest::Body::wrap_stream(stream)
     }
 
+    // ── flush_errors: gửi batch lỗi lên Control Plane ────────────────────────
+
+    /// Flush toàn bộ pending_errors lên Control Plane.
+    /// - 200 OK  → xóa các file spool tương ứng, clear Vec.
+    /// - 429     → áp dụng Full-jitter Exponential Backoff và retry.
+    /// - 500/err → giữ nguyên Vec, không retry ngay (chờ batch kế tiếp).
+    async fn flush_errors(&self) {
+        self.flush_errors_with_attempt(0).await;
+    }
+
+    #[async_recursion::async_recursion]
+    async fn flush_errors_with_attempt(&self, attempt: u32) {
+        if self.control_plane_url.is_empty() {
+            return; // Control Plane chưa cấu hình, bỏ qua
+        }
+
+        let (agent_id, items, paths) = {
+            let pending = self.pending_errors.lock().unwrap();
+            if pending.is_empty() {
+                return;
+            }
+            let agent_id = std::env::var("AGENT_ID").unwrap_or_else(|_| "unknown".to_string());
+            let items: Vec<serde_json::Value> = pending.iter().map(|r| serde_json::json!({
+                "chunk_id":       r.chunk_id,
+                "error_type":     r.error_type,
+                "quarantined_at": r.quarantined_at,
+            })).collect();
+            let paths: Vec<PathBuf> = pending.iter().map(|r| r.spool_path.clone()).collect();
+            (agent_id, items, paths)
+        };
+
+        let body = serde_json::json!({ "agent_id": agent_id, "errors": items });
+        let url = format!("{}/api/v1/agent/telemetry/errors", self.control_plane_url);
+
+        let result = self.http.post(&url).json(&body).send().await;
+
+        match result {
+            Ok(resp) if resp.status() == reqwest::StatusCode::OK => {
+                // Xóa file spool tương ứng
+                for path in &paths {
+                    if let Err(e) = fs::remove_file(path) {
+                        self.logger.warn(&format!("flush_errors: failed to delete {}: {}", path.display(), e));
+                    }
+                }
+                // Clear Vec
+                let mut pending = self.pending_errors.lock().unwrap();
+                pending.clear();
+                self.logger.info(&format!("flush_errors: reported {} errors to Control Plane.", paths.len()));
+            }
+            Ok(resp) if resp.status().as_u16() == 429 => {
+                // Full-jitter Exponential Backoff tái dụng JitterScheduler có sẵn
+                let delay = self.jitter.get_retry_jitter(30, 300, attempt);
+                self.logger.warn(&format!(
+                    "flush_errors: Control Plane 429, attempt={}, backoff={:.1}s",
+                    attempt, delay.as_secs_f64()
+                ));
+                tokio::time::sleep(delay).await;
+                self.flush_errors_with_attempt(attempt + 1).await;
+            }
+            Ok(resp) => {
+                self.logger.warn(&format!(
+                    "flush_errors: Control Plane returned {}, will retry next batch.",
+                    resp.status()
+                ));
+            }
+            Err(e) => {
+                self.logger.warn(&format!("flush_errors: network error: {}, will retry next batch.", e));
+            }
+        }
+    }
+
+    // ── split_chunk_file: cắt đôi chunk quá 25MB ─────────────────────────────
+
+    /// Giải nén file .gz, cắt mảng events[] làm đôi, tạo 2 file .gz mới,
+    /// rồi xóa file gốc. 2 file mới sẽ được gửi lại trong vòng lặp spool kế tiếp.
+    fn split_chunk_file(&self, file_path: &Path, spool_dir: &str) -> Result<(), ShipperError> {
+        // 1. Đọc và giải nén
+        let gz_bytes = fs::read(file_path)?;
+        let mut decoder = GzDecoder::new(gz_bytes.as_slice());
+        let mut json_str = String::new();
+        decoder.read_to_string(&mut json_str).map_err(|e| ShipperError::Io(e))?;
+
+        // 2. Parse JSON để lấy mảng events và metadata
+        let payload: Value = serde_json::from_str(&json_str)?;
+        let events = match payload.get("events").and_then(|e| e.as_array()) {
+            Some(arr) if arr.len() >= 2 => arr.clone(),
+            _ => {
+                self.logger.warn("split_chunk_file: chunk has < 2 events, cannot split. Deleting.");
+                fs::remove_file(file_path)?;
+                return Ok(());
+            }
+        };
+
+        let mid = events.len() / 2;
+        let halves: [&[Value]; 2] = [&events[..mid], &events[mid..]];
+
+        for half_events in &halves {
+            let new_chunk_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+            let events_json = serde_json::to_string(&serde_json::Value::Array(half_events.to_vec()))?;
+            let checksum = sha256_hex(&events_json);
+            let event_count = half_events.len();
+
+            // Tạo payload mới
+            let mut new_payload = payload.clone();
+            if let Some(obj) = new_payload.as_object_mut() {
+                obj.insert("chunk_id".to_string(), serde_json::json!(new_chunk_id));
+                obj.insert("events".to_string(), serde_json::Value::Array(half_events.to_vec()));
+                obj.insert("event_count".to_string(), serde_json::json!(event_count));
+                obj.insert("checksum".to_string(), serde_json::json!(checksum));
+            }
+
+            // Nén lại thành .gz
+            let new_json = serde_json::to_string(&new_payload)?;
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(new_json.as_bytes()).map_err(|e| ShipperError::Io(e))?;
+            let gz_data = encoder.finish().map_err(|e| ShipperError::Io(e))?;
+
+            // Ghi file mới vào spool
+            let new_filename = format!("chunk_{}_{}_{}.gz", new_chunk_id, checksum, event_count);
+            let new_path = Path::new(spool_dir).join(&new_filename);
+            fs::write(&new_path, &gz_data)?;
+            self.logger.info(&format!("split_chunk_file: created {} ({} events)", new_filename, event_count));
+        }
+
+        // Xóa file gốc
+        fs::remove_file(file_path)?;
+        Ok(())
+    }
 
 }

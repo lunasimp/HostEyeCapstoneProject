@@ -52,7 +52,7 @@ pub fn validate_chunk_envelope(payload: &Value, required_schema_version: &str) -
 
     if schema_version != required_schema_version {
         return invalid_chunk(400, serde_json::json!({
-            "ack": false, "commit": false, "status": "invalid",
+            "ack": false, "commit": false, "status": "schema_invalid",
             "chunk_id": chunk_id,
             "message": format!("schema_version must be {}", required_schema_version)
         }));
@@ -60,7 +60,7 @@ pub fn validate_chunk_envelope(payload: &Value, required_schema_version: &str) -
 
     if chunk_id.is_empty() || agent_id.is_empty() {
         return invalid_chunk(400, serde_json::json!({
-            "ack": false, "commit": false, "status": "invalid",
+            "ack": false, "commit": false, "status": "missing_fields",
             "message": "chunk_id and agent_id are required"
         }));
     }
@@ -70,8 +70,10 @@ pub fn validate_chunk_envelope(payload: &Value, required_schema_version: &str) -
         .unwrap_or(0) as usize;
     if payload_event_count != event_count {
         return invalid_chunk(400, serde_json::json!({
-            "ack": false, "commit": false, "status": "invalid",
+            "ack": false, "commit": false, "status": "event_count_mismatch",
             "chunk_id": chunk_id,
+            "declared": payload_event_count,
+            "actual": event_count,
             "message": "event_count mismatch"
         }));
     }
@@ -79,10 +81,9 @@ pub fn validate_chunk_envelope(payload: &Value, required_schema_version: &str) -
     let payload_checksum = str_field(payload, "checksum").to_lowercase();
     if payload_checksum != checksum {
         return invalid_chunk(400, serde_json::json!({
-            "ack": false, "commit": false, "status": "invalid",
+            "ack": false, "commit": false, "status": "checksum_invalid",
             "chunk_id": chunk_id,
             "event_count": event_count,
-            "checksum": checksum,
             "message": "checksum mismatch"
         }));
     }

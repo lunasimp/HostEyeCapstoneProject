@@ -912,3 +912,52 @@ th.numeric {
     justify-content: flex-start;
   }
 }
+
+/* ── Agent Errors UI ───────────────────────────────────────────────────────── */
+
+.clickable-row {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.clickable-row:hover {
+  background: var(--bg-hover);
+}
+
+.selected-row {
+  background: var(--bg-hover);
+  border-left: 2px solid var(--accent);
+}
+
+.err-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: rgba(255, 83, 100, 0.15);
+  color: #ff5364;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.warn-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: rgba(247, 201, 72, 0.15);
+  color: #f7c948;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.ok-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  background: rgba(109, 209, 124, 0.15);
+  color: #6dd17c;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+}
