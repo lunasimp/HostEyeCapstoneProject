@@ -24,6 +24,7 @@
           <a href="#chunks" class="nav-item">Chunks</a>
           <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
+          <a href="#agent-errors" class="nav-item">Agent Errors</a>
         </nav>
 
         <div class="top-actions">
@@ -366,6 +367,41 @@
               </div>
               <div id="hostHeatmap" class="heatmap"></div>
             </article>
+          </div>
+        </section>
+
+        <section id="agent-errors" class="dashboard-section section-card is-open page-view" data-page="agent-errors" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
+            <span>
+              <strong>Agent Chunk Errors</strong>
+              <small>lỗi chunk bị từ chối do Agent báo cáo</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Tổng lỗi (24h)</span><strong id="agentErrTotal">-</strong></article>
+              <article class="kpi"><span>Agents có lỗi</span><strong id="agentErrAgents">-</strong></article>
+              <article class="kpi"><span>Checksum lỗi</span><strong id="agentErrChecksum">-</strong></article>
+              <article class="kpi"><span>Event count lỗi</span><strong id="agentErrEventCount">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title">
+                  <h3>Tổng hợp lỗi theo Agent</h3>
+                  <span>click agent để xem chi tiết</span>
+                </div>
+                <div id="agentErrorSummaryTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title">
+                  <h3 id="agentErrorDetailTitle">Chi tiết Chunk ID bị lỗi</h3>
+                  <span id="agentErrorDetailMeta">Chọn một Agent ở bên trái</span>
+                </div>
+                <div id="agentErrorDetailTable" class="table-shell"></div>
+              </article>
+            </div>
           </div>
         </section>
       </main>
