@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS default.raw_chunk_vault
 ENGINE = ReplacingMergeTree(kafka_timestamp)
 PARTITION BY toYYYYMM(kafka_timestamp)
 ORDER BY (agent_id, chunk_id)
-TTL kafka_timestamp + toIntervalDay(30)
+TTL kafka_timestamp + toIntervalDay(90)
 SETTINGS index_granularity = 8192;
 
 CREATE TABLE IF NOT EXISTS default.admission_decisions

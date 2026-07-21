@@ -95,6 +95,12 @@ async fn main() {
         });
     }
 
+    // Spawn disk cleanup task (chạy mỗi 1 giờ, giữ file 3 ngày, tối đa 5GB)
+    let raw_chunk_dir = std::env::var("RAW_CHUNK_DIR").unwrap_or_else(|_| "/var/log/soc_vault".to_string());
+    tokio::spawn(async move {
+        storage::disk_cleanup::start_disk_cleanup_loop(raw_chunk_dir, 3600, 3, 5 * 1024 * 1024 * 1024).await;
+    });
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/api/v1/telemetry", post(telemetry_handler_no_id))

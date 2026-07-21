@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS default.suppression_state
 ENGINE = ReplacingMergeTree(updated_at)
 PARTITION BY toYYYYMM(window_start)
 ORDER BY (computer, fingerprint, window_start)
-TTL window_start + toIntervalDay(30)
+TTL window_start + toIntervalDay(90)
 SETTINGS index_granularity = 8192;
 
 -- 3. Bảng context_edges: Hỗ trợ đồ thị thực thụ
