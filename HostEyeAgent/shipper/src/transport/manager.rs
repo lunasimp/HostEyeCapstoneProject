@@ -168,9 +168,9 @@ impl<'a> TransportManager<'a> {
             // Gọi Control Plane xin cấp Upload Lease
             let file_len = gz_bytes.len() as f64;
             let chunk_size_mb = file_len / 1_048_576.0;
-            let lease = self.admission.try_request_admission(chunk_size_mb, &spool_stats, retry_attempt).await?;
-            let lease_id = lease.lease_id.clone();
-
+            let current_lease = self.admission.try_request_admission(chunk_size_mb, &spool_stats, retry_attempt).await?;
+            let lease_id = current_lease.lease_id.clone();
+            
             let current_gateway = {
                 self.config.lock().unwrap().gateway_uri.clone()
             };
@@ -180,118 +180,148 @@ impl<'a> TransportManager<'a> {
                 file_name, parsed_chunk_id, gz_bytes.len(), lease_id
             ));
 
-            // Đẩy file lên Gateway (Zero-copy payload) - Không gửi lease_id lên Data Plane
-            let resp = self.http
-                .post(&current_gateway)
-                .header("Content-Encoding", "gzip")
-                .header("Content-Type", "application/json")
-                .header("User-Agent", "HostEyeShipper/1.0")
-                .body(Self::rate_limit_body(gz_bytes.clone(), lease.max_upload_rate_kbps))
-                .send()
-                .await?;
+            let mut inner_attempt = retry_attempt;
+            
+            loop {
+                // Đẩy file lên Gateway (Zero-copy payload) - Không gửi lease_id lên Data Plane
+                let resp = self.http
+                    .post(&current_gateway)
+                    .header("Content-Encoding", "gzip")
+                    .header("Content-Type", "application/json")
+                    .header("User-Agent", "HostEyeShipper/1.0")
+                    .body(Self::rate_limit_body(gz_bytes.clone(), current_lease.max_upload_rate_kbps))
+                    .send()
+                    .await?;
 
-            let status = resp.status();
+                let status = resp.status();
 
-            // ── Xử lý HTTP response theo chuẩn bảng mã ──────────────────────────
+                // ── Xử lý HTTP response theo chuẩn bảng mã ──────────────────────────
 
-            // 200 ─ Gửi thành công → xóa file khỏi spool ngay
-            if status == reqwest::StatusCode::OK {
-                if let Err(e) = fs::remove_file(file_path) {
-                    self.logger.error(&format!("Failed to delete sent chunk {}: {}", file_name, e));
-                } else {
-                    self.logger.info(&format!("Sent OK chunk={} deleted from spool.", parsed_chunk_id));
+                // 200 ─ Gửi thành công → xóa file khỏi spool ngay
+                if status == reqwest::StatusCode::OK {
+                    if let Err(e) = fs::remove_file(file_path) {
+                        self.logger.error(&format!("Failed to delete sent chunk {}: {}", file_name, e));
+                    } else {
+                        self.logger.info(&format!("Sent OK chunk={} deleted from spool.", parsed_chunk_id));
+                    }
+                    // Cập nhật checkpoint
+                    {
+                        let mut st = self.state.lock().unwrap();
+                        st.last_success_time = Some(Utc::now());
+                        st.save().ok();
+                    }
+                    return Ok(true);
                 }
-                // Cập nhật checkpoint
+
+                // 400 Bad Request hoặc 409 Conflict → Gom lỗi, flush nếu đủ 5
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    || status == reqwest::StatusCode::CONFLICT
                 {
-                    let mut st = self.state.lock().unwrap();
-                    st.last_success_time = Some(Utc::now());
-                    st.save().ok();
-                }
-                return Ok(true);
-            }
+                    // Đọc body để lấy loại lỗi cụ thể
+                    let body_text = resp.text().await.unwrap_or_default();
+                    let error_type = serde_json::from_str::<Value>(&body_text)
+                        .ok()
+                        .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
+                        .unwrap_or_else(|| {
+                            if status == reqwest::StatusCode::CONFLICT {
+                                "conflict_409".to_string()
+                            } else {
+                                "unknown_400".to_string()
+                            }
+                        });
 
-            // 400 Bad Request hoặc 409 Conflict → Gom lỗi, flush nếu đủ 5
-            if status == reqwest::StatusCode::BAD_REQUEST
-                || status == reqwest::StatusCode::CONFLICT
-            {
-                // Đọc body để lấy loại lỗi cụ thể
-                let body_text = resp.text().await.unwrap_or_default();
-                let error_type = serde_json::from_str::<Value>(&body_text)
-                    .ok()
-                    .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
-                    .unwrap_or_else(|| {
-                        if status == reqwest::StatusCode::CONFLICT {
-                            "conflict_409".to_string()
-                        } else {
-                            "unknown_400".to_string()
-                        }
+                    self.logger.error(&format!(
+                        "[ERROR] Server rejected chunk={} reason='{}'. Will report to Control Plane.",
+                        parsed_chunk_id, error_type
+                    ));
+
+                    let record = PendingErrorReport {
+                        chunk_id:       parsed_chunk_id.clone(),
+                        error_type,
+                        quarantined_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        spool_path:     file_path.clone(),
+                    };
+
+                    let should_flush = {
+                        let mut pending = self.pending_errors.lock().unwrap();
+                        pending.push(record);
+                        pending.len() >= 5
+                    };
+
+                    if should_flush {
+                        self.flush_errors().await;
+                    }
+
+                    // Tiếp tục file tiếp theo không abort
+                    return Ok(true);
+                }
+
+                // 413 Payload Too Large → Cắt đôi file
+                if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
+                    self.logger.warn(&format!(
+                        "Chunk {} too large (413). Splitting into 2 smaller chunks.",
+                        file_name
+                    ));
+                    match self.split_chunk_file(file_path, &spool_dir) {
+                        Ok(_) => self.logger.info("Split OK, original file deleted."),
+                        Err(e) => self.logger.error(&format!("Split failed: {}", e)),
+                    }
+                    return Ok(true);
+                }
+
+                // 403 Forbidden → Log cảnh báo, giữ file, backoff
+                if status == reqwest::StatusCode::FORBIDDEN {
+                    self.logger.error(&format!(
+                        "mTLS cert rejected (403) for chunk={}. Contact Control Plane to re-register.",
+                        parsed_chunk_id
+                    ));
+                    return Err(ShipperError::Gateway {
+                        message: "403 Forbidden: mTLS cert invalid".to_string(),
                     });
-
-                self.logger.error(&format!(
-                    "[ERROR] Server rejected chunk={} reason='{}'. Will report to Control Plane.",
-                    parsed_chunk_id, error_type
-                ));
-
-                let record = PendingErrorReport {
-                    chunk_id:       parsed_chunk_id.clone(),
-                    error_type,
-                    quarantined_at: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                    spool_path:     file_path.clone(),
-                };
-
-                let should_flush = {
-                    let mut pending = self.pending_errors.lock().unwrap();
-                    pending.push(record);
-                    pending.len() >= 5
-                };
-
-                if should_flush {
-                    self.flush_errors().await;
                 }
 
-                // Tiếp tục file tiếp theo không abort
-                return Ok(true);
-            }
+                // 429 / 503 Backpressure → retry THEO LEASE, hết TTL mới return
+                if status.as_u16() == 429 || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    let retry_after = resp.headers()
+                        .get("retry-after")
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .map(|s| s.ceil() as u32);
+                        
+                    let retry_secs = retry_after.unwrap_or(0);
+                    let delay = if retry_secs > 0 {
+                        let extra = self.jitter.random_u64(0, 30);
+                        std::time::Duration::from_secs(retry_secs as u64 + extra)
+                    } else {
+                        self.jitter.get_recovery_jitter(recovery_jitter, inner_attempt)
+                    };
 
-            // 413 Payload Too Large → Cắt đôi file
-            if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
-                self.logger.warn(&format!(
-                    "Chunk {} too large (413). Splitting into 2 smaller chunks.",
-                    file_name
-                ));
-                match self.split_chunk_file(file_path, &spool_dir) {
-                    Ok(_) => self.logger.info("Split OK, original file deleted."),
-                    Err(e) => self.logger.error(&format!("Split failed: {}", e)),
+                    let now = Utc::now();
+                    let chrono_delay = chrono::Duration::from_std(delay).unwrap_or(chrono::Duration::seconds(0));
+                    
+                    if now + chrono_delay < current_lease.expires_at_utc {
+                        self.logger.warn(&format!(
+                            "Backpressure ({}). Retrying chunk={} in {:.0}s using current lease (expires in {}s).",
+                            status.as_u16(), parsed_chunk_id, delay.as_secs_f64(), (current_lease.expires_at_utc - now).num_seconds()
+                        ));
+                        tokio::time::sleep(delay).await;
+                        inner_attempt += 1;
+                        continue;
+                    } else {
+                        self.logger.warn(&format!(
+                            "Backpressure ({}). Lease expired or expiring soon. Returning to request new admission.",
+                            status.as_u16()
+                        ));
+                        return Err(ShipperError::backpressure(status.as_u16(), retry_after));
+                    }
                 }
-                return Ok(true);
-            }
 
-            // 403 Forbidden → Log cảnh báo, giữ file, backoff
-            if status == reqwest::StatusCode::FORBIDDEN {
-                self.logger.error(&format!(
-                    "mTLS cert rejected (403) for chunk={}. Contact Control Plane to re-register.",
-                    parsed_chunk_id
-                ));
+                // 500 / mọi lỗi khác → giữ file, retry sau
                 return Err(ShipperError::Gateway {
-                    message: "403 Forbidden: mTLS cert invalid".to_string(),
+                    message: format!("Gateway returned {} {}",
+                        status.as_u16(), status.canonical_reason().unwrap_or("")),
                 });
             }
-
-            // 429 / 503 Backpressure → giữ file, đọc Retry-After
-            if status.as_u16() == 429 || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-                let retry_after = resp.headers()
-                    .get("retry-after")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .map(|s| s.ceil() as u32);
-                return Err(ShipperError::backpressure(status.as_u16(), retry_after));
-            }
-
-            // 500 / mọi lỗi khác → giữ file, retry sau
-            Err(ShipperError::Gateway {
-                message: format!("Gateway returned {} {}",
-                    status.as_u16(), status.canonical_reason().unwrap_or("")),
-            })
     }
 
 
