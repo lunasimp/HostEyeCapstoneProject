@@ -1,0 +1,119 @@
+﻿services:
+  opensearch:
+    image: opensearchproject/opensearch:3.7.0
+    container_name: hosteye-opensearch
+    environment:
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      DISABLE_SECURITY_PLUGIN: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+    volumes:
+      - hosteye_opensearch_data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow\u0026timeout=5s >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks:
+      - hosteye-search
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:3.7.0
+    container_name: hosteye-opensearch-dashboards
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: "true"
+    ports:
+      - "5601:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 40s
+    networks:
+      - hosteye-search
+
+
+  feature-builder:
+    build:
+      context: ../FeaturePipeline
+    image: hosteye-feature-pipeline:local
+    container_name: hosteye-feature-builder
+    command: ["node", "feature-builder.js"]
+    environment:
+      CLICKHOUSE_URL: "http://host.docker.internal:8080/clickhouse/"
+      FEATURE_SCHEMA_VERSION: "hosteye-feature-v1"
+      WINDOW_SIZE_SEC: "300"
+      LOOKBACK_MINUTES: "120"
+      BUILD_INTERVAL_MS: "10000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - hosteye-search
+
+  feature-indexer:
+    image: hosteye-feature-pipeline:local
+    container_name: hosteye-feature-indexer
+    command: ["node", "feature-indexer.js"]
+    environment:
+      CLICKHOUSE_URL: "http://host.docker.internal:8080/clickhouse/"
+      OPENSEARCH_URL: "http://opensearch:9200"
+      FEATURE_SCHEMA_VERSION: "hosteye-feature-v1"
+      OPENSEARCH_INDEX_PREFIX: "hosteye-feature-windows-v1"
+      INDEX_INTERVAL_MS: "10000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      feature-builder:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - hosteye-search
+
+  raw-log-indexer:
+    image: hosteye-feature-pipeline:local
+    container_name: hosteye-raw-log-indexer
+    command: ["node", "raw-log-indexer.js"]
+    environment:
+      CLICKHOUSE_URL: "http://host.docker.internal:8080/clickhouse/"
+      OPENSEARCH_URL: "http://opensearch:9200"
+      OPENSEARCH_RAW_INDEX_PREFIX: "hosteye-raw-windows-v1"
+      RAW_INDEX_INTERVAL_MS: "2000"
+      RAW_LOOKBACK_SECONDS: "10"
+      RAW_BOOTSTRAP_MINUTES: "240"
+      RAW_BATCH_SIZE: "5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - hosteye-search
+networks:
+  hosteye-search:
+    name: hosteye-search
+    driver: bridge
+
+volumes:
+  hosteye_opensearch_data:
+
+
