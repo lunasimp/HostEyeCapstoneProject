@@ -17,7 +17,9 @@ const pages = {
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
+  "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
+  "agent-errors": { title: "Agent Chunk Errors", eyebrow: "[ AGENT DIAGNOSTICS ]" },
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -85,7 +87,9 @@ async function loadDashboard() {
       loadPowerShell(),
       loadJitter(),
       loadChunks(),
+      loadDynamicConfig(),
       loadHeatmap(),
+      loadAgentErrors(),
     ]);
   } catch (error) {
     console.error(error);
@@ -111,6 +115,10 @@ function resetKpis() {
     "chunkHosts",
     "chunkEvents",
     "chunkFailed",
+    "dynamicPolicyCount",
+    "dynamicActivePolicyCount",
+    "dynamicAgentCount",
+    "dynamicGroupCount",
   ].forEach((id) => {
     const node = el(id);
     if (node) node.textContent = "-";
@@ -541,6 +549,134 @@ function openDetailForChunk(host, time) {
   window.location.href = url.toString();
 }
 
+async function loadDynamicConfig() {
+  try {
+    const [summary, policies, agents, audit] = await Promise.all([
+      api("/api/dashboard/dynamic-config/summary"),
+      api("/api/dashboard/dynamic-config/policies"),
+      api("/api/dashboard/dynamic-config/agents"),
+      api("/api/dashboard/dynamic-config/audit"),
+    ]);
+
+    const totals = summary.totals || {};
+    el("dynamicPolicyCount").textContent = formatNumber(totals.policies);
+    el("dynamicActivePolicyCount").textContent = formatNumber(totals.activePolicies);
+    el("dynamicAgentCount").textContent = formatNumber(totals.agents);
+    el("dynamicGroupCount").textContent = formatNumber(totals.groups);
+    el("dynamicConfigStatus").textContent = summary.status === "ok" ? "control plane online" : (summary.message || "control plane offline");
+
+    renderDynamicPolicies(policies.items || summary.policies || []);
+    renderDynamicAgents(agents.items || summary.agents || []);
+    renderDynamicGroups(summary.groups || []);
+    renderDynamicAudit(audit.items || []);
+  } catch (error) {
+    el("dynamicPolicyCount").textContent = "-";
+    el("dynamicActivePolicyCount").textContent = "-";
+    el("dynamicAgentCount").textContent = "-";
+    el("dynamicGroupCount").textContent = "-";
+    el("dynamicConfigStatus").textContent = error.message || "control plane offline";
+    ["dynamicPoliciesTable", "dynamicAgentsTable", "dynamicGroupsTable", "dynamicAuditTable"].forEach((id) => {
+      el(id).innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
+    });
+  }
+}
+
+function renderDynamicPolicies(rows) {
+  const normalized = rows.map((policy) => ({
+    policyId: policy.policy_id || policy.id || "-",
+    name: policy.name || policy.policy_id || "-",
+    target: formatPolicyTarget(policy.target),
+    version: policy.version || 0,
+    enabled: policy.enabled === false ? "disabled" : "enabled",
+    rollout: policy.rollout?.enabled === false ? "off" : String(policy.rollout?.percent ?? 100) + "%",
+    channels: countChannels(policy.config?.vector?.channels),
+    updatedAt: policy.updated_at || policy.updatedAt || "",
+  }));
+  renderTable(el("dynamicPoliciesTable"), normalized, [
+    ["Policy", "policyId"],
+    ["Name", "name"],
+    ["Target", "target"],
+    ["Version", "version", "numeric"],
+    ["State", "enabled"],
+    ["Rollout", "rollout"],
+    ["Channels", "channels", "numeric"],
+    ["Updated", "updatedAt", "date"],
+  ]);
+}
+
+function renderDynamicAgents(rows) {
+  const normalized = rows.map((agent) => ({
+    agentId: agent.agent_id || agent.agentId || "-",
+    hostId: agent.host_id || agent.hostId || "-",
+    groupId: agent.group_id || agent.groupId || "unknown",
+    version: agent.agent_version || agent.agentVersion || "-",
+    policyId: agent.current_policy_id || agent.last_policy_id || agent.policy_id || "-",
+    policyVersion: agent.current_version || agent.last_version || agent.policy_version || 0,
+    lastSeen: agent.last_seen || agent.last_seen_at || agent.lastSeen || agent.updated_at || "",
+    status: agent.status || agent.last_ack_status || "seen",
+  }));
+  renderTable(el("dynamicAgentsTable"), normalized, [
+    ["Agent", "agentId"],
+    ["Host", "hostId"],
+    ["Group", "groupId"],
+    ["Agent ver", "version"],
+    ["Policy", "policyId"],
+    ["Config ver", "policyVersion", "numeric"],
+    ["Status", "status"],
+    ["Last seen", "lastSeen", "date"],
+  ]);
+}
+
+function renderDynamicGroups(rows) {
+  const normalized = rows.map((group) => ({
+    group: group.key || group.group || group.group_id || "unknown",
+    agents: group.count || group.agents || 0,
+  }));
+  renderTable(el("dynamicGroupsTable"), normalized, [
+    ["Group", "group"],
+    ["Agents", "agents", "numeric"],
+  ]);
+}
+
+function renderDynamicAudit(rows) {
+  const normalized = rows.slice(0, 80).map((entry) => ({
+    time: entry.timestamp || entry.time || entry.created_at || "",
+    actor: entry.actor || entry.admin || entry.agent_id || "-",
+    action: entry.action || entry.event || entry.type || "-",
+    target: entry.target || entry.policy_id || entry.agent_id || "-",
+    detail: entry.message || entry.detail || compactJson(entry),
+  }));
+  renderTable(el("dynamicAuditTable"), normalized, [
+    ["Time", "time", "date"],
+    ["Actor", "actor"],
+    ["Action", "action"],
+    ["Target", "target"],
+    ["Detail", "detail"],
+  ]);
+}
+
+function countChannels(channels) {
+  if (Array.isArray(channels)) return channels.length;
+  if (typeof channels === "string") return channels.split(/[\s,]+/).filter(Boolean).length;
+  return 0;
+}
+
+function formatPolicyTarget(target) {
+  if (!target) return "default";
+  if (typeof target === "string") return target;
+  if (target.type === "agent") return "agent:" + (target.agent_id || "");
+  if (target.type === "group") return "group:" + (target.group_id || "");
+  return target.type || "default";
+}
+
+function compactJson(value) {
+  try {
+    return JSON.stringify(value).slice(0, 180);
+  } catch {
+    return String(value || "-");
+  }
+}
+
 async function loadHeatmap() {
   const bucket = selectedHeatmapBucket();
   const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
@@ -842,4 +978,142 @@ function escapeHtml(value) {
 
 function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#096;");
+}
+
+// ── Agent Chunk Errors ──────────────────────────────────────────────────────
+
+const ERROR_TYPE_LABELS = {
+  checksum_invalid:     "Checksum lỗi",
+  event_count_mismatch: "Event count lỗi",
+  missing_fields:       "Thiếu fields",
+  schema_invalid:       "Schema lỗi",
+  conflict_409:         "Conflict (409)",
+};
+
+/**
+ * Tải bảng tổng hợp lỗi chunk từ tất cả Agent trong 24h gần nhất.
+ * Gọi GET /api/v1/control/agent/telemetry/errors/summary
+ */
+async function loadAgentErrors() {
+  try {
+    const data = await api("/api/v1/control/agent/telemetry/errors/summary");
+    const agents = data.agents || [];
+
+    // Tính KPI tổng hợp
+    let totalErrors = 0, totalChecksum = 0, totalEventCount = 0;
+    agents.forEach((a) => {
+      totalErrors     += Number(a.total)                || 0;
+      totalChecksum   += Number(a.checksum_invalid)     || 0;
+      totalEventCount += Number(a.event_count_mismatch) || 0;
+    });
+
+    const setKpi = (id, v) => { const e = el(id); if (e) e.textContent = v; };
+    setKpi("agentErrTotal",      formatNumber(totalErrors));
+    setKpi("agentErrAgents",     agents.length);
+    setKpi("agentErrChecksum",   formatNumber(totalChecksum));
+    setKpi("agentErrEventCount", formatNumber(totalEventCount));
+
+    renderAgentErrorSummary(agents);
+  } catch (e) {
+    const t = el("agentErrorSummaryTable");
+    if (t) t.innerHTML = `<p class="table-empty">Lỗi tải dữ liệu: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+/**
+ * Vẽ bảng tổng hợp lỗi theo từng Agent.
+ * Click vào hàng → drill-down chi tiết chunk_id bên phải.
+ */
+function renderAgentErrorSummary(agents) {
+  const container = el("agentErrorSummaryTable");
+  if (!container) return;
+
+  if (!agents.length) {
+    container.innerHTML = "<p class=\"table-empty\">Không có lỗi nào trong 24h qua 🎉</p>";
+    return;
+  }
+
+  const headers = ["Agent ID", "Checksum", "Event Count", "Missing", "Schema", "Conflict", "Tổng"];
+  const rows = agents.map((a) => {
+    const total = Number(a.total) || 0;
+    const badge = total > 0
+      ? `<span class="err-badge">${total}</span>`
+      : `<span class="ok-badge">0</span>`;
+    return `<tr class="clickable-row" data-agent-id="${escapeAttr(a.agent_id)}" title="Click để xem chi tiết">
+      <td>${escapeHtml(a.agent_id)}</td>
+      <td>${a.checksum_invalid     || 0}</td>
+      <td>${a.event_count_mismatch || 0}</td>
+      <td>${a.missing_fields       || 0}</td>
+      <td>${a.schema_invalid       || 0}</td>
+      <td>${a.conflict_409         || 0}</td>
+      <td>${badge}</td>
+    </tr>`;
+  });
+
+  container.innerHTML = `
+    <table class="data-table">
+      <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+      <tbody>${rows.join("")}</tbody>
+    </table>`;
+
+  // Click handler → drill-down
+  container.querySelectorAll(".clickable-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const agentId = row.dataset.agentId;
+      loadAgentErrorDetail(agentId);
+      // Highlight hàng được chọn
+      container.querySelectorAll(".clickable-row").forEach((r) => r.classList.remove("selected-row"));
+      row.classList.add("selected-row");
+    });
+  });
+}
+
+/**
+ * Tải danh sách chi tiết chunk_id bị lỗi của 1 Agent cụ thể.
+ * Gọi GET /api/v1/control/agent/telemetry/errors?agent_id=xxx
+ */
+async function loadAgentErrorDetail(agentId) {
+  const titleEl = el("agentErrorDetailTitle");
+  const metaEl  = el("agentErrorDetailMeta");
+  const tableEl = el("agentErrorDetailTable");
+  if (!tableEl) return;
+
+  if (titleEl) titleEl.textContent = `Chi tiết: ${agentId}`;
+  if (metaEl)  metaEl.textContent  = "Đang tải...";
+  tableEl.innerHTML = "";
+
+  try {
+    const data = await api(`/api/v1/control/agent/telemetry/errors?agent_id=${encodeURIComponent(agentId)}`);
+    const errors = data.errors || [];
+
+    if (metaEl) metaEl.textContent = `${errors.length} chunk bị lỗi`;
+
+    if (!errors.length) {
+      tableEl.innerHTML = "<p class=\"table-empty\">Không có chunk lỗi nào</p>";
+      return;
+    }
+
+    const headers = ["Chunk ID", "Loại lỗi", "Thời điểm lỗi", "Được ghi nhận lúc"];
+    const rows = errors.map((e) => {
+      const label = ERROR_TYPE_LABELS[e.error_type] || e.error_type;
+      const badgeClass = e.error_type === "checksum_invalid" ? "err-badge"
+                       : e.error_type === "conflict_409"    ? "warn-badge"
+                       : "err-badge";
+      return `<tr>
+        <td><code>${escapeHtml(e.chunk_id)}</code></td>
+        <td><span class="${badgeClass}">${escapeHtml(label)}</span></td>
+        <td>${escapeHtml(e.quarantined_at)}</td>
+        <td>${escapeHtml(e.reported_at)}</td>
+      </tr>`;
+    });
+
+    tableEl.innerHTML = `
+      <table class="data-table">
+        <thead><tr>${headers.map((h) => `<th>${h}</th>`).join("")}</tr></thead>
+        <tbody>${rows.join("")}</tbody>
+      </table>`;
+  } catch (err) {
+    if (metaEl) metaEl.textContent = "Lỗi tải chi tiết";
+    tableEl.innerHTML = `<p class="table-empty">Lỗi: ${escapeHtml(err.message)}</p>`;
+  }
 }

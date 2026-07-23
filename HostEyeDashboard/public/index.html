@@ -22,7 +22,9 @@
           <a href="#powershell" class="nav-item">PowerShell</a>
           <a href="#jitter" class="nav-item">Jitter</a>
           <a href="#chunks" class="nav-item">Chunks</a>
+          <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
+          <a href="#agent-errors" class="nav-item">Agent Errors</a>
         </nav>
 
         <div class="top-actions">
@@ -302,9 +304,45 @@
           </div>
         </section>
 
-        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+        <section id="dynamic-config" class="dashboard-section section-card is-open page-view" data-page="dynamic-config" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">08</span>
+            <span>
+              <strong>Cau hinh dong</strong>
+              <small>policy, agent state, and audit from control plane</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Policies</span><strong id="dynamicPolicyCount">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="dynamicActivePolicyCount">-</strong></article>
+              <article class="kpi"><span>Agents</span><strong id="dynamicAgentCount">-</strong></article>
+              <article class="kpi"><span>Groups</span><strong id="dynamicGroupCount">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title"><h3>Policies</h3><span id="dynamicConfigStatus">loading</span></div>
+                <div id="dynamicPoliciesTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Agents dang lay config</h3></div>
+                <div id="dynamicAgentsTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Nhom endpoint</h3></div>
+                <div id="dynamicGroupsTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Audit gan day</h3></div>
+                <div id="dynamicAuditTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+        <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
             <span>
               <strong>Host Activity Over Time</strong>
               <small>click a cell for drilldown</small>
@@ -329,6 +367,41 @@
               </div>
               <div id="hostHeatmap" class="heatmap"></div>
             </article>
+          </div>
+        </section>
+
+        <section id="agent-errors" class="dashboard-section section-card is-open page-view" data-page="agent-errors" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
+            <span>
+              <strong>Agent Chunk Errors</strong>
+              <small>lỗi chunk bị từ chối do Agent báo cáo</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Tổng lỗi (24h)</span><strong id="agentErrTotal">-</strong></article>
+              <article class="kpi"><span>Agents có lỗi</span><strong id="agentErrAgents">-</strong></article>
+              <article class="kpi"><span>Checksum lỗi</span><strong id="agentErrChecksum">-</strong></article>
+              <article class="kpi"><span>Event count lỗi</span><strong id="agentErrEventCount">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title">
+                  <h3>Tổng hợp lỗi theo Agent</h3>
+                  <span>click agent để xem chi tiết</span>
+                </div>
+                <div id="agentErrorSummaryTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title">
+                  <h3 id="agentErrorDetailTitle">Chi tiết Chunk ID bị lỗi</h3>
+                  <span id="agentErrorDetailMeta">Chọn một Agent ở bên trái</span>
+                </div>
+                <div id="agentErrorDetailTable" class="table-shell"></div>
+              </article>
+            </div>
           </div>
         </section>
       </main>
