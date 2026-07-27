@@ -15,6 +15,7 @@ Directory.CreateDirectory(config.StateDirectory);
 Directory.CreateDirectory(config.LogDirectory);
 var logger = new FileLogger(Path.Combine(config.LogDirectory, "shipper.log"));
 var state = ShipperState.Load(Path.Combine(config.StateDirectory, "shipper-state.json"));
+var localDynamicPolicyLastWriteUtc = DateTime.MinValue;
 var random = RandomNumberGenerator.Create();
 var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
     ?? Environment.GetEnvironmentVariable("VECTOR_AGENT_ID")
@@ -22,6 +23,7 @@ var endpointSeed = Environment.GetEnvironmentVariable("HOSTEYE_AGENT_ID")
     ?? Guid.NewGuid().ToString("n");
 
 logger.Info($"HostEyeShipper starting. Config={configPath} Spool={config.SpoolDirectory} Gateway={config.GatewayUri}");
+TryApplyLocalDynamicConfig(config, logger, ref localDynamicPolicyLastWriteUtc);
 using var http = BuildHttpClient(config, logger);
 await TrySyncAgentConfig(config, http, state, logger);
 state.Save();
@@ -37,6 +39,7 @@ try
     {
         try
         {
+            TryApplyLocalDynamicConfig(config, logger, ref localDynamicPolicyLastWriteUtc);
             var sentAny = await ProcessSpoolOnce(config, state, http, logger, endpointSeed, attempt);
             if (sentAny)
             {
@@ -310,6 +313,57 @@ static async Task<ChunkAck> ReadAndValidateAck(HttpResponseMessage resp, ChunkMe
     return ack;
 }
 
+static void TryApplyLocalDynamicConfig(ShipperConfig config, FileLogger logger, ref DateTime lastWriteUtc)
+{
+    if (!config.EnableLocalDynamicConfig) return;
+    if (string.IsNullOrWhiteSpace(config.LocalDynamicConfigPath)) return;
+    if (!File.Exists(config.LocalDynamicConfigPath)) return;
+
+    var writeUtc = File.GetLastWriteTimeUtc(config.LocalDynamicConfigPath);
+    if (writeUtc <= lastWriteUtc) return;
+
+    try
+    {
+        using var doc = JsonDocument.Parse(File.ReadAllText(config.LocalDynamicConfigPath));
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("config", out var desiredConfig))
+        {
+            logger.Warn($"Local dynamic config skipped: missing config object in {config.LocalDynamicConfigPath}.");
+            lastWriteUtc = writeUtc;
+            return;
+        }
+
+        ApplyDynamicDesiredConfig(config, desiredConfig);
+        lastWriteUtc = writeUtc;
+        logger.Info($"Local dynamic config applied from {config.LocalDynamicConfigPath}; Gateway={config.GatewayUri}; MaxEvents={config.MaxEvents}; NormalJitter={config.NormalJitterWindowSeconds}s; RecoveryJitter={config.RecoveryJitterWindowSeconds}s; MaxSpoolSizeMB={config.MaxSpoolSizeMB}.");
+    }
+    catch (Exception ex)
+    {
+        logger.Warn($"Local dynamic config apply failed: {ex.Message}");
+    }
+}
+
+static void ApplyDynamicDesiredConfig(ShipperConfig config, JsonElement desiredConfig)
+{
+    if (desiredConfig.TryGetProperty("vector", out var vector))
+    {
+        if (TryGetInt(vector, "batch_max_events", out var batchMaxEvents) && batchMaxEvents > 0)
+        {
+            config.MaxEvents = batchMaxEvents;
+        }
+    }
+
+    if (desiredConfig.TryGetProperty("shipper", out var shipper))
+    {
+        var gatewayUrl = GetJsonString(shipper, "gateway_url");
+        if (Uri.TryCreate(gatewayUrl, UriKind.Absolute, out _)) config.GatewayUri = gatewayUrl;
+        if (TryGetInt(shipper, "normal_jitter_window_seconds", out var normalJitter) && normalJitter >= 0) config.NormalJitterWindowSeconds = normalJitter;
+        if (TryGetInt(shipper, "recovery_jitter_window_seconds", out var recoveryJitter) && recoveryJitter >= 0) config.RecoveryJitterWindowSeconds = recoveryJitter;
+        if (TryGetInt(shipper, "base_backoff_seconds", out var baseBackoff) && baseBackoff > 0) config.BaseBackoffSeconds = baseBackoff;
+        if (TryGetInt(shipper, "max_backoff_seconds", out var maxBackoff) && maxBackoff > 0) config.MaxBackoffSeconds = maxBackoff;
+        if (TryGetInt(shipper, "max_spool_size_mb", out var maxSpool) && maxSpool > 0) config.MaxSpoolSizeMB = maxSpool;
+    }
+}
 static async Task TrySyncAgentConfig(ShipperConfig config, HttpClient http, ShipperState state, FileLogger logger)
 {
     if (!config.EnableConfigSync) return;
@@ -1236,7 +1290,7 @@ class BackpressureException(int statusCode, int? retryAfterSeconds) : Exception(
 
 class ShipperConfig
 {
-    public string GatewayUri { get; set; } = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry";
+    public string GatewayUri { get; set; } = "https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry";
     public string ConfigUri { get; set; } = "";
     public string AdmissionUri { get; set; } = "";
     public string GroupId { get; set; } = "default";
@@ -1248,6 +1302,8 @@ class ShipperConfig
     public string ClientKeyFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\client.key";
     public string CaCertificateFile { get; set; } = "C:\\Program Files\\HostEye\\certs\\company_ca.crt";
     public bool AllowSystemServerCertificateTrust { get; set; } = true;
+    public bool EnableLocalDynamicConfig { get; set; } = true;
+    public string LocalDynamicConfigPath { get; set; } = "C:\\ProgramData\\HostEye\\dynamic-config\\applied-policy.json";
     public int MaxEvents { get; set; } = 1000;
     public int MaxBytes { get; set; } = 1048576;
     public int NormalJitterWindowSeconds { get; set; } = 120;
@@ -1405,6 +1461,8 @@ class GzipContent : HttpContent
         base.Dispose(disposing);
     }
 }
+
+
 
 
 

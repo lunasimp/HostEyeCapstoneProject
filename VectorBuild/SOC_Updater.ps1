@@ -1,4 +1,4 @@
-# HostEye Agent secured configuration updater.
+﻿# HostEye Agent secured configuration updater.
 # Runs as SYSTEM. Applies config updates only after release signature, hash,
 # version, syntax validation, backup, and health checks pass.
 
@@ -8,7 +8,7 @@ $TargetDir = "C:\Program Files\HostEye"
 $ProgramDataDir = "C:\ProgramData\HostEye"
 $BackupDir = Join-Path $ProgramDataDir "config-backups"
 $PublicKeyPath = Join-Path $TargetDir "certs\updater_public.pem"
-$UpdateUrl = "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+$UpdateUrl = "https://agent.hosteye.iahn.hanoi.vn/api/v1/agent/config"
 $VectorExe = Join-Path $TargetDir "vector.exe"
 $ActiveConfig = Join-Path $TargetDir "vector.toml"
 $VersionState = Join-Path $ProgramDataDir "config.version"
@@ -374,3 +374,4 @@ if (-not (Test-VectorServiceHealthy)) {
 }
 
 Remove-TempFiles
+

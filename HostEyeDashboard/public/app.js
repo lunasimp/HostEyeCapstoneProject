@@ -18,6 +18,8 @@ const pages = {
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
+  enrollment: { title: "Enrollment & C_i Artifacts", eyebrow: "[ DEVICE IDENTITY ]" },
+  "dynamic-config": { title: "Dynamic Config", eyebrow: "[ POLICY CONTROL ]" },
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -34,6 +36,9 @@ document.addEventListener("DOMContentLoaded", () => {
   el("hostFilter").addEventListener("change", loadDashboard);
   el("heatmapBucket")?.addEventListener("change", loadHeatmap);
   el("hostLevelFilter")?.addEventListener("change", () => renderHostsScreen(state.hostSummary || { hosts: [], groups: [] }));
+  el("enrollmentStatusFilter")?.addEventListener("change", () => renderEnrollment(state.enrollment || { devices: [], artifacts: [] }));
+  el("buildNextArtifactBtn")?.addEventListener("click", buildNextArtifact);
+  el("dynamicPolicyForm")?.addEventListener("submit", saveDynamicPolicy);
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.closest(".section-card");
@@ -72,6 +77,18 @@ async function loadDashboard() {
   setStatus("Connecting", false);
 
   try {
+    if (pageFromHash(window.location.hash) === "enrollment") {
+      await loadEnrollment();
+      setStatus("Enrollment online", true, "C_i registry");
+      return;
+    }
+
+    if (pageFromHash(window.location.hash) === "dynamic-config") {
+      await loadDynamicConfig();
+      setStatus("Dynamic config online", true, "policy service");
+      return;
+    }
+
     const health = await api("/api/health");
     setStatus("Connected", true, `${formatNumber(health.rows)} rows`);
 
@@ -86,12 +103,20 @@ async function loadDashboard() {
       loadJitter(),
       loadChunks(),
       loadHeatmap(),
+      loadEnrollment(),
+      loadDynamicConfig(),
     ]);
   } catch (error) {
     console.error(error);
-    setStatus("API offline", false, "Check dashboard API");
+    setStatus("Telemetry offline", false, "Enrollment still available");
     resetKpis();
     renderErrorEverywhere(error.message || "API offline");
+    try {
+      await loadEnrollment();
+      await loadDynamicConfig();
+    } catch (enrollmentError) {
+      console.error(enrollmentError);
+    }
   } finally {
     state.loading = false;
   }
@@ -111,6 +136,14 @@ function resetKpis() {
     "chunkHosts",
     "chunkEvents",
     "chunkFailed",
+    "enrollPending",
+    "enrollBuilding",
+    "enrollReady",
+    "enrollActive",
+    "dynamicPolicyCount",
+    "dynamicActivePolicies",
+    "dynamicAgentCount",
+    "dynamicGroupCount",
   ].forEach((id) => {
     const node = el(id);
     if (node) node.textContent = "-";
@@ -541,6 +574,263 @@ function openDetailForChunk(host, time) {
   window.location.href = url.toString();
 }
 
+async function loadEnrollment() {
+  const [devicesResponse, artifactsResponse] = await Promise.all([
+    api("/api/v1/admin/devices"),
+    api("/api/v1/admin/artifacts"),
+  ]);
+  state.enrollment = {
+    devices: devicesResponse.items || [],
+    artifacts: artifactsResponse.items || [],
+  };
+  renderEnrollment(state.enrollment);
+}
+
+function renderEnrollment(data) {
+  const devices = data.devices || [];
+  const artifacts = data.artifacts || [];
+  const counts = devices.reduce((acc, device) => {
+    acc[device.status] = (acc[device.status] || 0) + 1;
+    return acc;
+  }, {});
+  setText("enrollPending", formatNumber(counts.pending_approval || 0));
+  setText("enrollBuilding", formatNumber(counts.building || 0));
+  setText("enrollReady", formatNumber(counts.artifact_ready || 0));
+  setText("enrollActive", formatNumber(counts.active || 0));
+
+  const statusFilter = el("enrollmentStatusFilter")?.value || "";
+  const filteredDevices = statusFilter ? devices.filter((device) => device.status === statusFilter) : devices;
+  renderEnrollmentDevicesTable(el("enrollmentDevicesTable"), filteredDevices);
+  renderEnrollmentArtifactsTable(el("enrollmentArtifactsTable"), artifacts);
+}
+
+function renderEnrollmentDevicesTable(container, devices) {
+  if (!container) return;
+  if (!devices.length) {
+    container.innerHTML = `<div class="empty-state">No enrollment requests</div>`;
+    return;
+  }
+  const rows = devices.map((device) => `
+    <tr>
+      <td><span class="status-badge status-${statusClass(device.status)}">${escapeHtml(statusLabel(device.status))}</span></td>
+      <td><strong>${escapeHtml(device.hostname || "-")}</strong><small>${escapeHtml(device.deviceId || "-")}</small></td>
+      <td>${escapeHtml(device.staffId || "-")}<small>${escapeHtml(device.userName || "-")}</small></td>
+      <td>${escapeHtml((device.assignedGroups || []).join(", ") || "-")}</td>
+      <td>${escapeHtml(device.currentAgentVersion || "-")}</td>
+      <td>${formatDate(device.lastSeenAt)}</td>
+      <td class="table-actions">${deviceActions(device)}</td>
+    </tr>
+  `).join("");
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>Status</th><th>Device</th><th>User</th><th>Groups</th><th>Version</th><th>Last seen</th><th>Action</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+  container.querySelectorAll("[data-device-action]").forEach((button) => {
+    button.addEventListener("click", () => runDeviceAction(button.dataset.deviceAction, button.dataset.deviceId));
+  });
+}
+
+function renderEnrollmentArtifactsTable(container, artifacts) {
+  if (!container) return;
+  if (!artifacts.length) {
+    container.innerHTML = `<div class="empty-state">No C_i artifacts</div>`;
+    return;
+  }
+  const rows = artifacts.slice(0, 100).map((artifact) => `
+    <tr>
+      <td><span class="status-badge status-${statusClass(artifact.buildStatus)}">${escapeHtml(statusLabel(artifact.buildStatus))}</span></td>
+      <td><strong>${escapeHtml(artifact.artifactId || "-")}</strong><small>${escapeHtml(artifact.deviceId || "-")}</small></td>
+      <td>${escapeHtml(artifact.platform || "-")} / ${escapeHtml(artifact.architecture || "-")}</td>
+      <td>${escapeHtml(artifact.agentVersion || "-")}</td>
+      <td><code>${escapeHtml(shortHash(artifact.sha256))}</code></td>
+      <td class="table-actions">${artifactActions(artifact)}</td>
+    </tr>
+  `).join("");
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>Status</th><th>Artifact</th><th>Target</th><th>Version</th><th>SHA256</th><th>Action</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+  container.querySelectorAll("[data-artifact-action]").forEach((button) => {
+    button.addEventListener("click", () => runArtifactAction(button.dataset.artifactAction, button.dataset.artifactId));
+  });
+}
+
+function deviceActions(device) {
+  const buttons = [];
+  if (device.status === "pending_approval") buttons.push(actionButton("approve", device.deviceId, "Approve"));
+  if (!["revoked", "failed"].includes(device.status)) buttons.push(actionButton("revoke", device.deviceId, "Revoke"));
+  return buttons.join("") || "-";
+}
+
+function artifactActions(artifact) {
+  const buttons = [];
+  if (["queued", "waiting_approval"].includes(artifact.buildStatus)) buttons.push(artifactButton("build", artifact.artifactId, "Build"));
+  if (["ready", "installed"].includes(artifact.buildStatus)) buttons.push(`<a class="small-action" href="${API_BASE}${artifact.artifactUrl}" download>Download</a>`);
+  return buttons.join("") || "-";
+}
+
+function actionButton(action, deviceId, label) {
+  return `<button class="small-action" type="button" data-device-action="${escapeAttr(action)}" data-device-id="${escapeAttr(deviceId)}">${escapeHtml(label)}</button>`;
+}
+
+function artifactButton(action, artifactId, label) {
+  return `<button class="small-action" type="button" data-artifact-action="${escapeAttr(action)}" data-artifact-id="${escapeAttr(artifactId)}">${escapeHtml(label)}</button>`;
+}
+
+async function runDeviceAction(action, deviceId) {
+  if (!deviceId) return;
+  if (action === "approve") await apiPost(`/api/v1/admin/devices/${encodeURIComponent(deviceId)}/approve`, {});
+  if (action === "revoke") await apiPost(`/api/v1/admin/devices/${encodeURIComponent(deviceId)}/revoke`, {});
+  await loadEnrollment();
+}
+
+async function runArtifactAction(action, artifactId) {
+  if (!artifactId) return;
+  if (action === "build") await apiPost(`/api/v1/admin/artifacts/${encodeURIComponent(artifactId)}/build`, {});
+  await loadEnrollment();
+}
+
+async function loadDynamicConfig() {
+  const [summary, policiesResponse, agentsResponse, auditResponse] = await Promise.all([
+    api("/api/dashboard/dynamic-config/summary"),
+    api("/api/dashboard/dynamic-config/policies"),
+    api("/api/dashboard/dynamic-config/agents"),
+    api("/api/dashboard/dynamic-config/audit"),
+  ]);
+  state.dynamicConfig = {
+    summary,
+    policies: policiesResponse.items || summary.policies || [],
+    agents: agentsResponse.items || summary.agents || [],
+    audit: auditResponse.items || [],
+  };
+  renderDynamicConfig(state.dynamicConfig);
+}
+
+function renderDynamicConfig(data) {
+  const totals = data.summary?.totals || {};
+  setText("dynamicPolicyCount", formatNumber(totals.policies || data.policies.length));
+  setText("dynamicActivePolicies", formatNumber(totals.activePolicies || data.policies.filter((policy) => policy.enabled !== false).length));
+  setText("dynamicAgentCount", formatNumber(totals.agents || data.agents.length));
+  setText("dynamicGroupCount", formatNumber(totals.groups || 0));
+  setText("dynamicConfigStatus", data.summary?.status === "offline" ? data.summary.message : "Policy service online");
+  renderDynamicPolicies(el("dynamicPoliciesTable"), data.policies || []);
+  renderDynamicAgents(el("dynamicAgentsTable"), data.agents || []);
+  renderDynamicAudit(el("dynamicAuditTable"), data.audit || []);
+}
+
+function renderDynamicPolicies(container, policies) {
+  if (!container) return;
+  if (!policies.length) {
+    container.innerHTML = `<div class="empty-state">No dynamic policies</div>`;
+    return;
+  }
+  const rows = policies.slice(0, 100).map((policy) => {
+    const target = policy.target?.type === "group" ? `group:${policy.target.group_id}` : policy.target?.type === "agent" ? `agent:${policy.target.agent_id}` : "default";
+    const vector = policy.config?.vector || {};
+    const shipper = policy.config?.shipper || {};
+    return `
+      <tr>
+        <td><span class="status-badge status-${policy.enabled === false ? "failed" : "ok"}">${policy.enabled === false ? "disabled" : "enabled"}</span></td>
+        <td><strong>${escapeHtml(policy.name || policy.policy_id || "-")}</strong><small>${escapeHtml(policy.policy_id || "-")}</small></td>
+        <td>${escapeHtml(target)}</td>
+        <td>${formatNumber(vector.batch_max_events)}<small>${formatNumber(vector.batch_timeout_secs)}s timeout</small></td>
+        <td>${formatNumber(shipper.normal_jitter_window_seconds)}s<small>${formatNumber(shipper.max_spool_size_mb)} MB spool</small></td>
+        <td>${formatDate(policy.updated_at)}</td>
+      </tr>`;
+  }).join("");
+  container.innerHTML = `<table><thead><tr><th>Status</th><th>Policy</th><th>Target</th><th>Batch</th><th>Shipper</th><th>Updated</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderDynamicAgents(container, agents) {
+  if (!container) return;
+  if (!agents.length) {
+    container.innerHTML = `<div class="empty-state">No agent check-ins</div>`;
+    return;
+  }
+  const rows = agents.slice(0, 100).map((agent) => `
+    <tr>
+      <td><span class="status-badge status-${statusClass(agent.status || "active")}">${escapeHtml(agent.status || "active")}</span></td>
+      <td><strong>${escapeHtml(agent.agent_id || "-")}</strong><small>${escapeHtml(agent.host_id || "-")}</small></td>
+      <td>${escapeHtml(agent.group_id || "default")}</td>
+      <td>${escapeHtml(agent.current_policy_id || agent.assigned_policy_id || "-")}<small>v${escapeHtml(agent.current_policy_version || agent.assigned_policy_version || "-")}</small></td>
+      <td>${formatDate(agent.last_seen_at || agent.updated_at)}</td>
+    </tr>`).join("");
+  container.innerHTML = `<table><thead><tr><th>Status</th><th>Agent</th><th>Group</th><th>Policy</th><th>Last seen</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderDynamicAudit(container, audit) {
+  if (!container) return;
+  if (!audit.length) {
+    container.innerHTML = `<div class="empty-state">No policy audit events</div>`;
+    return;
+  }
+  const rows = audit.slice(0, 100).map((item) => `
+    <tr>
+      <td>${formatDate(item.created_at || item.timestamp)}</td>
+      <td>${escapeHtml(item.action || item.event || "policy")}</td>
+      <td><strong>${escapeHtml(item.policy_id || item.agent_id || "-")}</strong><small>${escapeHtml(item.actor || item.source || "system")}</small></td>
+      <td>${escapeHtml(item.message || item.detail || "-")}</td>
+    </tr>`).join("");
+  container.innerHTML = `<table><thead><tr><th>Time</th><th>Action</th><th>Object</th><th>Detail</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+async function saveDynamicPolicy(event) {
+  event.preventDefault();
+  const payload = {
+    name: el("dynamicPolicyName")?.value || "HostEye policy",
+    targetType: el("dynamicTargetType")?.value || "default",
+    targetValue: el("dynamicTargetValue")?.value || "",
+    channels: el("dynamicChannels")?.value || "",
+    batchMaxEvents: Number(el("dynamicBatchMaxEvents")?.value || 1000),
+    batchTimeoutSecs: Number(el("dynamicBatchTimeoutSecs")?.value || 10),
+    normalJitterWindowSeconds: Number(el("dynamicJitterWindowSecs")?.value || 300),
+    maxSpoolSizeMb: Number(el("dynamicSpoolQuotaMb")?.value || 8192),
+  };
+  setText("dynamicConfigStatus", "Saving policy...");
+  try {
+    await apiPost("/api/dashboard/dynamic-config/policies", payload);
+    await loadDynamicConfig();
+    setStatus("Dynamic config saved", true, "policy service");
+  } catch (error) {
+    console.error(error);
+    setText("dynamicConfigStatus", error.message || "Save failed");
+  }
+}
+async function buildNextArtifact() {
+  try {
+    await apiPost("/api/v1/admin/artifacts/build-next", {});
+  } catch (error) {
+    console.warn(error);
+  }
+  await loadEnrollment();
+}
+
+function statusLabel(value) {
+  return String(value || "unknown").replace(/_/g, " ");
+}
+
+function statusClass(value) {
+  const normalized = String(value || "unknown").replace(/_/g, "-");
+  if (["active", "ready", "artifact-ready", "installed"].includes(normalized)) return "ok";
+  if (["building", "queued"].includes(normalized)) return "active";
+  if (["pending-approval", "waiting-approval"].includes(normalized)) return "delayed";
+  if (["revoked", "failed"].includes(normalized)) return "failed";
+  return "unknown";
+}
+
+function shortHash(value) {
+  return value ? `${String(value).slice(0, 10)}...` : "-";
+}
+
+function setText(id, value) {
+  const node = el(id);
+  if (node) node.textContent = value;
+}
+
 async function loadHeatmap() {
   const bucket = selectedHeatmapBucket();
   const data = await api(`/api/dashboard/hosts/heatmap${query({ top: 10, bucket })}`);
@@ -700,6 +990,20 @@ async function api(path) {
   return response.json();
 }
 
+async function apiPost(path, body) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);
+  }
+  return response.json();
+}
+
 function query(extra = {}) {
   const params = new URLSearchParams();
   const { from, to } = selectedRange();
@@ -744,7 +1048,7 @@ function setStatus(text, ok, detail = "") {
 }
 
 function renderErrorEverywhere(message) {
-  document.querySelectorAll(".table-shell,.chart,.pie-wrap,.heatmap,.cell-detail").forEach((node) => {
+  document.querySelectorAll(".table-shell:not(#enrollmentDevicesTable):not(#enrollmentArtifactsTable):not(#dynamicPoliciesTable):not(#dynamicAgentsTable):not(#dynamicAuditTable),.chart,.pie-wrap,.heatmap,.cell-detail").forEach((node) => {
     node.innerHTML = `<div class="empty-state">${escapeHtml(message)}</div>`;
   });
 }

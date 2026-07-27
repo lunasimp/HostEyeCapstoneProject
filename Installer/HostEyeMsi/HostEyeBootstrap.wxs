@@ -1,0 +1,119 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="HostEye Endpoint Agent"
+    Manufacturer="FPT"
+    Version="1.0.0.0"
+    UpgradeCode="{7EF50FBA-1BA1-48C7-A82A-2582A1C514C7}"
+    Scope="perMachine">
+
+    <SummaryInformation Description="HostEye Endpoint Agent bootstrap MSI" Manufacturer="FPT" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of HostEye Endpoint Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Property Id="GATEWAYURI" Value="https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry" />
+    <Property Id="DYNAMICCONFIGSERVERURI" Value="https://agent.hosteye.iahn.hanoi.vn" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="HostEye" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="HostEye" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="HostEye Endpoint Agent" Level="1">
+      <ComponentGroupRef Id="HostEyeCoreComponents" />
+      <ComponentGroupRef Id="HostEyeShipperComponents" />
+      <ComponentGroupRef Id="HostEyeConfigAgentComponents" />
+      <ComponentGroupRef Id="HostEyeSysmonComponents" />
+      <ComponentRef Id="ApplicationShortcutComponent" />
+    </Feature>
+
+    <ComponentGroup Id="HostEyeCoreComponents" Directory="INSTALLFOLDER">
+      <Component Id="CoreFiles" Guid="{A6D17B8E-6A9C-4D50-BA86-65E54C44F060}" Bitness="always64">
+        <File Id="VectorExe" Source="$(var.SourceDir)\vector.exe" KeyPath="yes" />
+        <File Id="VectorToml" Source="$(var.SourceDir)\vector.toml" />
+        <File Id="VectorTomlSig" Source="$(var.SourceDir)\vector.toml.sig" />
+        <File Id="CollectorPolicy" Source="$(var.SourceDir)\collector-policy.json" />
+        <File Id="InstallScript" Source="$(var.SourceDir)\install.ps1" />
+        <File Id="UpdaterScript" Source="$(var.SourceDir)\SOC_Updater.ps1" Name="HostEye_Updater.ps1" />
+        <File Id="PauseScript" Source="$(var.SourceDir)\Pause-HostEyeDemoCollection.ps1" />
+        <File Id="ResumeScript" Source="$(var.SourceDir)\Resume-HostEyeDemoCollection.ps1" />
+      </Component>
+    </ComponentGroup>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Directory Id="HostEyeShipperDir" Name="HostEyeShipper">
+        <Component Id="HostEyeShipperFiles" Guid="{7F6E2661-8072-4C74-B6D6-2686D1AA0782}" Bitness="always64">
+          <File Id="ShipperExe" Source="$(var.SourceDir)\SOCShipper\publish\HostEyeShipper.exe" KeyPath="yes" />
+          <File Id="ShipperConfig" Source="$(var.SourceDir)\SOCShipper\publish\shipper-config.json" />
+        </Component>
+      </Directory>
+      <Directory Id="HostEyeConfigAgentDir" Name="HostEyeConfigAgent">
+        <Component Id="HostEyeConfigAgentFiles" Guid="{6B7153B8-E665-4610-9076-A2FBC97B01C8}" Bitness="always64">
+          <File Id="ConfigAgentScript" Source="$(var.SourceDir)\HostEyeConfigAgent\HostEye_ConfigAgent.ps1" KeyPath="yes" />
+          <File Id="ConfigAgentExe" Source="$(var.SourceDir)\HostEyeConfigAgent\hosteye-config-client.exe" />
+        </Component>
+      </Directory>
+      <Directory Id="CertsDir" Name="certs">
+        <Component Id="HostEyeCertFiles" Guid="{EC41676F-4E16-4F61-91EC-F91E8884DD6C}" Bitness="always64">
+          <File Id="CompanyCa" Source="$(var.SourceDir)\certs\company_ca.crt" KeyPath="yes" />
+          <File Id="ClientCert" Source="$(var.SourceDir)\certs\client.crt" />
+          <File Id="ClientKey" Source="$(var.SourceDir)\certs\client.key" />
+        </Component>
+      </Directory>
+      <Directory Id="SysmonDir" Name="Sysmon">
+        <Component Id="HostEyeSysmonFiles" Guid="{E0D64809-A7DA-4E50-A035-7A0E6C1FE8AC}" Bitness="always64">
+          <File Id="SysmonEula" Source="$(var.SourceDir)\Sysmon\Eula.txt" KeyPath="yes" />
+          <File Id="SysmonConfig" Source="$(var.SourceDir)\Sysmon\soc-sysmon-config.xml" Name="hosteye-sysmon-config.xml" />
+        </Component>
+      </Directory>
+    </DirectoryRef>
+
+    <ComponentGroup Id="HostEyeShipperComponents">
+      <ComponentRef Id="HostEyeShipperFiles" />
+      <ComponentRef Id="HostEyeCertFiles" />
+    </ComponentGroup>
+
+    <ComponentGroup Id="HostEyeConfigAgentComponents">
+      <ComponentRef Id="HostEyeConfigAgentFiles" />
+    </ComponentGroup>
+    <ComponentGroup Id="HostEyeSysmonComponents">
+      <ComponentRef Id="HostEyeSysmonFiles" />
+    </ComponentGroup>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="ApplicationShortcutComponent" Guid="{0FAD391F-B8EF-4B68-9DAD-2FB852371504}">
+        <Shortcut Id="HostEyeFolderShortcut" Name="HostEye Install Logs" Target="[CommonAppDataFolder]HostEye\logs" />
+        <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\FPT\HostEye" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <CustomAction Id="StopExistingHostEyeComponents"
+      Directory="INSTALLFOLDER"
+      Execute="deferred"
+      Impersonate="no"
+      Return="ignore"
+      ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -Command &quot;$ErrorActionPreference='SilentlyContinue'; Stop-Service HostEyeShipper,SOCShipper,HostEyeAgent,Vector -Force; Stop-ScheduledTask -TaskName HostEye_Shipper_Startup,HostEye_Agent_Startup,HostEye_Dynamic_Config_Sync,SOC_Shipper_Startup,SOC_Vector_Startup; taskkill /F /IM HostEyeShipper.exe; taskkill /F /IM SOCShipper.exe; taskkill /F /IM vector.exe&quot;" />
+
+    <CustomAction Id="RunHostEyeInstallScript"
+      Directory="INSTALLFOLDER"
+      Execute="deferred"
+      Impersonate="no"
+      Return="check"
+      ExeCommand="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALLFOLDER]install.ps1&quot; -GatewayUri &quot;[GATEWAYURI]&quot; -DynamicConfigServerUri &quot;[DYNAMICCONFIGSERVERURI]&quot;" />
+
+    <InstallExecuteSequence>
+      <Custom Action="StopExistingHostEyeComponents" Before="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="RunHostEyeInstallScript" After="InstallFiles" Condition="NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
+
+
+
+
+
+

@@ -23,6 +23,8 @@
           <a href="#jitter" class="nav-item">Jitter</a>
           <a href="#chunks" class="nav-item">Chunks</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
+          <a href="#enrollment" class="nav-item">Enrollment</a>
+          <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
         </nav>
 
         <div class="top-actions">
@@ -302,6 +304,109 @@
           </div>
         </section>
 
+        <section id="enrollment" class="dashboard-section section-card is-open page-view" data-page="enrollment" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
+            <span>
+              <strong>Enrollment & C_i Artifacts</strong>
+              <small>new installer requests and per-device builds</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Pending</span><strong id="enrollPending">-</strong></article>
+              <article class="kpi"><span>Building</span><strong id="enrollBuilding">-</strong></article>
+              <article class="kpi"><span>Artifact ready</span><strong id="enrollReady">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="enrollActive">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel enrollment-panel">
+                <div class="panel-title">
+                  <h3>New installation requests</h3>
+                  <div class="panel-actions">
+                    <label class="inline-control">
+                      <span>Status</span>
+                      <select id="enrollmentStatusFilter">
+                        <option value="">All</option>
+                        <option value="pending_approval">Pending approval</option>
+                        <option value="building">Building</option>
+                        <option value="artifact_ready">Artifact ready</option>
+                        <option value="active">Active</option>
+                        <option value="revoked">Revoked</option>
+                        <option value="failed">Failed</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div id="enrollmentDevicesTable" class="table-shell"></div>
+              </article>
+              <article class="panel enrollment-panel">
+                <div class="panel-title">
+                  <h3>C_i artifact queue</h3>
+                  <div class="panel-actions">
+                    <button id="buildNextArtifactBtn" class="small-action" type="button">Build next</button>
+                  </div>
+                </div>
+                <div id="enrollmentArtifactsTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="dynamic-config" class="dashboard-section section-card is-open page-view" data-page="dynamic-config" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>Dynamic Config</strong>
+              <small>policy rollout by default, group, or agent</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Policies</span><strong id="dynamicPolicyCount">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="dynamicActivePolicies">-</strong></article>
+              <article class="kpi"><span>Agents</span><strong id="dynamicAgentCount">-</strong></article>
+              <article class="kpi"><span>Groups</span><strong id="dynamicGroupCount">-</strong></article>
+            </div>
+            <div class="grid two">
+              <article class="panel dynamic-panel">
+                <div class="panel-title">
+                  <h3>Policy editor</h3>
+                  <span id="dynamicConfigStatus">Ready</span>
+                </div>
+                <form id="dynamicPolicyForm" class="config-form">
+                  <label><span>Name</span><input id="dynamicPolicyName" type="text" value="Lab default telemetry"></label>
+                  <label><span>Target</span><select id="dynamicTargetType"><option value="default">Default</option><option value="group">Group</option><option value="agent">Agent</option></select></label>
+                  <label><span>Target value</span><input id="dynamicTargetValue" type="text" placeholder="lab-default or agent id"></label>
+                  <label class="wide"><span>Channels</span><textarea id="dynamicChannels" rows="3">Application,System,Security,Microsoft-Windows-Sysmon/Operational</textarea></label>
+                  <label><span>Batch events</span><input id="dynamicBatchMaxEvents" type="number" min="1" value="1000"></label>
+                  <label><span>Batch timeout</span><input id="dynamicBatchTimeoutSecs" type="number" min="1" value="10"></label>
+                  <label><span>Jitter window</span><input id="dynamicJitterWindowSecs" type="number" min="0" value="300"></label>
+                  <label><span>Spool quota MB</span><input id="dynamicSpoolQuotaMb" type="number" min="1" value="8192"></label>
+                  <div class="form-actions wide">
+                    <button id="saveDynamicPolicyBtn" class="small-action" type="submit">Save policy</button>
+                  </div>
+                </form>
+              </article>
+              <article class="panel dynamic-panel">
+                <div class="panel-title"><h3>Policies</h3></div>
+                <div id="dynamicPoliciesTable" class="table-shell"></div>
+              </article>
+            </div>
+            <div class="grid two">
+              <article class="panel dynamic-panel">
+                <div class="panel-title"><h3>Agents</h3></div>
+                <div id="dynamicAgentsTable" class="table-shell"></div>
+              </article>
+              <article class="panel dynamic-panel">
+                <div class="panel-title"><h3>Audit</h3></div>
+                <div id="dynamicAuditTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
         <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">08</span>
@@ -333,6 +438,7 @@
         </section>
       </main>
     </div>
-    <script src="./app.js?v=20260626-pages"></script>
+    <script src="./app.js?v=20260708-dynamic-config"></script>
   </body>
 </html>
+

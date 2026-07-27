@@ -5,7 +5,7 @@ AppName=HostEye Endpoint Agent
 #define InstallerOutputBaseFilename "HostEye_Endpoint_Installer"
 #endif
 #ifndef InstallerGatewayUri
-#define InstallerGatewayUri "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"
+#define InstallerGatewayUri "https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry"
 #endif
 AppPublisher=FPT
 AppPublisherURL=https://iahn.fpt.edu.vn/du-an/HostEye
@@ -109,3 +109,4 @@ FinishedRestartLabel=Để hoàn tất cài đặt HostEye Endpoint Agent, máy 
 FinishedRestartMessage=Để hoàn tất cài đặt HostEye Endpoint Agent, máy tính cần được khởi động lại.%n%nBạn có muốn khởi động lại ngay không?
 SetupAlreadyRunning=Trình cài đặt HostEye Endpoint Agent đang chạy.
 SetupAborted=Quá trình cài đặt chưa hoàn tất.%n%nVui lòng chạy lại trình cài đặt khi bạn muốn tiếp tục.
+

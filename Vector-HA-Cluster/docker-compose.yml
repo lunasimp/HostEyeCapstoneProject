@@ -1,16 +1,16 @@
 services:
   # ===========================================================================
-  # 1. TẦNG CÂN BẰNG TẢI & CHỐT CHẶN BIÊN BIÊN MẠNG (LOAD BALANCER LAYER)
+  # 1. Táº¦NG CÃ‚N Báº°NG Táº¢I & CHá»T CHáº¶N BIÃŠN BIÃŠN Máº NG (LOAD BALANCER LAYER)
   # ===========================================================================
   nginx-lb:
     image: nginx:alpine
     container_name: nginx-load-balancer
     ports:
-      - "80:80"   # Hứng luồng chuyển hướng (HTTP Redirect)
-      - "443:443" # 🔐 SỬA LỖI CHÍ MẠNG: Mở cổng HTTPS công cộng đón nhận luồng mTLS từ Agent
+      - "80:80"   # Há»©ng luá»“ng chuyá»ƒn hÆ°á»›ng (HTTP Redirect)
+      - "443:443" # ðŸ” Sá»¬A Lá»–I CHÃ Máº NG: Má»Ÿ cá»•ng HTTPS cÃ´ng cá»™ng Ä‘Ã³n nháº­n luá»“ng mTLS tá»« Agent
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro # Phân phối chứng chỉ mTLS an toàn vào Nginx
+      - ./certs:/etc/nginx/certs:ro # PhÃ¢n phá»‘i chá»©ng chá»‰ mTLS an toÃ n vÃ o Nginx
     depends_on:
       - control-plane
       - collector-a
@@ -29,14 +29,14 @@ services:
       - soc-network
 
   # ===========================================================================
-  # 2. TẦNG TIẾP NHẬN PHI TRẠNG THÁI & LÀM SẠCH PII (VECTOR GATEWAY CLUSTER)
+  # 2. Táº¦NG TIáº¾P NHáº¬N PHI TRáº NG THÃI & LÃ€M Sáº CH PII (VECTOR GATEWAY CLUSTER)
   # ===========================================================================
   vector-gateway-1:
     image: timberio/vector:0.35.0-alpine
     container_name: vector-gateway-1
     volumes:
       - ./vector-gateway.toml:/etc/vector/vector.toml:ro
-      - ./soc_vault:/var/log/soc_vault # 🔐 VÁ LỖ HỔNG VẤN ĐỀ 6: Ánh xạ kho log thô gốc (Cold Storage) an toàn xuống đĩa cứng vật lý
+      - ./soc_vault:/var/log/soc_vault # ðŸ” VÃ Lá»– Há»”NG Váº¤N Äá»€ 6: Ãnh xáº¡ kho log thÃ´ gá»‘c (Cold Storage) an toÃ n xuá»‘ng Ä‘Ä©a cá»©ng váº­t lÃ½
     command: ["--config", "/etc/vector/vector.toml"]
     networks:
       - soc-network
@@ -46,7 +46,7 @@ services:
     container_name: vector-gateway-2
     volumes:
       - ./vector-gateway.toml:/etc/vector/vector.toml:ro
-      - ./soc_vault:/var/log/soc_vault # Đảm bảo tính sẵn sàng cao đồng bộ đĩa lưu trữ pháp chứng
+      - ./soc_vault:/var/log/soc_vault # Äáº£m báº£o tÃ­nh sáºµn sÃ ng cao Ä‘á»“ng bá»™ Ä‘Ä©a lÆ°u trá»¯ phÃ¡p chá»©ng
     command: ["--config", "/etc/vector/vector.toml"]
     networks:
       - soc-network
@@ -411,7 +411,7 @@ services:
 
 
   # ===========================================================================
-  # 3. TẦNG ĐỆM TRUNG GIAN GIẢM CHẤN XUNG LỰC (MESSAGE BROKER LAYER)
+  # 3. Táº¦NG Äá»†M TRUNG GIAN GIáº¢M CHáº¤N XUNG Lá»°C (MESSAGE BROKER LAYER)
   # ===========================================================================
   redpanda-broker:
     image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
@@ -426,7 +426,7 @@ services:
     ports:
       - "19092:19092"
     volumes:
-      - ./redpanda_data:/var/lib/redpanda/data # Đảm bảo hàng đợi không bị mất cấu trúc khi reset hạ tầng
+      - ./redpanda_data:/var/lib/redpanda/data # Äáº£m báº£o hÃ ng Ä‘á»£i khÃ´ng bá»‹ máº¥t cáº¥u trÃºc khi reset háº¡ táº§ng
     networks:
       - soc-network
 
@@ -463,6 +463,26 @@ services:
     networks:
       - soc-network
 
+  hosteye-dynamic-config:
+    build:
+      context: ../HostEyeDynamicConfig
+    container_name: hosteye-dynamic-config
+    environment:
+      HOSTEYE_DYNAMIC_CONFIG_PORT: "5063"
+      HOSTEYE_DYNAMIC_CONFIG_STORE: "/app/data/dynamic-config-state.json"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNATURE_ALGORITHM: "ed25519"
+      HOSTEYE_DYNAMIC_CONFIG_ED25519_KEY_ID: "hosteye-demo-ed25519-v1"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKENS: "hosteye-admin-demo=policy:read,policy:write,agent:read,audit:read;hosteye-readonly=policy:read"
+      HOSTEYE_DYNAMIC_CONFIG_REQUIRE_AGENT_IDENTITY: "true"
+      HOSTEYE_DYNAMIC_CONFIG_AGENT_IDENTITY_SECRET: "hosteye-agent-identity-demo-secret"
+    ports:
+      - "5063:5063"
+    volumes:
+      - hosteye_dynamic_config_data:/app/data
+    networks:
+      - soc-network
+    restart: unless-stopped
   dashboard-api:
     image: node:20-alpine
     container_name: hosteye-dashboard-api
@@ -475,13 +495,16 @@ services:
       CLICKHOUSE_USERNAME: "default"
       CLICKHOUSE_PASSWORD: ""
       CORS_ORIGIN: "*"
+      HOSTEYE_DYNAMIC_CONFIG_URL: "http://hosteye-dynamic-config:5063"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN: "hosteye-admin-demo"
       NODE_ENV: "production"
     ports:
       - "5055:5055"
     volumes:
-      - ../VectorDashboardApi:/app:ro
+      - ../HostEyeDashboardApi:/app:ro
     depends_on:
       - clickhouse
+      - hosteye-dynamic-config
     networks:
       - soc-network
 
@@ -507,3 +530,5 @@ networks:
 
 volumes:
   clickhouse_data:
+  hosteye_dynamic_config_data:
+

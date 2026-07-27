@@ -912,3 +912,101 @@ th.numeric {
     justify-content: flex-start;
   }
 }
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.small-action {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 800;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.small-action:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: #fff7ef;
+}
+
+.enrollment-panel .table-shell td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.enrollment-panel code {
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.config-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.config-form label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.config-form input,
+.config-form select,
+.config-form textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 10px;
+  font: inherit;
+  color: var(--text);
+  background: #ffffff;
+}
+
+.config-form textarea {
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.config-form .wide {
+  grid-column: 1 / -1;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.dynamic-panel .table-shell td small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .config-form {
+    grid-template-columns: 1fr;
+  }
+}

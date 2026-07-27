@@ -1,7 +1,7 @@
-param(
+﻿param(
     [int]$EventsPerVm = 20,
     [int]$JitterSeconds = 30,
-    [string]$GatewayUri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+    [string]$GatewayUri = "https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry",
     [string]$WorkDir = "$PSScriptRoot\..\sim-jitter",
     [string]$ShipperExe = "$PSScriptRoot\..\VectorBuild\SOCShipper\publish\HostEyeShipper.exe",
     [string]$CertDir = "$PSScriptRoot\..\VectorBuild\certs"
@@ -152,3 +152,4 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
 }
 
 "report=$report" | Tee-Object -FilePath $report -Append
+

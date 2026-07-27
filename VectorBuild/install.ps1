@@ -1,8 +1,9 @@
-# HostEye Endpoint Agent installer
+﻿# HostEye Endpoint Agent installer
 # Requires Administrator. Installs HostEye collector as LocalSystem service, config updater, certs, and Sysmon.
 
 param(
-    [string]$GatewayUri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+    [string]$GatewayUri = "https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry",
+    [string]$DynamicConfigServerUri = "https://agent.hosteye.iahn.hanoi.vn",
     [string]$CaCertificateFileName = "company_ca.crt",
     [switch]$NoStart
 )
@@ -15,6 +16,7 @@ $TargetDir = "C:\Program Files\HostEye"
 $CertDir = Join-Path $TargetDir "certs"
 $SysmonDir = Join-Path $TargetDir "Sysmon"
 $ShipperDir = Join-Path $TargetDir "HostEyeShipper"
+$ConfigAgentDir = Join-Path $TargetDir "HostEyeConfigAgent"
 $ProgramDataDir = "C:\ProgramData\HostEye"
 $LogDir = Join-Path $ProgramDataDir "logs"
 $InstallLog = Join-Path $LogDir "install.log"
@@ -232,14 +234,14 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 Write-InstallLog "Bat dau cai dat HostEye Endpoint Agent from $StagingDir"
 
-New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "data"), (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state") | Out-Null
+New-Item -ItemType Directory -Force -Path $TargetDir, $CertDir, $SysmonDir, $ShipperDir, $ConfigAgentDir, $ProgramDataDir, $LogDir, (Join-Path $ProgramDataDir "data"), (Join-Path $ProgramDataDir "spool"), (Join-Path $ProgramDataDir "shipper_state"), (Join-Path $ProgramDataDir "dynamic-config") | Out-Null
 
 Enable-HostEyeAuditPolicy
 
 foreach ($existingComponent in @($ServiceName, $ShipperServiceName, "Vector", "SOCShipper")) {
     Stop-ExistingComponent $existingComponent
 }
-foreach ($existingTask in @("HostEye_Shipper_Startup", "HostEye_Agent_Startup", "SOC_Shipper_Startup", "SOC_Vector_Startup")) {
+foreach ($existingTask in @("HostEye_Shipper_Startup", "HostEye_Agent_Startup", "HostEye_Dynamic_Config_Sync", "SOC_Shipper_Startup", "SOC_Vector_Startup")) {
     try { Stop-ScheduledTask -TaskName $existingTask -ErrorAction SilentlyContinue } catch {}
 }
 foreach ($existingProcess in @("HostEyeShipper", "SOCShipper")) {
@@ -278,6 +280,11 @@ if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "certs") $CertDir) 
 if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "Sysmon") $SysmonDir -Recurse) {
 } else {
     Write-InstallLog "WARNING: Sysmon directory was not found in staging dir."
+}
+
+if (Copy-DirectoryContentsIfDifferent (Join-Path $StagingDir "HostEyeConfigAgent") $ConfigAgentDir -Recurse) {
+} else {
+    Write-InstallLog "WARNING: HostEyeConfigAgent directory was not found in staging dir; dynamic config sync will not be installed."
 }
 
 # Trust internal CA for HostEye TLS and PowerShell updater HTTPS downloads.
@@ -439,6 +446,8 @@ $shipperConfigObject = [ordered]@{
     ClientKeyFile = (Join-Path $CertDir "client.key")
     CaCertificateFile = (Join-Path $CertDir "company_ca.crt")
     AllowSystemServerCertificateTrust = $true
+    EnableLocalDynamicConfig = $true
+    LocalDynamicConfigPath = (Join-Path (Join-Path $ProgramDataDir "dynamic-config") "applied-policy.json")
     MaxEvents = 500
     MaxBytes = 524288
     NormalJitterWindowSeconds = 5
@@ -482,6 +491,28 @@ if (Test-Path $shipperExe) {
 } else {
     Write-InstallLog "WARNING: HostEyeShipper.exe missing; Shipper startup task not registered."
 }
+# Register production dynamic configuration sync task. It runs as SYSTEM and pulls signed policy from the control plane.
+$configTaskName = "HostEye_Dynamic_Config_Sync"
+$configTaskScript = Join-Path $ConfigAgentDir "HostEye_ConfigAgent.ps1"
+$configClientExe = Join-Path $ConfigAgentDir "hosteye-config-client.exe"
+if ((Test-Path $configTaskScript) -and (Test-Path $configClientExe)) {
+    $configTaskArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$configTaskScript`" -ServerUri `"$DynamicConfigServerUri`" -PollJitterWindowSeconds 60 -ApplyMode apply"
+    Write-InstallLog "Registering $configTaskName scheduled task."
+    Unregister-ScheduledTask -TaskName $configTaskName -Confirm:$false -ErrorAction SilentlyContinue
+    $configTaskAction = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument $configTaskArgs
+    $configTaskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $configTaskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+    $configTaskSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable
+    Register-ScheduledTask -TaskName $configTaskName -Action $configTaskAction -Trigger $configTaskTrigger -Principal $configTaskPrincipal -Settings $configTaskSettings -Force | Out-Null
+    if (-not $NoStart) {
+        Start-ScheduledTask -TaskName $configTaskName
+        Write-InstallLog "HostEye dynamic config sync task registered and started."
+    } else {
+        Write-InstallLog "HostEye dynamic config sync task registered but not started because NoStart was set."
+    }
+} else {
+    Write-InstallLog "WARNING: HostEye dynamic config client missing; $configTaskName was not registered. Expected $configClientExe and $configTaskScript"
+}
 # Scheduled configuration updater.
 $taskName = "HostEye_Agent_Updater"
 $taskScript = Join-Path $TargetDir "HostEye_Updater.ps1"
@@ -496,6 +527,11 @@ $taskSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Execu
 Register-ScheduledTask -TaskName $taskName -Action $taskAction -Trigger $taskTrigger -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
 Write-InstallLog "HostEye_Agent_Updater scheduled task registered."
 Write-InstallLog "Cai dat HostEye Endpoint Agent hoan tat."
+
+
+
+
+
 
 
 

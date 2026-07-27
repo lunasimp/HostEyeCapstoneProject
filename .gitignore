@@ -25,6 +25,7 @@ VectorServer/organization_private.pem
 # Build outputs / generated binaries
 **/bin/
 **/obj/
+**/target/
 **/publish/
 **/publish-self-contained/
 VectorBuild/Output/
@@ -57,3 +58,9 @@ tools/InnoSetup/Examples/
 VectorBuild/Sysmon/*-output.*
 *.tmp
 *.bak
+*.bak-*
+
+# Local runtime, backup, and demo-signing state
+cert-backup-*/
+Installer/CodeSigning/certs/
+Installer/CodeSigning/last-demo-cert.json

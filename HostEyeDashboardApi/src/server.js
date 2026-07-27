@@ -1,7 +1,26 @@
-﻿import http from "node:http";
+import http from "node:http";
 import { URL } from "node:url";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  adminArtifactBuildById,
+  adminArtifactBuildNext,
+  adminArtifactVerify,
+  adminArtifacts,
+  adminEnrollmentTokenCreate,
+  adminEnrollmentTokens,
+  adminDeviceApprove,
+  adminDeviceAssignGroups,
+  adminDeviceDetail,
+  adminDeviceRevoke,
+  adminDevices,
+  enrollmentComplete,
+  enrollmentFail,
+  enrollmentHeartbeat,
+  enrollmentStart,
+  artifactDownload,
+  registryInfo,
+} from "./enrollment-store.js";
 
 loadDotEnv();
 
@@ -25,6 +44,8 @@ const routes = [
   ["GET", /^\/api\/dashboard\/overview\/top-hosts$/, overviewTopHosts],
   ["GET", /^\/api\/dashboard\/overview\/event-types$/, overviewEventTypes],
   ["GET", /^\/api\/dashboard\/overview\/security-timeline$/, overviewSecurityTimeline],
+  ["GET", /^\/api\/dashboard\/hosts\/summary$/, hostsSummary],
+  ["GET", /^\/api\/dashboard\/agents\/registered$/, registeredAgents],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -36,6 +57,10 @@ const routes = [
   ["GET", /^\/api\/dashboard\/process-access\/recent$/, processAccessRecent],
   ["GET", /^\/api\/dashboard\/powershell\/volume$/, powershellVolume],
   ["GET", /^\/api\/dashboard\/powershell\/recent$/, powershellRecent],
+  ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
+  ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
+  ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
+  ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap$/, hostsHeatmap],
   ["GET", /^\/api\/dashboard\/registrations\/summary$/, registrationsSummary],
   ["GET", /^\/api\/dashboard\/dynamic-config\/summary$/, dynamicConfigSummary],
@@ -46,7 +71,22 @@ const routes = [
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
   ["GET", /^\/api\/logs\/raw\/([^/]+)$/, logsRaw],
-];
+  ["POST", /^\/api\/v1\/enrollment\/start$/, enrollmentStart],
+  ["POST", /^\/api\/v1\/enrollment\/complete$/, enrollmentComplete],
+  ["POST", /^\/api\/v1\/enrollment\/heartbeat$/, enrollmentHeartbeat],
+  ["POST", /^\/api\/v1\/enrollment\/fail$/, enrollmentFail],
+  ["GET", /^\/api\/v1\/admin\/enrollment-tokens$/, adminEnrollmentTokens],
+  ["POST", /^\/api\/v1\/admin\/enrollment-tokens$/, adminEnrollmentTokenCreate],
+  ["GET", /^\/api\/v1\/admin\/devices$/, adminDevices],
+  ["GET", /^\/api\/v1\/admin\/devices\/([^/]+)$/, adminDeviceDetail],
+  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/approve$/, adminDeviceApprove],
+  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/revoke$/, adminDeviceRevoke],
+  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/assign-groups$/, adminDeviceAssignGroups],
+  ["GET", /^\/api\/v1\/admin\/artifacts$/, adminArtifacts],
+  ["POST", /^\/api\/v1\/admin\/artifacts\/build-next$/, adminArtifactBuildNext],
+  ["POST", /^\/api\/v1\/admin\/artifacts\/([^/]+)\/build$/, adminArtifactBuildById],
+  ["POST", /^\/api\/v1\/admin\/artifacts\/([^/]+)\/verify$/, adminArtifactVerify],
+  ["GET", /^\/api\/v1\/artifacts\/([^/]+)\/download$/, artifactDownload],];
 
 const server = http.createServer(async (req, res) => {
   setCors(res);
@@ -67,7 +107,8 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const match = url.pathname.match(route[1]);
-    await route[2]({ req, url, params: match?.slice(1) || [] }, res);
+    const body = await readJsonBody(req);
+    await route[2]({ req, url, params: match?.slice(1) || [], body }, res);
   } catch (error) {
     const status = error.statusCode || 500;
     sendJson(res, status, {
@@ -80,6 +121,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(config.port, () => {
   console.log(`HostEye Dashboard API listening on http://localhost:${config.port}`);
   console.log(`ClickHouse: ${config.clickhouseUrl} database=${config.database}`);
+  console.log(`HostEye registry: ${registryInfo().path}`);
 });
 
 async function health(_ctx, res) {
@@ -174,11 +216,98 @@ async function overviewSecurityTimeline(ctx, res) {
   sendJson(res, 200, { items: rows });
 }
 
+async function hostsSummary(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      count() AS totalEvents,
+      min(kafka_timestamp) AS firstSeen,
+      max(kafka_timestamp) AS lastSeen,
+      uniqExact(channel) AS channels,
+      uniqExact(event_id) AS eventIds
+    FROM default.windows_system_logs
+    WHERE computer != ''
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  const hosts = rows.map((row) => {
+    const status = hostStatus(row.lastSeen);
+    return {
+      computer: row.computer,
+      totalEvents: Number(row.totalEvents || 0),
+      firstSeen: row.firstSeen,
+      lastSeen: row.lastSeen,
+      channels: Number(row.channels || 0),
+      eventIds: Number(row.eventIds || 0),
+      statusLevel: status.level,
+      statusLabel: status.label,
+      ageSeconds: status.ageSeconds,
+    };
+  });
+
+  const groups = ["online", "active", "delayed", "stale", "unknown"].map((level) => {
+    const members = hosts.filter((host) => host.statusLevel === level);
+    return {
+      level,
+      label: hostLevelLabel(level),
+      count: members.length,
+      hosts: members.slice(0, 20),
+    };
+  });
+
+  sendJson(res, 200, { hosts, groups });
+}
+
+async function registeredAgents(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const rows = await queryRows(`
+    SELECT
+      agent_id AS agentId,
+      host_id AS hostId,
+      computer,
+      argMax(cert_serial, last_seen) AS certSerial,
+      min(first_seen) AS firstSeen,
+      max(last_seen) AS lastSeen,
+      argMaxIf(schema_version, last_seen, schema_version != 'legacy') AS schemaVersion,
+      argMax(source_platform, last_seen) AS sourcePlatform,
+      argMax(shipper_version, last_seen) AS shipperVersion,
+      argMax(status, last_seen) AS status,
+      argMax(enrollment_status, last_seen) AS enrollmentStatus,
+      argMax(last_chunk_id, last_seen) AS lastChunkId,
+      argMax(last_ack_status, last_seen) AS lastAckStatus,
+      argMax(last_event_count, last_seen) AS lastEventCount,
+      argMax(normal_jitter_window_ms, last_seen) AS normalJitterWindowMs,
+      argMax(recovery_jitter_window_ms, last_seen) AS recoveryJitterWindowMs,
+      argMax(max_events, last_seen) AS maxEvents,
+      argMax(max_bytes, last_seen) AS maxBytes
+    FROM default.registered_agents
+    GROUP BY agent_id, host_id, computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => {
+      const status = hostStatus(row.lastSeen);
+      return {
+        ...row,
+        statusLevel: status.level,
+        statusLabel: status.label,
+        ageSeconds: status.ageSeconds,
+      };
+    }),
+  });
+}
+
 async function processTopProcesses(ctx, res) {
-  const where = timeWhere(ctx.url, ["process_path != ''"]);
+  const processPath = processImageExpr();
+  const where = timeWhere(ctx.url, [`${processPath} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT process_path AS processPath, count() AS volume
+    SELECT ${processPath} AS processPath, count() AS volume
     FROM default.process_events
     ${where.sql}
     GROUP BY processPath
@@ -198,11 +327,11 @@ async function processRecent(ctx, res) {
       event_type AS eventType,
       event_id AS eventId,
       user_name AS userName,
-      process_path AS processPath,
-      parent_process_path AS parentProcessPath,
-      left(command_line, 800) AS commandLine,
-      process_guid AS processGuid,
-      parent_process_guid AS parentProcessGuid
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('parent_process_path', 'ParentImage')} AS parentProcessPath,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${fieldExpr('parent_process_guid', 'ParentProcessGuid')} AS parentProcessGuid
     FROM default.process_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -212,10 +341,11 @@ async function processRecent(ctx, res) {
 }
 
 async function networkTopDestinationIps(ctx, res) {
-  const where = timeWhere(ctx.url, ["destination_ip != ''"]);
+  const destinationIp = fieldExpr("destination_ip", "DestinationIp");
+  const where = timeWhere(ctx.url, [`${destinationIp} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT destination_ip AS destinationIp, count() AS volume
+    SELECT ${destinationIp} AS destinationIp, count() AS volume
     FROM default.network_events
     ${where.sql}
     GROUP BY destinationIp
@@ -232,15 +362,15 @@ async function networkRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      user_name AS userName,
-      process_guid AS processGuid,
-      process_path AS processPath,
-      source_ip AS sourceIp,
-      source_port AS sourcePort,
-      destination_ip AS destinationIp,
-      destination_port AS destinationPort,
-      protocol,
-      initiated
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
+      ${uintFieldExpr("source_port", "SourcePort")} AS sourcePort,
+      ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
+      ${uintFieldExpr("destination_port", "DestinationPort")} AS destinationPort,
+      ${fieldExpr('protocol', 'Protocol')} AS protocol,
+      ${fieldExpr('initiated', 'Initiated')} AS initiated
     FROM default.network_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -250,10 +380,11 @@ async function networkRecent(ctx, res) {
 }
 
 async function dnsTopDomains(ctx, res) {
-  const where = timeWhere(ctx.url, ["dns_query != ''"]);
+  const dnsQuery = fieldExpr("dns_query", "QueryName");
+  const where = timeWhere(ctx.url, [`${dnsQuery} != ''`]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT dns_query AS domain, count() AS volume
+    SELECT ${dnsQuery} AS domain, count() AS volume
     FROM default.dns_events
     ${where.sql}
     GROUP BY domain
@@ -270,11 +401,11 @@ async function dnsRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      user_name AS userName,
-      process_guid AS processGuid,
-      process_path AS processPath,
-      dns_query AS dnsQuery,
-      query_status AS queryStatus
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
+      ${fieldExpr('query_status', 'QueryStatus')} AS queryStatus
     FROM default.dns_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -292,9 +423,9 @@ async function registryRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_object AS targetObject,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
       left(message, 300) AS message
     FROM default.registry_events
     ${where.sql}
@@ -313,10 +444,10 @@ async function fileRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_filename AS targetFilename,
-      hashes,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
+      ${fieldExpr('hashes', 'Hashes')} AS hashes,
       left(message, 300) AS message
     FROM default.file_events
     ${where.sql}
@@ -334,11 +465,11 @@ async function processAccessRecent(ctx, res) {
       kafka_timestamp AS time,
       computer,
       event_id AS eventId,
-      user_name AS userName,
-      process_path AS processPath,
-      target_image AS targetImage,
-      granted_access AS grantedAccess,
-      call_trace AS callTrace,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${fieldExpr('process_path', 'SourceImage', 'Image')} AS processPath,
+      ${fieldExpr('target_image', 'TargetImage')} AS targetImage,
+      ${fieldExpr('granted_access', 'GrantedAccess')} AS grantedAccess,
+      ${fieldExpr('call_trace', 'CallTrace')} AS callTrace,
       left(message, 300) AS message
     FROM default.process_access_events
     ${where.sql}
@@ -370,9 +501,9 @@ async function powershellRecent(ctx, res) {
       computer,
       event_id AS eventId,
       level,
-      user_name AS userName,
-      left(command_line, 800) AS commandLine,
-      left(script_block_text, 1200) AS scriptBlockText,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+      left(${fieldExpr('script_block_text', 'ScriptBlockText')}, 1200) AS scriptBlockText,
       left(message, 300) AS message
     FROM default.powershell_events
     ${where.sql}
@@ -497,8 +628,7 @@ async function dynamicConfigAudit(_ctx, res) {
 }
 
 async function dynamicConfigUpsertPolicy(ctx, res) {
-  const body = await readJsonBody(ctx.req);
-  const policy = buildDynamicPolicy(body);
+  const policy = buildDynamicPolicy(ctx.body || {});
   const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
     method: "POST",
     admin: true,
@@ -629,10 +759,178 @@ async function registrationRequest(path) {
   }
   return text ? JSON.parse(text) : null;
 }
+
+async function jitterSummary(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const rows = await queryRows(`
+    SELECT
+      count() AS samples,
+      uniqExact(computer) AS hosts,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const worstRows = await queryRows(`
+    SELECT
+      computer,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY p95JitterMs DESC, spoolDepthBytes DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    worstHost: worstRows[0] || null,
+  });
+}
+
+async function jitterHosts(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      anyLast(agent_id) AS agentId,
+      count() AS samples,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      min(planned_jitter_ms) AS minJitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(batch_size) AS maxBatchSize,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(pending_file_count) AS pendingFileCount,
+      max(send_duration_ms) AS maxSendDurationMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: jitterStatus(row),
+      statusLabel: jitterStatusLabel(jitterStatus(row)),
+    })),
+  });
+}
+
+async function chunksSummary(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const rows = await queryRows(`
+    SELECT
+      count() AS chunks,
+      uniqExact(computer) AS hosts,
+      sum(batch_size) AS eventsSent,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      sum(if(success = 1, 1, 0)) AS okChunks,
+      sum(if(success = 0, 1, 0)) AS failedChunks,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const latestRows = await queryRows(`
+    SELECT
+      computer,
+      argMax(spool_file, metric_timestamp) AS spoolFile,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    latestChunk: latestRows[0] || null,
+  });
+}
+
+async function chunksHosts(ctx, res) {
+  const where = timeWhere(ctx.url);
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      argMax(agent_id, metric_timestamp) AS agentId,
+      argMax(spool_file, metric_timestamp) AS lastChunk,
+      argMax(line_offset, metric_timestamp) AS lineOffset,
+      argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
+      argMax(byte_offset, metric_timestamp) AS byteOffset,
+      argMax(next_byte_offset, metric_timestamp) AS nextByteOffset,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(batch_bytes, metric_timestamp) AS batchBytes,
+      argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(data_loss, metric_timestamp) AS dataLoss,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      argMax(backoff_delay_ms, metric_timestamp) AS backoffDelayMs,
+      argMax(next_retry_at, metric_timestamp) AS nextRetryAt,
+      argMax(lease_id, metric_timestamp) AS leaseId,
+      argMax(lease_expires_at, metric_timestamp) AS leaseExpiresAt,
+      argMax(lease_ttl_seconds, metric_timestamp) AS leaseTtlSeconds,
+      argMax(max_batch_mb, metric_timestamp) AS maxBatchMb,
+      argMax(max_upload_rate_kbps, metric_timestamp) AS maxUploadRateKbps,
+      argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+      count() AS chunks,
+      sum(batch_size) AS eventsSent,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: chunkStatus(row),
+      statusLabel: chunkStatusLabel(chunkStatus(row)),
+    })),
+  });
+}
+
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
-  const where = timeWhere(ctx.url);
+  const where = timeWhere(ctx.url, ["computer != ''"]);
 
   const hosts = await queryRows(`
     SELECT computer, count() AS totalEvents
@@ -695,10 +993,28 @@ async function hostsHeatmapCell(ctx, res) {
     `kafka_timestamp >= ${startExpr}`,
     `kafka_timestamp < ${endExpr}`,
   ];
+
+  const channel = ctx.url.searchParams.get("channel");
+  const eventId = ctx.url.searchParams.get("eventId");
+  const q = ctx.url.searchParams.get("q");
+  if (channel) predicates.push(`channel = ${sqlString(channel)}`);
+  if (eventId) predicates.push(`event_id = ${uintParam(eventId, "eventId")}`);
+  if (q) {
+    const search = sqlString(q);
+    predicates.push(`(
+      positionCaseInsensitive(message, ${search}) > 0
+      OR positionCaseInsensitive(command_line, ${search}) > 0
+      OR positionCaseInsensitive(process_path, ${search}) > 0
+      OR positionCaseInsensitive(raw_log, ${search}) > 0
+    )`);
+  }
+
   const where = `WHERE ${predicates.join(" AND ")}`;
   const limit = limitParam(ctx.url, 200, 500);
 
-  const [summaryRows, byChannel, byEventId, byEventType, recentLogs] = await Promise.all([
+  const chunkWhere = `WHERE computer = ${sqlString(host)} AND metric_timestamp >= ${startExpr} AND metric_timestamp < ${endExpr}`;
+
+  const [summaryRows, byChannel, byEventId, byEventType, recentLogs, chunks] = await Promise.all([
     queryRows(`SELECT count() AS totalEvents FROM default.windows_system_logs ${where}`),
     queryRows(`
       SELECT channel, count() AS events
@@ -731,19 +1047,53 @@ async function hostsHeatmapCell(ctx, res) {
         channel,
         event_id AS eventId,
         ${eventTypeExpression()} AS eventType,
-        user_name AS userName,
-        process_path AS processPath,
-        left(command_line, 800) AS commandLine,
-        source_ip AS sourceIp,
-        destination_ip AS destinationIp,
-        dns_query AS dnsQuery,
-        target_filename AS targetFilename,
-        target_object AS targetObject,
+        ${fieldExpr('user_name', 'User')} AS userName,
+        ${processImageExpr()} AS processPath,
+        left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
+        ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
+        ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
+        ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
+        ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
+        ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
         left(message, 500) AS message
       FROM default.windows_system_logs
       ${where}
       ORDER BY kafka_timestamp DESC
       LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        metric_timestamp AS sentAt,
+        agent_id AS agentId,
+        spool_file AS spoolFile,
+        line_offset AS lineOffset,
+        next_line_offset AS nextLineOffset,
+        byte_offset AS byteOffset,
+        next_byte_offset AS nextByteOffset,
+        batch_size AS batchSize,
+        batch_bytes AS batchBytes,
+        compressed_bytes AS compressedBytes,
+        planned_jitter_ms AS plannedJitterMs,
+        jitter_window_ms AS jitterWindowMs,
+        lease_id AS leaseId,
+        lease_expires_at AS leaseExpiresAt,
+        lease_ttl_seconds AS leaseTtlSeconds,
+        max_batch_mb AS maxBatchMb,
+        max_upload_rate_kbps AS maxUploadRateKbps,
+        retry_attempt AS retryAttempt,
+        planned_backoff_ms AS plannedBackoffMs,
+        spool_depth_bytes AS spoolDepthBytes,
+        spool_file_count AS spoolFileCount,
+        pending_file_count AS pendingFileCount,
+        status_code AS statusCode,
+        send_duration_ms AS sendDurationMs,
+        success,
+        data_loss AS dataLoss,
+        message
+      FROM default.shipper_runtime_metrics
+      ${chunkWhere}
+      ORDER BY metric_timestamp DESC
+      LIMIT 100
     `),
   ]);
 
@@ -758,6 +1108,7 @@ async function hostsHeatmapCell(ctx, res) {
       byEventType,
     },
     recentLogs,
+    chunks,
   });
 }
 
@@ -779,9 +1130,9 @@ async function logsSearch(ctx, res) {
       channel,
       event_id AS eventId,
       level,
-      user_name AS userName,
-      process_path AS processPath,
-      left(command_line, 800) AS commandLine,
+      ${fieldExpr('user_name', 'User')} AS userName,
+      ${processImageExpr()} AS processPath,
+      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
       left(message, 500) AS message,
       idempotency_key AS idempotencyKey
     FROM default.windows_system_logs
@@ -818,20 +1169,11 @@ async function queryRows(sql) {
     headers.authorization = `Basic ${Buffer.from(`${config.username}:${config.password}`).toString("base64")}`;
   }
 
-  let response;
-  try {
-    response = await fetch(config.clickhouseUrl, {
-      method: "POST",
-      headers,
-      body,
-    });
-  } catch (cause) {
-    const error = new Error("ClickHouse is not reachable");
-    error.statusCode = 503;
-    error.detail = `${config.clickhouseUrl} - ${cause?.message || cause}`;
-    throw error;
-  }
-
+  const response = await fetch(config.clickhouseUrl, {
+    method: "POST",
+    headers,
+    body,
+  });
   const text = await response.text();
 
   if (!response.ok) {
@@ -846,6 +1188,19 @@ async function queryRows(sql) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function fieldExpr(column, ...jsonKeys) {
+  const fallbacks = jsonKeys.map((key) => `nullIf(JSONExtractString(event_data_json, ${sqlString(key)}), '')`);
+  return `coalesce(nullIf(${column}, ''), ${fallbacks.join(", ")}, '')`;
+}
+
+function processImageExpr() {
+  return fieldExpr("process_path", "Image", "NewProcessName", "ApplicationPath", "SourceImage");
+}
+
+function uintFieldExpr(column, jsonKey) {
+  return `if(${column} != 0, ${column}, toUInt32OrZero(JSONExtractString(event_data_json, ${sqlString(jsonKey)})))`;
 }
 
 function timeWhere(url, extraPredicates = []) {
@@ -929,6 +1284,59 @@ function heatLevel(value, max) {
   if (ratio >= 0.3) return 3;
   if (ratio >= 0.1) return 2;
   return 1;
+}
+
+function hostStatus(lastSeen) {
+  if (!lastSeen) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+  const normalized = String(lastSeen).includes("T") ? lastSeen : String(lastSeen).replace(" ", "T");
+  const time = new Date(normalized).getTime();
+  if (Number.isNaN(time)) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+  if (ageSeconds <= 5 * 60) return { level: "online", label: hostLevelLabel("online"), ageSeconds };
+  if (ageSeconds <= 60 * 60) return { level: "active", label: hostLevelLabel("active"), ageSeconds };
+  if (ageSeconds <= 24 * 60 * 60) return { level: "delayed", label: hostLevelLabel("delayed"), ageSeconds };
+  return { level: "stale", label: hostLevelLabel("stale"), ageSeconds };
+}
+
+function hostLevelLabel(level) {
+  if (level === "online") return "Online <= 5m";
+  if (level === "active") return "Active <= 1h";
+  if (level === "delayed") return "Delayed <= 24h";
+  if (level === "stale") return "Stale > 24h";
+  return "Unknown";
+}
+
+function jitterStatus(row) {
+  const age = hostStatus(row.lastSeen).ageSeconds;
+  if (age === null || age > 30 * 60) return "silent";
+  const p95 = Number(row.p95JitterMs || 0);
+  const spool = Number(row.spoolDepthBytes || 0);
+  const pending = Number(row.pendingFileCount || 0);
+  if (spool >= 1024 * 1024 * 1024 || pending >= 20) return "delayed";
+  if (p95 >= 45000) return "bursty";
+  return "stable";
+}
+
+function jitterStatusLabel(level) {
+  if (level === "stable") return "Stable";
+  if (level === "bursty") return "Bursty";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
+}
+
+function chunkStatus(row) {
+  if (Number(row.success || 0) !== 1 || Number(row.statusCode || 0) >= 400) return "failed";
+  if (Number(row.dataLoss || 0) === 1) return "failed";
+  if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) return "delayed";
+  return "ok";
+}
+
+function chunkStatusLabel(level) {
+  if (level === "ok") return "OK";
+  if (level === "failed") return "Failed";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
 }
 
 function dateParam(url, name, fallback) {
@@ -1051,6 +1459,8 @@ function loadDotEnv() {
     }
   }
 }
+
+
 
 
 
