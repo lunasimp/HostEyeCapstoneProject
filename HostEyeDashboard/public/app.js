@@ -9,7 +9,7 @@ const state = {
 const el = (id) => document.getElementById(id);
 
 const pages = {
-  overview: { title: "Overview", eyebrow: "[ SOC OVERVIEW ]" },
+  overview: { title: "Overview", eyebrow: "[ HOSTEYE OVERVIEW ]" },
   hosts: { title: "Host Inventory", eyebrow: "[ ENDPOINTS ]" },
   process: { title: "Process Activity", eyebrow: "[ PROCESS TELEMETRY ]" },
   network: { title: "Network & DNS", eyebrow: "[ NETWORK TELEMETRY ]" },
@@ -123,122 +123,6 @@ function resetKpis() {
     const node = el(id);
     if (node) node.textContent = "-";
   });
-}
-
-function renderDemoDashboard() {
-  el("kpiEvents").textContent = "152,988";
-  el("kpiHosts").textContent = "8";
-  el("kpiEventIds").textContent = "42";
-  el("kpiLastSeen").textContent = "demo";
-
-  const volume = [
-    { time: "2026-06-24 09:30:00", events: 120 },
-    { time: "2026-06-24 09:31:00", events: 212 },
-    { time: "2026-06-24 09:32:00", events: 88 },
-    { time: "2026-06-24 09:33:00", events: 301 },
-    { time: "2026-06-24 09:34:00", events: 144 },
-  ];
-  const hosts = [
-    { computer: "DESKTOP-2G18GQQ", events: 688 },
-    { computer: "LAPTOP-H4A6KTGQ", events: 412 },
-    { computer: "SOC-VM03", events: 221 },
-    { computer: "LOCALTEST", events: 64 },
-  ];
-  const eventTypes = [
-    { eventType: "Sysmon: Registry Object Created/Deleted", volume: 101 },
-    { eventType: "Sysmon: Process Access", volume: 51 },
-    { eventType: "PowerShell: Script Block", volume: 35 },
-    { eventType: "Security: Successful Logon", volume: 16 },
-  ];
-  const timeline = eventTypes.map((row, index) => ({
-    time: `2026-06-24 09:3${index}:10`,
-    computer: hosts[index % hosts.length].computer,
-    eventType: row.eventType,
-    userName: "NT AUTHORITY\\SYSTEM",
-    message: "Demo event rendered while API is offline",
-  }));
-  const processes = [
-    { processPath: "C:\\Program Files\\Vector\\vector.exe", volume: 319575 },
-    { processPath: "C:\\Windows\\System32\\svchost.exe", volume: 31092 },
-    { processPath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", volume: 3560 },
-  ];
-  const networkRows = [
-    { destinationIp: "10.53.64.62", volume: 3132 },
-    { destinationIp: "142.250.197.142", volume: 965 },
-    { destinationIp: "35.223.238.178", volume: 831 },
-  ];
-  const domains = [
-    { domain: "wpad", volume: 201 },
-    { domain: "login.microsoftonline.com", volume: 36 },
-    { domain: "p2p-hkg1.discovery.steamserver.net", volume: 30 },
-  ];
-  const recent = timeline.map((row) => ({
-    ...row,
-    processGuid: "{demo-guid}",
-    destinationIp: "10.53.64.62",
-    destinationPort: 443,
-    dnsQuery: "login.microsoftonline.com",
-    targetObject: "HKLM\\SOFTWARE\\Microsoft\\Wbem\\Tracing",
-    targetFilename: "C:\\ProgramData\\Vector\\spool\\events.ndjson",
-    targetImage: "Code.exe",
-    grantedAccess: "0x1410",
-    commandLine: "powershell.exe -NoProfile",
-    scriptBlockText: "Get-Process | Select-Object Name, Id",
-    eventId: 4104,
-    level: "Warning",
-  }));
-
-  el("logVolumeMeta").textContent = "demo buckets";
-  renderLineChart(el("logVolumeChart"), volume, "time", "events", "#ff4b12");
-  renderPie(el("topHostsPie"), hosts, "computer", "events");
-  renderTable(el("eventTypesTable"), eventTypes, [["Event type", "eventType"], ["volume", "volume", "numeric"]]);
-  renderTable(el("securityTimeline"), timeline, [["Time", "time", "date"], ["Host", "computer"], ["Event type", "eventType"], ["User", "userName"], ["Message", "message"]]);
-  renderTable(el("topProcessesTable"), processes, [["Process", "processPath"], ["volume", "volume", "numeric"]]);
-  renderTable(el("processRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["Type", "eventType"], ["User", "userName"], ["Command line", "commandLine"]]);
-  renderTable(el("topIpsTable"), networkRows, [["Destination IP", "destinationIp"], ["volume", "volume", "numeric"]]);
-  renderTable(el("networkRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["User", "userName"], ["Process GUID", "processGuid"], ["Destination IP", "destinationIp"], ["Port", "destinationPort", "numeric"]]);
-  renderTable(el("topDomainsTable"), domains, [["Domain", "domain"], ["volume", "volume", "numeric"]]);
-  renderTable(el("dnsRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["User", "userName"], ["Process GUID", "processGuid"], ["DNS query", "dnsQuery"]]);
-  renderTable(el("registryRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["Type", "eventType"], ["User", "userName"], ["Target", "targetObject"]]);
-  renderTable(el("fileRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["Type", "eventType"], ["User", "userName"], ["Target file", "targetFilename"]]);
-  renderTable(el("processAccessTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["User", "userName"], ["Source", "processPath"], ["Target", "targetImage"], ["Access", "grantedAccess"]]);
-  renderLineChart(el("powershellVolumeChart"), volume, "time", "events", "#ff4b12");
-  renderTable(el("powershellRecentTable"), recent, [["Time", "time", "date"], ["Host", "computer"], ["Event ID", "eventId", "numeric"], ["Level", "level"], ["Script block", "scriptBlockText"]]);
-
-  renderHostsScreen({
-    groups: [
-      { level: "online", label: "Online <= 5m", count: 2 },
-      { level: "active", label: "Active <= 1h", count: 1 },
-      { level: "delayed", label: "Delayed <= 24h", count: 1 },
-      { level: "stale", label: "Stale > 24h", count: 0 },
-    ],
-    hosts: hosts.map((host, index) => ({
-      computer: host.computer,
-      totalEvents: host.events,
-      firstSeen: volume[0].time,
-      lastSeen: volume[Math.min(index, volume.length - 1)].time,
-      channels: 3,
-      eventIds: 8,
-      statusLevel: index === 0 ? "online" : index === 1 ? "active" : "delayed",
-      statusLabel: index === 0 ? "Online <= 5m" : index === 1 ? "Active <= 1h" : "Delayed <= 24h",
-      ageSeconds: index * 1800,
-    })),
-  });
-
-  const heatHosts = hosts.slice(0, 4).map((host, index) => ({ rank: index + 1, alias: `C${index + 1}`, computer: host.computer, totalEvents: host.events }));
-  const heatCells = [];
-  heatHosts.forEach((host, hostIndex) => {
-    volume.forEach((bucket, bucketIndex) => {
-      heatCells.push({
-        alias: host.alias,
-        computer: host.computer,
-        bucketTime: bucket.time,
-        events: Math.max(1, Math.round(bucket.events / (hostIndex + 1))),
-        level: Math.max(1, 5 - Math.abs(hostIndex - bucketIndex) % 5),
-      });
-    });
-  });
-  renderHeatmap(el("hostHeatmap"), heatHosts, heatCells);
 }
 
 async function loadSummaryAndHosts() {

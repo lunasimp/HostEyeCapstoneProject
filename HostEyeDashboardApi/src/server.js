@@ -105,12 +105,21 @@ async function overviewSummary(ctx, res) {
     FROM default.windows_system_logs
     ${where.sql}
   `);
-  sendJson(res, 200, rows[0] || {});
+  const row = rows[0] || {};
+  const totalEvents = Number(row.totalEvents || 0);
+  sendJson(res, 200, {
+    totalEvents,
+    totalHosts: Number(row.totalHosts || 0),
+    totalChannels: Number(row.totalChannels || 0),
+    totalEventIds: Number(row.totalEventIds || 0),
+    firstSeen: totalEvents > 0 ? row.firstSeen || null : null,
+    lastSeen: totalEvents > 0 ? row.lastSeen || null : null,
+  });
 }
 
 async function overviewLogVolume(ctx, res) {
   const where = timeWhere(ctx.url);
-  const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "second");
+  const bucket = bucketFunction(bucketParam(ctx.url));
   const rows = await queryRows(`
     SELECT
       ${bucket}(kafka_timestamp) AS time,
@@ -851,6 +860,7 @@ async function queryRows(sql) {
 function timeWhere(url, extraPredicates = []) {
   const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
   const host = url.searchParams.get("host");
   const channel = url.searchParams.get("channel");
   const eventId = url.searchParams.get("eventId");
@@ -905,6 +915,14 @@ function bucketFunction(bucket) {
   if (bucket === "day") return "toStartOfDay";
   if (bucket === "second") return "toStartOfSecond";
   return "toStartOfMinute";
+}
+
+function bucketParam(url, fallback = "second") {
+  const value = url.searchParams.get("bucket") || fallback;
+  if (!["second", "minute", "hour", "day"].includes(value)) {
+    badRequest("bucket must be one of: second, minute, hour, day");
+  }
+  return value;
 }
 
 function bucketDurationMs(bucket) {
@@ -969,14 +987,16 @@ function requiredString(url, name) {
 function limitParam(url, fallback, max, name = "limit") {
   const raw = url.searchParams.get(name);
   if (!raw) return fallback;
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value) || value < 1) badRequest(`${name} must be a positive integer`);
+  if (!/^\d+$/.test(raw)) badRequest(`${name} must be a positive integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) badRequest(`${name} must be a positive integer`);
   return Math.min(value, max);
 }
 
 function uintParam(value, name) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) badRequest(`${name} must be a non-negative integer`);
+  if (!/^\d+$/.test(String(value))) badRequest(`${name} must be a non-negative integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) badRequest(`${name} must be a non-negative integer`);
   return parsed;
 }
 
