@@ -13,6 +13,7 @@ const state = {
   alertResult: null,
   alertRequestId: 0,
   alertDetailRequestId: 0,
+  dynamicSaveInFlight: false,
 };
 
 const el = (id) => document.getElementById(id);
@@ -58,6 +59,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("searchPrev")?.addEventListener("click", () => changeSearchPage(-1));
   el("searchNext")?.addEventListener("click", () => changeSearchPage(1));
+  el("dynamicLogForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveDynamicLogDraft().catch((error) => console.error(error));
+  });
   el("alertFilterForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadAlerts({ reset: true }).catch((error) => console.error(error));
@@ -739,11 +744,12 @@ function openDetailForChunk(host, time) {
 
 async function loadDynamicConfig() {
   try {
-    const [summary, policies, agents, audit] = await Promise.all([
+    const [summary, policies, agents, audit, catalog] = await Promise.all([
       api("/api/dashboard/dynamic-config/summary"),
       api("/api/dashboard/dynamic-config/policies"),
       api("/api/dashboard/dynamic-config/agents"),
       api("/api/dashboard/dynamic-config/audit"),
+      api("/api/dashboard/dynamic-config/catalog"),
     ]);
 
     const totals = summary.totals || {};
@@ -753,6 +759,7 @@ async function loadDynamicConfig() {
     el("dynamicGroupCount").textContent = formatNumber(totals.groups);
     el("dynamicConfigStatus").textContent = summary.status === "ok" ? "control plane online" : (summary.message || "control plane offline");
 
+    renderDynamicLogCatalog(catalog.items || [], catalog.defaults || []);
     renderDynamicPolicies(policies.items || summary.policies || []);
     renderDynamicAgents(agents.items || summary.agents || []);
     renderDynamicGroups(summary.groups || []);
@@ -763,9 +770,61 @@ async function loadDynamicConfig() {
     el("dynamicAgentCount").textContent = "-";
     el("dynamicGroupCount").textContent = "-";
     el("dynamicConfigStatus").textContent = error.message || "control plane offline";
+    el("dynamicLogTypeOptions").innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
     ["dynamicPoliciesTable", "dynamicAgentsTable", "dynamicGroupsTable", "dynamicAuditTable"].forEach((id) => {
       el(id).innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
     });
+  }
+}
+
+
+function renderDynamicLogCatalog(items, defaults) {
+  const container = el("dynamicLogTypeOptions");
+  if (!items.length) {
+    container.innerHTML = `<div class="empty-state">No supported log types reported</div>`;
+    return;
+  }
+  const selected = new Set(defaults || []);
+  container.innerHTML = items.map((item) => `
+    <label class="dynamic-log-option">
+      <input type="checkbox" name="dynamicLogType" value="${escapeAttr(item.id)}" ${selected.has(item.id) ? "checked" : ""}>
+      <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "")}</small></span>
+    </label>
+  `).join("");
+}
+
+async function saveDynamicLogDraft() {
+  if (state.dynamicSaveInFlight) return;
+  const name = el("dynamicPolicyName")?.value.trim();
+  const logTypes = Array.from(document.querySelectorAll('input[name="dynamicLogType"]:checked'))
+    .map((input) => input.value);
+  if (!name) {
+    el("dynamicDraftStatus").textContent = "Configuration name is required";
+    el("dynamicPolicyName")?.focus();
+    return;
+  }
+  if (!logTypes.length) {
+    el("dynamicDraftStatus").textContent = "Select at least one log type";
+    return;
+  }
+
+  state.dynamicSaveInFlight = true;
+  el("dynamicDraftSave").disabled = true;
+  el("dynamicDraftStatus").textContent = "Saving disabled draft...";
+  try {
+    const saved = await api("/api/dashboard/dynamic-config/policies", {
+      method: "POST",
+      body: { name, logTypes, draft: true, targetType: "default" },
+    });
+    el("dynamicDraftStatus").textContent = `Draft ${saved.policy_id || name} saved`;
+    el("dynamicLogForm").reset();
+    await loadDynamicConfig();
+  } catch (error) {
+    el("dynamicDraftStatus").textContent = error.message || "Draft could not be saved";
+    throw error;
+  } finally {
+    state.dynamicSaveInFlight = false;
+    el("dynamicDraftSave").disabled = false;
   }
 }
 
@@ -775,7 +834,7 @@ function renderDynamicPolicies(rows) {
     name: policy.name || policy.policy_id || "-",
     target: formatPolicyTarget(policy.target),
     version: policy.version || 0,
-    enabled: policy.enabled === false ? "disabled" : "enabled",
+    enabled: policy.enabled === false ? "draft" : "enabled",
     rollout: policy.rollout?.enabled === false ? "off" : String(policy.rollout?.percent ?? 100) + "%",
     channels: countChannels(policy.config?.vector?.channels),
     updatedAt: policy.updated_at || policy.updatedAt || "",
@@ -1015,8 +1074,13 @@ function renderHeatmap(container, hosts, cells, bucket = selectedHeatmapBucket()
   });
 }
 
-async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+async function api(path, options = {}) {
+  const request = { cache: "no-store", method: options.method || "GET", headers: {} };
+  if (options.body !== undefined) {
+    request.headers["content-type"] = "application/json";
+    request.body = JSON.stringify(options.body);
+  }
+  const response = await fetch(`${API_BASE}${path}`, request);
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);

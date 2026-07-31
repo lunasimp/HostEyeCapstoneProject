@@ -1070,6 +1070,118 @@ th.numeric {
   }
 }
 
+.dynamic-log-builder {
+  margin-bottom: 16px;
+}
+
+.dynamic-log-builder .panel-title > div {
+  display: grid;
+  gap: 4px;
+}
+
+#dynamicLogForm {
+  display: grid;
+  gap: 16px;
+}
+
+.dynamic-name-field {
+  display: grid;
+  gap: 6px;
+  max-width: 620px;
+}
+
+.dynamic-name-field > span,
+.dynamic-log-fieldset legend {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.dynamic-name-field input {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--text);
+}
+
+.dynamic-log-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.dynamic-log-fieldset legend {
+  margin-bottom: 8px;
+}
+
+.dynamic-log-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dynamic-log-option {
+  min-height: 92px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.dynamic-log-option:has(input:checked) {
+  border-color: var(--orange);
+  background: var(--surface-soft);
+}
+
+.dynamic-log-option input {
+  margin-top: 3px;
+  accent-color: var(--orange);
+}
+
+.dynamic-log-option span {
+  display: grid;
+  gap: 5px;
+}
+
+.dynamic-log-option strong {
+  font-size: 13px;
+}
+
+.dynamic-log-option small {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.dynamic-builder-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.dynamic-builder-actions p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 980px) {
+  .dynamic-log-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 680px) {
+  .dynamic-log-options { grid-template-columns: 1fr; }
+  .dynamic-builder-actions { align-items: stretch; flex-direction: column; }
+}
+
 .alerts-panel {
   min-height: 500px;
 }

@@ -184,7 +184,7 @@ pub fn default_policy() -> DynamicPolicy {
             },
             shipper: ShipperConfigPatch {
                 enabled: true,
-                gateway_url: "https://soc-gateway.yourcorporate.com/api/v1/telemetry".to_string(),
+                gateway_url: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry".to_string(),
                 normal_jitter_window_seconds: 300,
                 recovery_jitter_window_seconds: 1800,
                 base_backoff_seconds: 2,

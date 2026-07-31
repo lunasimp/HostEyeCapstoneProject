@@ -10,6 +10,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-06 - View alerts | Implemented | 5 mock/API tests passed; real ClickHouse Docker integration 6/6 passed; full default suite 23 passed / 2 optional integration skips; desktop/mobile browser QA passed | `uc/UC-06-alert-list` |
 | UC-07 - View alert details | Implemented | 9 alert API/UI tests passed; full default suite 27 passed / 2 optional integration skips; real ClickHouse event and failed-logon detail flows passed; desktop/mobile browser QA passed | `uc/UC-07-alert-detail` |
 | UC-08 - Search and filter alerts | Implemented | 12 alert API/UI tests passed; 2 real ClickHouse alert integration flows passed; full default suite 30 passed / 3 optional integration skips; desktop/mobile browser QA passed | `uc/UC-08-alert-filter` |
+| UC-09 - Configure Dynamic Logs | Implemented | 5 API/control-plane/UI tests passed; full default Dashboard API suite 35 passed / 3 optional integration skips; live control-plane read and desktop/mobile browser QA passed | `uc/UC-09-dynamic-log-config` |
 
 ## UC-02 verified behavior
 
@@ -58,3 +59,15 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Treats current telemetry-derived alerts as `new`; acknowledged or resolved filters deterministically return no matches until alert-state persistence is implemented by its dedicated use case.
 - Passed real ClickHouse filtering with temporary PowerShell, Sysmon, and failed-logon telemetry; all temporary `uc08-docker-*` rows were removed.
 - Passed desktop/mobile browser QA with working Apply/Reset behavior and no horizontal overflow.
+
+
+## UC-09 verified behavior
+
+- Publishes a canonical catalog for Windows Application, System, Security, Sysmon, PowerShell, WMI, and Microsoft Defender log types.
+- Converts selected log types into deduplicated Windows Event Log channels and the corresponding Sysmon, PowerShell, and network sensor switches.
+- Saves the configuration as a disabled, rollout-off Dynamic Config policy draft so UC-09 cannot deploy changes to endpoints prematurely.
+- Validates required names, supported log types, targets, versions, and length limits before contacting the Dynamic Config control plane.
+- Provides a responsive Dashboard form with safe duplicate-submit protection and explicit online, validation, save, and outage states.
+- Keeps granular field selection in UC-10, preview in UC-11, and target assignment/application in UC-12.
+- Replaces the legacy SOC gateway default with the current HostEye telemetry endpoint.
+- Passed desktop/mobile browser QA with no horizontal overflow or console errors; validation QA did not mutate the live control-plane state.

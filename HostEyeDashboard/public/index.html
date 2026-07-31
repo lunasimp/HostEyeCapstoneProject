@@ -322,6 +322,31 @@
               <article class="kpi"><span>Agents</span><strong id="dynamicAgentCount">-</strong></article>
               <article class="kpi"><span>Groups</span><strong id="dynamicGroupCount">-</strong></article>
             </div>
+            <article class="panel dynamic-log-builder">
+              <div class="panel-title">
+                <div>
+                  <h3>Create Dynamic Logs draft</h3>
+                  <span>Select endpoint log types; granular data-field selection is configured separately.</span>
+                </div>
+                <span id="dynamicDraftStatus">Choose at least one log type</span>
+              </div>
+              <form id="dynamicLogForm">
+                <label class="dynamic-name-field">
+                  <span>Configuration name</span>
+                  <input id="dynamicPolicyName" type="text" maxlength="200" required placeholder="Windows endpoint monitoring baseline">
+                </label>
+                <fieldset class="dynamic-log-fieldset">
+                  <legend>Log types</legend>
+                  <div id="dynamicLogTypeOptions" class="dynamic-log-options">
+                    <div class="empty-state">Loading supported log types...</div>
+                  </div>
+                </fieldset>
+                <div class="dynamic-builder-actions">
+                  <p>Drafts remain disabled and are not sent to endpoints until they are assigned and enabled.</p>
+                  <button id="dynamicDraftSave" class="refresh-btn" type="submit">Save draft</button>
+                </div>
+              </form>
+            </article>
             <div class="grid two">
               <article class="panel">
                 <div class="panel-title"><h3>Policies</h3><span id="dynamicConfigStatus">loading</span></div>

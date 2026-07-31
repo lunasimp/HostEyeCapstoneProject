@@ -18,6 +18,16 @@ const config = {
   dynamicConfigAdminToken: process.env.HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN || "hosteye-admin-demo",
 };
 
+const DYNAMIC_LOG_TYPES = Object.freeze([
+  { id: "windows-application", name: "Windows Application", description: "Application events emitted by Windows services and applications.", channels: ["Application"] },
+  { id: "windows-system", name: "Windows System", description: "Operating system, driver, service, and startup events.", channels: ["System"] },
+  { id: "windows-security", name: "Windows Security", description: "Authentication, account, privilege, audit, and WFP security events.", channels: ["Security"] },
+  { id: "sysmon", name: "Sysmon", description: "Process, file, registry, network, and DNS telemetry produced by Sysmon.", channels: ["Microsoft-Windows-Sysmon/Operational"], sensors: ["sysmon", "network"] },
+  { id: "powershell", name: "PowerShell", description: "PowerShell operational and script block telemetry.", channels: ["Microsoft-Windows-PowerShell/Operational"], sensors: ["powershell"] },
+  { id: "wmi", name: "WMI Activity", description: "Operational events from Windows Management Instrumentation.", channels: ["Microsoft-Windows-WMI-Activity/Operational"] },
+  { id: "defender", name: "Microsoft Defender", description: "Microsoft Defender detections and operational health events.", channels: ["Microsoft-Windows-Windows Defender/Operational"] },
+]);
+
 const routes = [
   ["GET", /^\/api\/health$/, health],
   ["GET", /^\/api\/dashboard\/overview\/summary$/, overviewSummary],
@@ -48,6 +58,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigPolicies],
   ["GET", /^\/api\/dashboard\/dynamic-config\/agents$/, dynamicConfigAgents],
   ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/catalog$/, dynamicConfigCatalog],
   ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
@@ -900,6 +911,14 @@ async function dynamicConfigAudit(_ctx, res) {
   sendJson(res, 200, { items: Array.isArray(audit) ? audit : [] });
 }
 
+async function dynamicConfigCatalog(_ctx, res) {
+  sendJson(res, 200, {
+    items: DYNAMIC_LOG_TYPES.map((item) => ({ ...item })),
+    defaults: ["windows-application", "windows-system", "windows-security", "sysmon", "powershell", "wmi"],
+    fieldSelectionUseCase: "UC-10",
+  });
+}
+
 async function dynamicConfigUpsertPolicy(ctx, res) {
   const body = await readJsonBody(ctx.req);
   const policy = buildDynamicPolicy(body);
@@ -912,33 +931,38 @@ async function dynamicConfigUpsertPolicy(ctx, res) {
 }
 
 function buildDynamicPolicy(input) {
-  const targetType = String(input.targetType || "default");
-  const targetValue = String(input.targetValue || "").trim();
+  if (!input || typeof input !== "object" || Array.isArray(input)) badRequest("policy body must be a JSON object");
+  const targetType = String(input.targetType || "default").trim().toLowerCase();
+  if (!["default", "group", "agent"].includes(targetType)) {
+    badRequest("targetType must be one of: default, group, agent");
+  }
+  const targetValue = optionalPolicyText(input.targetValue, "targetValue", 255);
   if ((targetType === "group" || targetType === "agent") && !targetValue) {
     badRequest("targetValue is required for group/agent policy");
   }
 
-  const policyId = String(input.policyId || "").trim() || `policy-${targetType}-${targetValue || "default"}-${Date.now()}`;
-  const version = Math.max(1, Number.parseInt(input.version || "1", 10));
+  const draft = input.draft === true;
+  const policyId = optionalPolicyText(input.policyId, "policyId", 160)
+    || `policy-${draft ? "draft" : targetType}-${targetValue || "default"}-${Date.now()}`;
+  const requestedName = optionalPolicyText(input.name, "name", 200);
+  if (draft && !requestedName) badRequest("name is required for a Dynamic Logs draft");
+  const name = requestedName || policyId;
+  const version = boundedPolicyInteger(input.version, "version", 1, Number.MAX_SAFE_INTEGER, 1);
   const target = targetType === "group"
     ? { type: "group", group_id: targetValue }
     : targetType === "agent"
       ? { type: "agent", agent_id: targetValue }
       : { type: "default" };
 
-  const channels = String(input.channels || "Application,System,Security,Microsoft-Windows-Sysmon/Operational")
-    .split(/[,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
+  const selection = dynamicLogSelection(input);
   return {
     policy_id: policyId,
     version,
-    name: String(input.name || policyId),
-    enabled: input.enabled !== false,
+    name,
+    enabled: draft ? false : input.enabled !== false,
     target,
     rollout: {
-      enabled: input.rolloutEnabled !== false,
+      enabled: draft ? false : input.rolloutEnabled !== false,
       percent: clampNumber(input.rolloutPercent, 1, 100, 100),
       min_agent_version: String(input.minAgentVersion || "0.1.0"),
     },
@@ -946,13 +970,13 @@ function buildDynamicPolicy(input) {
       config_schema_version: 1,
       vector: {
         enabled: input.vectorEnabled !== false,
-        channels,
-        batch_max_events: clampNumber(input.batchMaxEvents, 1, 100000, 1000),
+        channels: selection.channels,
+        batch_max_events: clampNumber(input.batchMaxEvents, 1, 50000, 1000),
         batch_timeout_secs: clampNumber(input.batchTimeoutSecs, 1, 3600, 10),
       },
       shipper: {
         enabled: input.shipperEnabled !== false,
-        gateway_url: String(input.gatewayUrl || "https://soc-gateway.yourcorporate.com/api/v1/telemetry"),
+        gateway_url: String(input.gatewayUrl || "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"),
         normal_jitter_window_seconds: clampNumber(input.normalJitterWindowSeconds, 0, 86400, 300),
         recovery_jitter_window_seconds: clampNumber(input.recoveryJitterWindowSeconds, 0, 86400, 1800),
         base_backoff_seconds: clampNumber(input.baseBackoffSeconds, 1, 3600, 2),
@@ -960,13 +984,68 @@ function buildDynamicPolicy(input) {
         max_spool_size_mb: clampNumber(input.maxSpoolSizeMb, 1, 102400, 8192),
       },
       sensors: {
-        sysmon_enabled: input.sysmonEnabled !== false,
-        powershell_enabled: input.powershellEnabled !== false,
-        network_events_enabled: input.networkEventsEnabled !== false,
+        sysmon_enabled: selection.sensors.has("sysmon"),
+        powershell_enabled: selection.sensors.has("powershell"),
+        network_events_enabled: selection.sensors.has("network"),
       },
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+function dynamicLogSelection(input) {
+  if (Object.hasOwn(input, "logTypes") && !Array.isArray(input.logTypes)) {
+    badRequest("logTypes must be an array of supported log type identifiers");
+  }
+  if (Array.isArray(input.logTypes)) {
+    if (!input.logTypes.length) badRequest("logTypes must contain at least one supported log type");
+    const ids = [];
+    for (const raw of input.logTypes) {
+      const id = String(raw || "").trim().toLowerCase();
+      if (!id || ids.includes(id)) continue;
+      if (!DYNAMIC_LOG_TYPES.some((item) => item.id === id)) {
+        badRequest(`unsupported log type: ${id || "empty"}`);
+      }
+      ids.push(id);
+    }
+    if (!ids.length) badRequest("logTypes must contain at least one supported log type");
+    const selected = DYNAMIC_LOG_TYPES.filter((item) => ids.includes(item.id));
+    return {
+      channels: [...new Set(selected.flatMap((item) => item.channels))],
+      sensors: new Set(selected.flatMap((item) => item.sensors || [])),
+    };
+  }
+
+  const channels = String(input.channels || "Application,System,Security,Microsoft-Windows-Sysmon/Operational,Microsoft-Windows-PowerShell/Operational,Microsoft-Windows-WMI-Activity/Operational")
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!channels.length) badRequest("channels must contain at least one Windows Event Log channel");
+  return {
+    channels: [...new Set(channels)],
+    sensors: new Set([
+      ...(input.sysmonEnabled !== false ? ["sysmon"] : []),
+      ...(input.powershellEnabled !== false ? ["powershell"] : []),
+      ...(input.networkEventsEnabled !== false ? ["network"] : []),
+    ]),
+  };
+}
+
+function optionalPolicyText(value, name, maxLength) {
+  if (value === undefined || value === null || String(value).trim() === "") return "";
+  const text = String(value).trim();
+  if (text.length > maxLength) badRequest(`${name} must be at most ${maxLength} characters`);
+  return text;
+}
+
+function boundedPolicyInteger(value, name, min, max, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (!/^\d+$/.test(String(value))) badRequest(`${name} must be an integer between ${min} and ${max}`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    badRequest(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
 }
 
 async function dynamicConfigRequest(path, options = {}) {
