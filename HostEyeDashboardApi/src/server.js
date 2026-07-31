@@ -52,6 +52,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
   ["GET", /^\/api\/alerts$/, alertsList],
+  ["GET", /^\/api\/alerts\/([^/]+)$/, alertDetail],
   ["GET", /^\/api\/logs\/raw\/([^/]+)$/, logsRaw],
 ];
 
@@ -1288,6 +1289,103 @@ async function alertsList(ctx, res) {
   });
 }
 
+
+async function alertDetail(ctx, res) {
+  let alertId;
+  try { alertId = decodeURIComponent(ctx.params[0] || ""); }
+  catch { badRequest("alertId must be URL encoded"); }
+  if (!alertId || alertId.length > 512) badRequest("alertId is invalid");
+  const limit = limitParam(ctx.url, 50, 200);
+
+  if (alertId.startsWith("event:")) {
+    const key = alertId.slice(6);
+    const rows = await queryRows(`
+      SELECT concat('event:', idempotency_key) AS alertId, kafka_timestamp AS detectedAt,
+        ${eventAlertSeverityExpr()} AS severity, ${eventAlertRuleExpr()} AS ruleId,
+        ${eventAlertTitleExpr()} AS title, 'new' AS status,
+        computer, agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, user_id AS userId,
+        source_ip AS sourceIp, destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 2000) AS commandLine, left(script_block_text, 4000) AS scriptBlockText,
+        hashes, left(message, 2000) AS message, left(raw_log, 4000) AS rawLog,
+        left(event_data_json, 4000) AS eventDataJson, 1 AS evidenceCount,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      WHERE idempotency_key = ${sqlString(key)} AND (${eventAlertPredicate()})
+      ORDER BY kafka_timestamp DESC LIMIT 1
+    `);
+    if (!rows.length) return sendJson(res, 404, { message: "Alert not found" });
+    const alert = normalizeAlertDetail(rows[0]);
+    const evidence = await queryRows(`
+      SELECT if(idempotency_key = ${sqlString(key)}, 'primary', 'context') AS relation,
+        kafka_timestamp AS time, idempotency_key AS idempotencyKey, computer,
+        agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, source_ip AS sourceIp,
+        destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 1200) AS commandLine, left(message, 1200) AS message,
+        left(raw_log, 3000) AS rawLog
+      FROM default.windows_system_logs
+      WHERE computer = ${sqlString(alert.computer)}
+        AND kafka_timestamp >= ${sqlClickHouseDate(alert.detectedAt)} - INTERVAL 5 MINUTE
+        AND kafka_timestamp <= ${sqlClickHouseDate(alert.detectedAt)} + INTERVAL 5 MINUTE
+      ORDER BY relation = 'primary' DESC,
+        abs(dateDiff('millisecond', kafka_timestamp, ${sqlClickHouseDate(alert.detectedAt)})) ASC
+      LIMIT ${limit}
+    `);
+    return sendJson(res, 200, { alert, evidence: evidence.map(normalizeAlertEvidence),
+      evidenceTotal: evidence.length, context: { type: "event", windowMinutes: 5 } });
+  }
+
+  if (alertId.startsWith("HE-AUTH-001:")) {
+    const where = alertTimeWhere(ctx.url, ["channel = 'Security'", "event_id = 4625"]);
+    const rows = await queryRows(`
+      SELECT * FROM (
+        SELECT concat('HE-AUTH-001:', hex(cityHash64(concat(computer, '|', toString(windowStart),
+          '|', user_name, '|', source_ip)))) AS alertId,
+          windowStart, windowStart + INTERVAL 5 MINUTE AS windowEnd,
+          min(kafka_timestamp) AS firstSeen, max(kafka_timestamp) AS detectedAt,
+          if(count() >= 20, 'high', 'medium') AS severity, 'HE-AUTH-001' AS ruleId,
+          'Repeated failed logons' AS title, 'new' AS status, computer,
+          anyLast(agent_id) AS agentId, anyLast(host_id) AS hostId, 'Security' AS channel,
+          4625 AS eventId, anyLast(provider_name) AS providerName, anyLast(level) AS level,
+          user_name AS userName, anyLast(user_id) AS userId, source_ip AS sourceIp,
+          concat(toString(count()), ' failed logons within 5 minutes') AS message,
+          count() AS evidenceCount, '' AS idempotencyKey
+        FROM (SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+          FROM default.windows_system_logs ${where.sql})
+        GROUP BY windowStart, computer, user_name, source_ip HAVING evidenceCount >= 5
+      ) WHERE alertId = ${sqlString(alertId)} LIMIT 1
+    `);
+    if (!rows.length) return sendJson(res, 404, { message: "Alert not found" });
+    const alert = normalizeAlertDetail(rows[0]);
+    const evidence = await queryRows(`
+      SELECT 'evidence' AS relation, kafka_timestamp AS time, idempotency_key AS idempotencyKey,
+        computer, agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, source_ip AS sourceIp,
+        destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 1200) AS commandLine, left(message, 1200) AS message,
+        left(raw_log, 3000) AS rawLog
+      FROM default.windows_system_logs WHERE channel = 'Security' AND event_id = 4625
+        AND computer = ${sqlString(alert.computer)} AND user_name = ${sqlString(alert.userName)}
+        AND source_ip = ${sqlString(alert.sourceIp)}
+        AND kafka_timestamp >= ${sqlClickHouseDate(alert.windowStart)}
+        AND kafka_timestamp < ${sqlClickHouseDate(alert.windowEnd)}
+      ORDER BY kafka_timestamp ASC LIMIT ${limit}
+    `);
+    return sendJson(res, 200, { alert, evidence: evidence.map(normalizeAlertEvidence),
+      evidenceTotal: Number(alert.evidenceCount || evidence.length),
+      context: { type: "failed-logon-window", windowMinutes: 5 } });
+  }
+  sendJson(res, 404, { message: "Alert not found" });
+}
+
+function normalizeAlertDetail(row) {
+  return { ...row, eventId: Number(row.eventId || 0), evidenceCount: Number(row.evidenceCount || 0) };
+}
+function normalizeAlertEvidence(row) {
+  return { ...row, eventId: Number(row.eventId || 0) };
+}
+
 function eventAlertPredicate() {
   return `
     (channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id IN (8, 25))
@@ -1768,6 +1866,10 @@ function uintParam(value, name) {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) badRequest(`${name} must be a non-negative integer`);
   return parsed;
+}
+
+function sqlClickHouseDate(value) {
+  return `parseDateTime64BestEffort(${sqlString(value)}, 3)`;
 }
 
 function sqlDate(date) {

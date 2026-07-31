@@ -124,6 +124,67 @@ test("UC-06 reports ClickHouse errors and outages without fabricated alerts", as
   }
 });
 
+
+test("UC-07 returns event alert details with primary and contextual logs", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/alerts/event%3Atamper?" + RANGE);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.alert.alertId, "event:tamper");
+    assert.equal(response.body.alert.severity, "critical");
+    assert.equal(response.body.alert.computer, "HOST-A");
+    assert.equal(response.body.evidence.length, 2);
+    assert.equal(response.body.evidence[0].relation, "primary");
+    assert.equal(response.body.context.windowMinutes, 5);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-07 returns failed-logon alert details and grouped evidence", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/alerts/HE-AUTH-001%3AABC?" + RANGE);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.alert.ruleId, "HE-AUTH-001");
+    assert.equal(response.body.alert.evidenceCount, 7);
+    assert.equal(response.body.evidence.length, 2);
+    assert.equal(response.body.evidenceTotal, 7);
+    assert.equal(response.body.context.type, "failed-logon-window");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-07 returns deterministic not-found responses", async () => {
+  const clickhouse = await startMockClickHouse({ mode: "empty" });
+  const api = await startApi(clickhouse.url);
+  try {
+    assert.equal((await getJson(api.url + "/api/alerts/event%3Amissing?" + RANGE)).status, 404);
+    assert.equal((await getJson(api.url + "/api/alerts/unsupported")).status, 404);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-07 Dashboard exposes an accessible alert detail dialog", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
+  assert.match(html, /id="alertDetailModal"/);
+  assert.match(html, /role="dialog"/);
+  assert.match(app, /openAlertDetail/);
+  assert.match(app, /Related log evidence/);
+  assert.match(app, /data-alert-id/);
+  assert.match(app, /alertDetailRequestId/);
+  assert.match(css, /\.alert-detail-dialog/);
+});
+
 test("UC-06 Dashboard exposes alert totals and a paginated alert table", async () => {
   const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
   const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
@@ -260,6 +321,50 @@ async function startMockClickHouse(options = {}) {
 }
 
 function rowsForQuery(sql) {
+
+  if (sql.includes("left(event_data_json, 4000)") && sql.includes("idempotency_key = 'tamper'")) {
+    return [{
+      alertId: "event:tamper", detectedAt: "2026-07-01 03:00:00.000",
+      severity: "critical", ruleId: "HE-PROC-001", title: "Process tampering detected",
+      status: "new", computer: "HOST-A", agentId: "agent-a", hostId: "host-a",
+      channel: "Microsoft-Windows-Sysmon/Operational", eventId: "25",
+      providerName: "Microsoft-Windows-Sysmon", level: "Critical", userName: "demo",
+      sourceIp: "", destinationIp: "", processPath: "C:\\malware.exe",
+      commandLine: "C:\\malware.exe", message: "Process tampering",
+      rawLog: "<Event />", eventDataJson: "{}", evidenceCount: "1",
+      idempotencyKey: "tamper",
+    }];
+  }
+  if (sql.includes("AS relation") && sql.includes("dateDiff('millisecond'")) {
+    return [
+      { relation: "primary", time: "2026-07-01 03:00:00.000", idempotencyKey: "tamper",
+        computer: "HOST-A", channel: "Microsoft-Windows-Sysmon/Operational",
+        eventId: "25", processPath: "C:\\malware.exe", message: "Process tampering" },
+      { relation: "context", time: "2026-07-01 03:00:01.000", idempotencyKey: "context",
+        computer: "HOST-A", channel: "Security", eventId: "4688", message: "Context event" },
+    ];
+  }
+  if (sql.includes("SELECT * FROM") && sql.includes("WHERE alertId = 'HE-AUTH-001:ABC'")) {
+    return [{
+      alertId: "HE-AUTH-001:ABC", windowStart: "2026-07-01 01:00:00.000",
+      windowEnd: "2026-07-01 01:05:00.000", firstSeen: "2026-07-01 01:00:10.000",
+      detectedAt: "2026-07-01 01:04:00.000", severity: "medium",
+      ruleId: "HE-AUTH-001", title: "Repeated failed logons", status: "new",
+      computer: "HOST-A", agentId: "agent-a", hostId: "host-a", channel: "Security",
+      eventId: "4625", userName: "demo", sourceIp: "10.0.0.10",
+      message: "7 failed logons within 5 minutes", evidenceCount: "7",
+    }];
+  }
+  if (sql.includes("'evidence' AS relation") && sql.includes("event_id = 4625")) {
+    return [
+      { relation: "evidence", time: "2026-07-01 01:00:10.000", computer: "HOST-A",
+        channel: "Security", eventId: "4625", userName: "demo", sourceIp: "10.0.0.10",
+        message: "Failed logon 1" },
+      { relation: "evidence", time: "2026-07-01 01:00:20.000", computer: "HOST-A",
+        channel: "Security", eventId: "4625", userName: "demo", sourceIp: "10.0.0.10",
+        message: "Failed logon 2" },
+    ];
+  }
   if (sql.includes("concat('event:', idempotency_key)")) {
     return [
       {

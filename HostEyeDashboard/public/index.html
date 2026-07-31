@@ -371,6 +371,21 @@
                 <div class="empty-state">No alert data loaded</div>
               </div>
             </article>
+
+            <div id="alertDetailModal" class="alert-detail-backdrop" hidden>
+              <article class="alert-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="alertDetailTitle">
+                <header class="alert-detail-header">
+                  <div>
+                    <span class="detail-eyebrow">Alert investigation</span>
+                    <h3 id="alertDetailTitle">Alert details</h3>
+                  </div>
+                  <button id="alertDetailClose" class="secondary-btn" type="button" aria-label="Close alert details">Close</button>
+                </header>
+                <div id="alertDetailContent" class="alert-detail-content">
+                  <div class="empty-state">Select an alert to inspect its evidence</div>
+                </div>
+              </article>
+            </div>
           </div>
         </section>
 

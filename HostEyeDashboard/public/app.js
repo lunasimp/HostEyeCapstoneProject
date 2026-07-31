@@ -12,6 +12,7 @@ const state = {
   alertLoaded: false,
   alertResult: null,
   alertRequestId: 0,
+  alertDetailRequestId: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -59,6 +60,13 @@ document.addEventListener("DOMContentLoaded", () => {
   el("searchNext")?.addEventListener("click", () => changeSearchPage(1));
   el("alertsPrev")?.addEventListener("click", () => changeAlertPage(-1));
   el("alertsNext")?.addEventListener("click", () => changeAlertPage(1));
+  el("alertDetailClose")?.addEventListener("click", closeAlertDetail);
+  el("alertDetailModal")?.addEventListener("click", (event) => {
+    if (event.target === el("alertDetailModal")) closeAlertDetail();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el("alertDetailModal")?.hidden) closeAlertDetail();
+  });
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.closest(".section-card");
@@ -214,6 +222,7 @@ function renderAlertTable(container, rows) {
       <td title="${escapeAttr(alert.userName)}">${escapeHtml(alert.userName || "-")}</td>
       <td title="${escapeAttr(alert.sourceIp)}">${escapeHtml(alert.sourceIp || "-")}</td>
       <td title="${escapeAttr(alert.message)}">${escapeHtml(alert.message || "-")}</td>
+      <td><button class="secondary-btn alert-view-btn" type="button" data-alert-id="${escapeAttr(alert.alertId)}">View</button></td>
     </tr>
   `).join("");
 
@@ -230,10 +239,88 @@ function renderAlertTable(container, rows) {
           <th>User</th>
           <th>Source IP</th>
           <th>Message</th>
+          <th>Action</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
     </table>
+  `;
+  container.querySelectorAll(".alert-view-btn").forEach((button) => {
+    button.addEventListener("click", () => openAlertDetail(button.dataset.alertId));
+  });
+}
+
+
+async function openAlertDetail(alertId) {
+  const requestId = ++state.alertDetailRequestId;
+  el("alertDetailModal").hidden = false;
+  document.body.classList.add("modal-open");
+  el("alertDetailContent").innerHTML = `<div class="empty-state">Loading alert evidence...</div>`;
+  const params = new URLSearchParams();
+  const range = selectedRange();
+  params.set("from", range.from);
+  params.set("to", range.to);
+  params.set("limit", "100");
+  const host = el("hostFilter")?.value;
+  if (host) params.set("host", host);
+  try {
+    const data = await api(`/api/alerts/${encodeURIComponent(alertId)}?${params.toString()}`);
+    if (requestId !== state.alertDetailRequestId) return;
+    renderAlertDetail(data);
+  } catch (error) {
+    if (requestId !== state.alertDetailRequestId) return;
+    el("alertDetailContent").innerHTML = `<div class="empty-state">${escapeHtml(error.message || "Alert details unavailable")}</div>`;
+  }
+}
+
+function closeAlertDetail() {
+  state.alertDetailRequestId += 1;
+  el("alertDetailModal").hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function renderAlertDetail(data) {
+  const alert = data.alert || {};
+  const evidence = data.evidence || [];
+  const fields = [
+    ["Severity", `<span class="severity-badge severity-${escapeAttr(alert.severity)}">${escapeHtml(String(alert.severity || "unknown").toUpperCase())}</span>`],
+    ["Detected", escapeHtml(formatDate(alert.detectedAt))],
+    ["Host", escapeHtml(alert.computer || "-")],
+    ["Rule", escapeHtml(alert.ruleId || "-")],
+    ["Alert ID", `<code>${escapeHtml(alert.alertId || "-")}</code>`],
+    ["Status", escapeHtml(alert.status || "-")],
+    ["Channel / Event ID", escapeHtml(`${alert.channel || "-"} / ${alert.eventId || "-"}`)],
+    ["Evidence", escapeHtml(formatNumber(data.evidenceTotal ?? alert.evidenceCount))],
+    ["User", escapeHtml(alert.userName || "-")],
+    ["Source IP", escapeHtml(alert.sourceIp || "-")],
+    ["Agent ID", `<code>${escapeHtml(alert.agentId || "-")}</code>`],
+    ["Host ID", `<code>${escapeHtml(alert.hostId || "-")}</code>`],
+  ].map(([label, value]) => `<div class="alert-detail-field"><span>${label}</span><strong>${value}</strong></div>`).join("");
+
+  const evidenceRows = evidence.length ? evidence.map((row) => `
+    <tr>
+      <td>${escapeHtml(formatDate(row.time))}</td>
+      <td><span class="evidence-relation">${escapeHtml(row.relation || "evidence")}</span></td>
+      <td>${escapeHtml(`${row.channel || "-"} / ${row.eventId || "-"}`)}</td>
+      <td>${escapeHtml(row.userName || "-")}</td>
+      <td title="${escapeAttr(row.processPath || row.sourceIp)}">${escapeHtml(row.processPath || row.sourceIp || "-")}</td>
+      <td title="${escapeAttr(row.message)}">${escapeHtml(row.message || row.commandLine || "-")}</td>
+    </tr>
+  `).join("") : `<tr><td colspan="6">No related logs found</td></tr>`;
+
+  const technical = [alert.commandLine, alert.scriptBlockText, alert.rawLog, alert.eventDataJson].filter(Boolean).join("\n\n");
+  el("alertDetailTitle").textContent = alert.title || "Alert details";
+  el("alertDetailContent").innerHTML = `
+    <div class="alert-detail-summary">${fields}</div>
+    <p class="alert-detail-message">${escapeHtml(alert.message || "No alert message")}</p>
+    <article class="panel">
+      <div class="panel-title"><h3>Related log evidence</h3><span>${formatNumber(evidence.length)} displayed</span></div>
+      <div class="table-shell logs">
+        <table><thead><tr><th>Time</th><th>Relation</th><th>Channel / Event</th><th>User</th><th>Process / Source</th><th>Message</th></tr></thead>
+        <tbody>${evidenceRows}</tbody></table>
+      </div>
+    </article>
+    ${technical ? `<details class="alert-detail-technical"><summary>Technical evidence</summary><pre>${escapeHtml(technical)}</pre></details>` : ""}
   `;
 }
 
