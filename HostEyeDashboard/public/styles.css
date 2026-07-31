@@ -1048,3 +1048,56 @@ th.numeric {
     grid-template-columns: 1fr;
   }
 }
+
+.alerts-panel {
+  min-height: 500px;
+}
+
+.severity-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.severity-critical {
+  color: #991b1b;
+  border-color: rgba(153, 27, 27, 0.35);
+  background: #fee2e2;
+}
+
+.severity-high {
+  color: #c2410c;
+  border-color: rgba(194, 65, 12, 0.35);
+  background: #ffedd5;
+}
+
+.severity-medium {
+  color: #a16207;
+  border-color: rgba(161, 98, 7, 0.35);
+  background: #fef3c7;
+}
+
+.severity-low {
+  color: #0369a1;
+  border-color: rgba(3, 105, 161, 0.3);
+  background: #e0f2fe;
+}
+
+.severity-card.critical {
+  border-top: 3px solid #991b1b;
+}
+
+.severity-card.high {
+  border-top: 3px solid #ea580c;
+}
+
+.severity-card.medium {
+  border-top: 3px solid #ca8a04;
+}

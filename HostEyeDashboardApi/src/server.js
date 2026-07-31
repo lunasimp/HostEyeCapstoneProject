@@ -51,6 +51,7 @@ const routes = [
   ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
+  ["GET", /^\/api\/alerts$/, alertsList],
   ["GET", /^\/api\/logs\/raw\/([^/]+)$/, logsRaw],
 ];
 
@@ -1163,6 +1164,192 @@ async function hostsHeatmapCell(ctx, res) {
   });
 }
 
+async function alertsList(ctx, res) {
+  const limit = limitParam(ctx.url, 100, 500);
+  const offset = offsetParam(ctx.url, 100000);
+  const fetchLimit = Math.min(limit + offset, 5000);
+  const eventWhere = alertTimeWhere(ctx.url, [`(${eventAlertPredicate()})`]);
+  const failedWhere = alertTimeWhere(ctx.url, [
+    "channel = 'Security'",
+    "event_id = 4625",
+  ]);
+
+  const [eventRows, eventSummaryRows, failedRows, failedSummaryRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        concat('event:', idempotency_key) AS alertId,
+        kafka_timestamp AS detectedAt,
+        ${eventAlertSeverityExpr()} AS severity,
+        ${eventAlertRuleExpr()} AS ruleId,
+        ${eventAlertTitleExpr()} AS title,
+        'new' AS status,
+        computer,
+        agent_id AS agentId,
+        host_id AS hostId,
+        channel,
+        event_id AS eventId,
+        user_name AS userName,
+        source_ip AS sourceIp,
+        process_path AS processPath,
+        left(message, 500) AS message,
+        1 AS evidenceCount,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      ${eventWhere.sql}
+      ORDER BY detectedAt DESC
+      LIMIT ${fetchLimit}
+    `),
+    queryRows(`
+      SELECT ${eventAlertSeverityExpr()} AS severity, count() AS total
+      FROM default.windows_system_logs
+      ${eventWhere.sql}
+      GROUP BY severity
+    `),
+    queryRows(`
+      SELECT
+        concat(
+          'HE-AUTH-001:',
+          hex(cityHash64(concat(computer, '|', toString(windowStart), '|', user_name, '|', source_ip)))
+        ) AS alertId,
+        max(kafka_timestamp) AS detectedAt,
+        if(count() >= 20, 'high', 'medium') AS severity,
+        'HE-AUTH-001' AS ruleId,
+        'Repeated failed logons' AS title,
+        'new' AS status,
+        computer,
+        anyLast(agent_id) AS agentId,
+        anyLast(host_id) AS hostId,
+        'Security' AS channel,
+        4625 AS eventId,
+        user_name AS userName,
+        source_ip AS sourceIp,
+        '' AS processPath,
+        concat(toString(count()), ' failed logons within 5 minutes') AS message,
+        count() AS evidenceCount,
+        '' AS idempotencyKey
+      FROM
+      (
+        SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+        FROM default.windows_system_logs
+        ${failedWhere.sql}
+      )
+      GROUP BY windowStart, computer, user_name, source_ip
+      HAVING evidenceCount >= 5
+      ORDER BY detectedAt DESC
+      LIMIT ${fetchLimit}
+    `),
+    queryRows(`
+      SELECT severity, count() AS total
+      FROM
+      (
+        SELECT if(count() >= 20, 'high', 'medium') AS severity
+        FROM
+        (
+          SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+          FROM default.windows_system_logs
+          ${failedWhere.sql}
+        )
+        GROUP BY windowStart, computer, user_name, source_ip
+        HAVING count() >= 5
+      )
+      GROUP BY severity
+    `),
+  ]);
+
+  const summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+  for (const row of [...eventSummaryRows, ...failedSummaryRows]) {
+    const severity = String(row.severity || "low").toLowerCase();
+    const count = Number(row.total || 0);
+    if (Object.hasOwn(summary, severity)) summary[severity] += count;
+    summary.total += count;
+  }
+
+  const items = [...eventRows, ...failedRows]
+    .map((row) => ({
+      ...row,
+      eventId: Number(row.eventId || 0),
+      evidenceCount: Number(row.evidenceCount || 0),
+    }))
+    .sort((left, right) => dateValue(right.detectedAt) - dateValue(left.detectedAt))
+    .slice(offset, offset + limit);
+
+  sendJson(res, 200, {
+    items,
+    summary,
+    total: summary.total,
+    limit,
+    offset,
+    hasMore: offset + items.length < summary.total,
+    filters: {
+      host: ctx.url.searchParams.get("host") || "",
+      from: eventWhere.from.toISOString(),
+      to: eventWhere.to.toISOString(),
+    },
+  });
+}
+
+function eventAlertPredicate() {
+  return `
+    (channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id IN (8, 25))
+    OR (channel = 'Security' AND event_id IN (4720, 4726))
+    OR (
+      channel = 'Microsoft-Windows-PowerShell/Operational'
+      AND event_id = 4104
+      AND (
+        positionCaseInsensitive(script_block_text, 'encodedcommand') > 0
+        OR positionCaseInsensitive(script_block_text, 'downloadstring') > 0
+        OR positionCaseInsensitive(script_block_text, 'invoke-expression') > 0
+        OR positionCaseInsensitive(script_block_text, 'frombase64string') > 0
+      )
+    )
+    OR (
+      positionCaseInsensitive(channel, 'Defender') > 0
+      AND level IN ('Critical', 'Error', 'Warning')
+    )
+  `;
+}
+
+function eventAlertSeverityExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'critical',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'high',
+      channel = 'Security' AND event_id = 4726, 'high',
+      channel = 'Security' AND event_id = 4720, 'medium',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'high',
+      level = 'Critical', 'critical',
+      level = 'Error', 'high',
+      'medium'
+    )
+  `;
+}
+
+function eventAlertRuleExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'HE-PROC-001',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'HE-PROC-002',
+      channel = 'Security' AND event_id = 4720, 'HE-ID-001',
+      channel = 'Security' AND event_id = 4726, 'HE-ID-002',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'HE-PS-001',
+      'HE-DEF-001'
+    )
+  `;
+}
+
+function eventAlertTitleExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'Process tampering detected',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'Remote thread creation detected',
+      channel = 'Security' AND event_id = 4720, 'User account created',
+      channel = 'Security' AND event_id = 4726, 'User account deleted',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'Suspicious PowerShell content',
+      'Microsoft Defender detection'
+    )
+  `;
+}
+
 async function logsSearch(ctx, res) {
   const q = optionalString(ctx.url, "q", 200);
   const keywordPredicate = q ? [`(
@@ -1377,6 +1564,20 @@ function heatLevel(value, max) {
   if (ratio >= 0.3) return 3;
   if (ratio >= 0.1) return 2;
   return 1;
+}
+
+function alertTimeWhere(url, extraPredicates = []) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const predicates = [
+    `kafka_timestamp >= ${sqlDate(from)}`,
+    `kafka_timestamp <= ${sqlDate(to)}`,
+    ...extraPredicates,
+  ];
+  const host = url.searchParams.get("host");
+  if (host) predicates.push(`computer = ${sqlString(host)}`);
+  return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
 }
 
 function operationalTimeWhere(url, timestampColumn, extraPredicates = []) {

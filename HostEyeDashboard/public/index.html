@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260731-uc03">
+    <link rel="stylesheet" href="./styles.css?v=20260731-uc06">
   </head>
   <body>
     <div class="app-shell">
@@ -16,6 +16,7 @@
         <nav class="nav-list" aria-label="Dashboard sections">
           <a href="#overview" class="nav-item active">Overview</a>
           <a href="#hosts" class="nav-item">Hosts</a>
+          <a href="#alerts" class="nav-item">Alerts</a>
           <a href="#search" class="nav-item">Log Search</a>
           <a href="#process" class="nav-item">Process</a>
           <a href="#network" class="nav-item">Network & DNS</a>
@@ -341,6 +342,38 @@
             </div>
           </div>
         </section>
+        <section id="alerts" class="dashboard-section section-card is-open page-view" data-page="alerts" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>Security Alerts</strong>
+              <small>rule-based detections generated from endpoint telemetry</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Total alerts</span><strong id="alertTotal">-</strong></article>
+              <article class="kpi severity-card critical"><span>Critical</span><strong id="alertCritical">-</strong></article>
+              <article class="kpi severity-card high"><span>High</span><strong id="alertHigh">-</strong></article>
+              <article class="kpi severity-card medium"><span>Medium</span><strong id="alertMedium">-</strong></article>
+            </div>
+            <article class="panel alerts-panel">
+              <div class="panel-title">
+                <h3>Detected alerts</h3>
+                <div class="panel-actions">
+                  <span id="alertsMeta">Open this page to load alerts</span>
+                  <button id="alertsPrev" class="secondary-btn" type="button" disabled>Previous</button>
+                  <button id="alertsNext" class="secondary-btn" type="button" disabled>Next</button>
+                </div>
+              </div>
+              <div id="alertsTable" class="table-shell logs">
+                <div class="empty-state">No alert data loaded</div>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section id="search" class="dashboard-section section-card is-open page-view" data-page="search" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">10</span>
@@ -474,6 +507,6 @@
         </section>
       </main>
     </div>
-    <script src="./app.js?v=20260731-uc03"></script>
+    <script src="./app.js?v=20260731-uc06"></script>
   </body>
 </html>

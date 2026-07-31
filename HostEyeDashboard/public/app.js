@@ -8,6 +8,10 @@ const state = {
   searchLoaded: false,
   searchResult: null,
   searchRequestId: 0,
+  alertOffset: 0,
+  alertLoaded: false,
+  alertResult: null,
+  alertRequestId: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -25,6 +29,7 @@ const pages = {
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
   "agent-errors": { title: "Agent Chunk Errors", eyebrow: "[ AGENT DIAGNOSTICS ]" },
   search: { title: "Log Search", eyebrow: "[ TELEMETRY SEARCH ]" },
+  alerts: { title: "Security Alerts", eyebrow: "[ DETECTION ]" },
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -52,6 +57,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("searchPrev")?.addEventListener("click", () => changeSearchPage(-1));
   el("searchNext")?.addEventListener("click", () => changeSearchPage(1));
+  el("alertsPrev")?.addEventListener("click", () => changeAlertPage(-1));
+  el("alertsNext")?.addEventListener("click", () => changeAlertPage(1));
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.closest(".section-card");
@@ -84,6 +91,9 @@ function showPage(page) {
   el("pageEyebrow").textContent = meta.eyebrow;
   if (selectedPage === "search" && !state.searchLoaded) {
     loadLogSearch({ reset: true }).catch((error) => console.error(error));
+  }
+  if (selectedPage === "alerts" && !state.alertLoaded) {
+    loadAlerts({ reset: true }).catch((error) => console.error(error));
   }
 }
 
@@ -142,6 +152,96 @@ function resetKpis() {
     const node = el(id);
     if (node) node.textContent = "-";
   });
+}
+
+async function loadAlerts(options = {}) {
+  const requestId = ++state.alertRequestId;
+  if (options.reset) state.alertOffset = 0;
+  const params = new URLSearchParams();
+  const range = selectedRange();
+  params.set("from", range.from);
+  params.set("to", range.to);
+  params.set("limit", "100");
+  params.set("offset", String(state.alertOffset || 0));
+  const host = el("hostFilter")?.value;
+  if (host) params.set("host", host);
+
+  el("alertsMeta").textContent = "Loading alerts...";
+  try {
+    const data = await api(`/api/alerts?${params.toString()}`);
+    if (requestId !== state.alertRequestId) return;
+    state.alertLoaded = true;
+    state.alertResult = data;
+    renderAlerts(data);
+  } catch (error) {
+    if (requestId !== state.alertRequestId) return;
+    el("alertsMeta").textContent = "Alerts unavailable";
+    el("alertsTable").innerHTML = `<div class="empty-state">${escapeHtml(error.message || "Alerts unavailable")}</div>`;
+    throw error;
+  }
+}
+
+function renderAlerts(data) {
+  const summary = data.summary || {};
+  el("alertTotal").textContent = formatNumber(summary.total);
+  el("alertCritical").textContent = formatNumber(summary.critical);
+  el("alertHigh").textContent = formatNumber(summary.high);
+  el("alertMedium").textContent = formatNumber(summary.medium);
+
+  const rows = data.items || [];
+  const start = data.total > 0 ? data.offset + 1 : 0;
+  const end = data.offset + rows.length;
+  el("alertsMeta").textContent = `Showing ${formatNumber(start)}-${formatNumber(end)} of ${formatNumber(data.total)} alerts`;
+  el("alertsPrev").disabled = data.offset <= 0;
+  el("alertsNext").disabled = !data.hasMore;
+  renderAlertTable(el("alertsTable"), rows);
+}
+
+function renderAlertTable(container, rows) {
+  if (!rows.length) {
+    container.innerHTML = `<div class="empty-state">No alerts in the selected range</div>`;
+    return;
+  }
+
+  const body = rows.map((alert) => `
+    <tr>
+      <td title="${escapeAttr(alert.detectedAt)}">${escapeHtml(formatDate(alert.detectedAt))}</td>
+      <td><span class="severity-badge severity-${escapeAttr(alert.severity)}">${escapeHtml(String(alert.severity || "unknown").toUpperCase())}</span></td>
+      <td title="${escapeAttr(alert.ruleId)}">${escapeHtml(alert.ruleId || "-")}</td>
+      <td title="${escapeAttr(alert.title)}">${escapeHtml(alert.title || "-")}</td>
+      <td title="${escapeAttr(alert.computer)}">${escapeHtml(alert.computer || "-")}</td>
+      <td class="numeric">${formatNumber(alert.evidenceCount)}</td>
+      <td title="${escapeAttr(alert.userName)}">${escapeHtml(alert.userName || "-")}</td>
+      <td title="${escapeAttr(alert.sourceIp)}">${escapeHtml(alert.sourceIp || "-")}</td>
+      <td title="${escapeAttr(alert.message)}">${escapeHtml(alert.message || "-")}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Detected</th>
+          <th>Severity</th>
+          <th>Rule</th>
+          <th>Alert</th>
+          <th>Host</th>
+          <th class="numeric">Evidence</th>
+          <th>User</th>
+          <th>Source IP</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
+function changeAlertPage(direction) {
+  const result = state.alertResult || {};
+  const limit = Number(result.limit || 100);
+  state.alertOffset = Math.max(0, Number(result.offset || 0) + direction * limit);
+  loadAlerts().catch((error) => console.error(error));
 }
 
 async function loadLogSearch(options = {}) {
