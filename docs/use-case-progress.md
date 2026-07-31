@@ -11,6 +11,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-07 - View alert details | Implemented | 9 alert API/UI tests passed; full default suite 27 passed / 2 optional integration skips; real ClickHouse event and failed-logon detail flows passed; desktop/mobile browser QA passed | `uc/UC-07-alert-detail` |
 | UC-08 - Search and filter alerts | Implemented | 12 alert API/UI tests passed; 2 real ClickHouse alert integration flows passed; full default suite 30 passed / 3 optional integration skips; desktop/mobile browser QA passed | `uc/UC-08-alert-filter` |
 | UC-09 - Configure Dynamic Logs | Implemented | 5 API/control-plane/UI tests passed; full default Dashboard API suite 35 passed / 3 optional integration skips; live control-plane read and desktop/mobile browser QA passed | `uc/UC-09-dynamic-log-config` |
+| UC-10 - Select log data fields | Implemented | 7 Dynamic Config API/UI tests passed; full Dashboard API suite 37 passed / 3 optional integration skips; Rust source parse and desktop/mobile browser QA passed | `uc/UC-10-log-field-selection` |
 
 ## UC-02 verified behavior
 
@@ -71,3 +72,15 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Keeps granular field selection in UC-10, preview in UC-11, and target assignment/application in UC-12.
 - Replaces the legacy SOC gateway default with the current HostEye telemetry endpoint.
 - Passed desktop/mobile browser QA with no horizontal overflow or console errors; validation QA did not mutate the live control-plane state.
+
+
+## UC-10 verified behavior
+
+- Publishes 11 selectable normalized telemetry fields matching the current Vector and ClickHouse schema.
+- Maps user-facing hostname and username choices to the canonical endpoint fields `computer` and `user_name`.
+- Keeps timestamp, hostname, Event ID, and channel selected as required routing fields while retaining agent/host identity, raw evidence, and idempotency data internally.
+- Rejects empty, non-array, unknown, duplicate, and missing-required selections before contacting the Dynamic Config control plane.
+- Persists the selected canonical fields in `config.vector.selected_fields`, renders them into `vector-dynamic.toml`, and validates them on the endpoint client with backward-compatible defaults for older policies.
+- Keeps the policy disabled with rollout off; preview remains UC-11 and assignment/application remains UC-12.
+- Passed desktop/mobile browser QA with optional-field selection, four locked required fields, no horizontal overflow, correct responsive columns, and no console errors.
+- Rust syntax parsing passed; Cargo tests remain unavailable because `ed25519-dalek` is not present in the offline dependency cache.

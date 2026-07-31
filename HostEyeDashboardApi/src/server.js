@@ -28,6 +28,20 @@ const DYNAMIC_LOG_TYPES = Object.freeze([
   { id: "defender", name: "Microsoft Defender", description: "Microsoft Defender detections and operational health events.", channels: ["Microsoft-Windows-Windows Defender/Operational"] },
 ]);
 
+const DYNAMIC_LOG_FIELDS = Object.freeze([
+  { id: "timestamp", field: "timestamp", name: "Timestamp", description: "Event occurrence time.", required: true },
+  { id: "hostname", field: "computer", name: "Hostname", description: "Normalized Windows computer name.", required: true },
+  { id: "username", field: "user_name", name: "Username", description: "Account associated with the event." },
+  { id: "process_name", field: "process_name", name: "Process name", description: "Executable name associated with process activity." },
+  { id: "process_id", field: "process_id", name: "Process ID", description: "Numeric process identifier." },
+  { id: "source_ip", field: "source_ip", name: "Source IP", description: "Source network address when available." },
+  { id: "destination_ip", field: "destination_ip", name: "Destination IP", description: "Destination network address when available." },
+  { id: "destination_port", field: "destination_port", name: "Port", description: "Destination network port when available." },
+  { id: "event_id", field: "event_id", name: "Event ID", description: "Windows or Sysmon event identifier.", required: true },
+  { id: "channel", field: "channel", name: "Channel", description: "Source Windows Event Log channel.", required: true },
+  { id: "message", field: "message", name: "Message", description: "Human-readable event message." },
+]);
+
 const routes = [
   ["GET", /^\/api\/health$/, health],
   ["GET", /^\/api\/dashboard\/overview\/summary$/, overviewSummary],
@@ -915,7 +929,9 @@ async function dynamicConfigCatalog(_ctx, res) {
   sendJson(res, 200, {
     items: DYNAMIC_LOG_TYPES.map((item) => ({ ...item })),
     defaults: ["windows-application", "windows-system", "windows-security", "sysmon", "powershell", "wmi"],
-    fieldSelectionUseCase: "UC-10",
+    fields: DYNAMIC_LOG_FIELDS.map((item) => ({ ...item })),
+    fieldDefaults: DYNAMIC_LOG_FIELDS.map((item) => item.id),
+    retainedInternalFields: ["agent_id", "host_id", "raw_log", "idempotency_key"],
   });
 }
 
@@ -955,6 +971,7 @@ function buildDynamicPolicy(input) {
       : { type: "default" };
 
   const selection = dynamicLogSelection(input);
+  const selectedFields = dynamicFieldSelection(input);
   return {
     policy_id: policyId,
     version,
@@ -971,6 +988,7 @@ function buildDynamicPolicy(input) {
       vector: {
         enabled: input.vectorEnabled !== false,
         channels: selection.channels,
+        selected_fields: selectedFields,
         batch_max_events: clampNumber(input.batchMaxEvents, 1, 50000, 1000),
         batch_timeout_secs: clampNumber(input.batchTimeoutSecs, 1, 3600, 10),
       },
@@ -991,6 +1009,37 @@ function buildDynamicPolicy(input) {
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+function dynamicFieldSelection(input) {
+  if (!Object.hasOwn(input, "selectedFields")) {
+    return DYNAMIC_LOG_FIELDS.map((item) => item.field);
+  }
+  if (!Array.isArray(input.selectedFields)) {
+    badRequest("selectedFields must be an array of supported field identifiers");
+  }
+  if (!input.selectedFields.length) {
+    badRequest("selectedFields must contain at least one supported field");
+  }
+
+  const ids = [];
+  for (const raw of input.selectedFields) {
+    const id = String(raw || "").trim().toLowerCase();
+    if (!id) badRequest("selectedFields must not contain empty identifiers");
+    if (ids.includes(id)) badRequest(`selectedFields must not contain duplicates: ${id}`);
+    if (!DYNAMIC_LOG_FIELDS.some((item) => item.id === id)) {
+      badRequest(`unsupported selected field: ${id}`);
+    }
+    ids.push(id);
+  }
+
+  const missingRequired = DYNAMIC_LOG_FIELDS
+    .filter((item) => item.required && !ids.includes(item.id))
+    .map((item) => item.id);
+  if (missingRequired.length) {
+    badRequest(`selectedFields must include required fields: ${missingRequired.join(", ")}`);
+  }
+  return ids.map((id) => DYNAMIC_LOG_FIELDS.find((item) => item.id === id).field);
 }
 
 function dynamicLogSelection(input) {

@@ -759,7 +759,12 @@ async function loadDynamicConfig() {
     el("dynamicGroupCount").textContent = formatNumber(totals.groups);
     el("dynamicConfigStatus").textContent = summary.status === "ok" ? "control plane online" : (summary.message || "control plane offline");
 
-    renderDynamicLogCatalog(catalog.items || [], catalog.defaults || []);
+    renderDynamicLogCatalog(
+      catalog.items || [],
+      catalog.defaults || [],
+      catalog.fields || [],
+      catalog.fieldDefaults || [],
+    );
     renderDynamicPolicies(policies.items || summary.policies || []);
     renderDynamicAgents(agents.items || summary.agents || []);
     renderDynamicGroups(summary.groups || []);
@@ -771,6 +776,7 @@ async function loadDynamicConfig() {
     el("dynamicGroupCount").textContent = "-";
     el("dynamicConfigStatus").textContent = error.message || "control plane offline";
     el("dynamicLogTypeOptions").innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
+    el("dynamicFieldOptions").innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
     ["dynamicPoliciesTable", "dynamicAgentsTable", "dynamicGroupsTable", "dynamicAuditTable"].forEach((id) => {
       el(id).innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
     });
@@ -778,7 +784,7 @@ async function loadDynamicConfig() {
 }
 
 
-function renderDynamicLogCatalog(items, defaults) {
+function renderDynamicLogCatalog(items, defaults, fields, fieldDefaults) {
   const container = el("dynamicLogTypeOptions");
   if (!items.length) {
     container.innerHTML = `<div class="empty-state">No supported log types reported</div>`;
@@ -791,12 +797,25 @@ function renderDynamicLogCatalog(items, defaults) {
       <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "")}</small></span>
     </label>
   `).join("");
+
+  const fieldContainer = el("dynamicFieldOptions");
+  const selectedFields = new Set(fieldDefaults || []);
+  fieldContainer.innerHTML = fields.map((item) => `
+    <label class="dynamic-field-option ${item.required ? "is-required" : ""}">
+      <input type="checkbox" name="dynamicField" value="${escapeAttr(item.id)}"
+        ${selectedFields.has(item.id) ? "checked" : ""} ${item.required ? "disabled" : ""}>
+      <span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.description || "")}</small></span>
+      ${item.required ? '<b>Required</b>' : ""}
+    </label>
+  `).join("");
 }
 
 async function saveDynamicLogDraft() {
   if (state.dynamicSaveInFlight) return;
   const name = el("dynamicPolicyName")?.value.trim();
   const logTypes = Array.from(document.querySelectorAll('input[name="dynamicLogType"]:checked'))
+    .map((input) => input.value);
+  const selectedFields = Array.from(document.querySelectorAll('input[name="dynamicField"]:checked'))
     .map((input) => input.value);
   if (!name) {
     el("dynamicDraftStatus").textContent = "Configuration name is required";
@@ -807,6 +826,10 @@ async function saveDynamicLogDraft() {
     el("dynamicDraftStatus").textContent = "Select at least one log type";
     return;
   }
+  if (!selectedFields.length) {
+    el("dynamicDraftStatus").textContent = "Select at least one data field";
+    return;
+  }
 
   state.dynamicSaveInFlight = true;
   el("dynamicDraftSave").disabled = true;
@@ -814,7 +837,7 @@ async function saveDynamicLogDraft() {
   try {
     const saved = await api("/api/dashboard/dynamic-config/policies", {
       method: "POST",
-      body: { name, logTypes, draft: true, targetType: "default" },
+      body: { name, logTypes, selectedFields, draft: true, targetType: "default" },
     });
     el("dynamicDraftStatus").textContent = `Draft ${saved.policy_id || name} saved`;
     el("dynamicLogForm").reset();
@@ -837,6 +860,7 @@ function renderDynamicPolicies(rows) {
     enabled: policy.enabled === false ? "draft" : "enabled",
     rollout: policy.rollout?.enabled === false ? "off" : String(policy.rollout?.percent ?? 100) + "%",
     channels: countChannels(policy.config?.vector?.channels),
+    fields: countChannels(policy.config?.vector?.selected_fields),
     updatedAt: policy.updated_at || policy.updatedAt || "",
   }));
   renderTable(el("dynamicPoliciesTable"), normalized, [
@@ -847,6 +871,7 @@ function renderDynamicPolicies(rows) {
     ["State", "enabled"],
     ["Rollout", "rollout"],
     ["Channels", "channels", "numeric"],
+    ["Fields", "fields", "numeric"],
     ["Updated", "updatedAt", "date"],
   ]);
 }

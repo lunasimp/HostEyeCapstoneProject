@@ -1,8 +1,8 @@
 ﻿use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use hosteye_dynamic_config::{
-    agent_identity_proof, demo_ed25519_public_key_hex, parse_public_key_ring, render_vector_dynamic_toml, verify_envelope,
-    verify_envelope_ed25519, ConfigAck, SignedConfigEnvelope, DEFAULT_ED25519_KEY_ID, ED25519_ALGORITHM,
+    agent_identity_proof, demo_ed25519_public_key_hex, parse_public_key_ring, render_vector_dynamic_toml,
+    validate_selected_fields, verify_envelope, verify_envelope_ed25519, ConfigAck, SignedConfigEnvelope, DEFAULT_ED25519_KEY_ID, ED25519_ALGORITHM,
     HMAC_SHA256_ALGORITHM,
 };
 use reqwest::StatusCode;
@@ -214,6 +214,7 @@ fn validate_desired_config(envelope: &SignedConfigEnvelope) -> Result<()> {
     if config.vector.enabled && config.vector.channels.is_empty() {
         return Err(anyhow!("vector.channels must not be empty when vector is enabled"));
     }
+    validate_selected_fields(&config.vector.selected_fields)?;
     if config.vector.batch_max_events == 0 || config.vector.batch_max_events > 50_000 {
         return Err(anyhow!("vector.batch_max_events is outside allowed range 1..50000"));
     }

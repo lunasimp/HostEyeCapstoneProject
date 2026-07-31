@@ -18,7 +18,15 @@ test("UC-09 exposes the supported Dynamic Logs catalog", async () => {
     assert.ok(response.body.defaults.includes("windows-security"));
     assert.ok(response.body.items.some((item) => item.id === "sysmon"
       && item.channels.includes("Microsoft-Windows-Sysmon/Operational")));
-    assert.equal(response.body.fieldSelectionUseCase, "UC-10");
+    assert.equal(response.body.fields.length, 11);
+    assert.ok(response.body.fields.some((item) => item.id === "hostname"
+      && item.field === "computer" && item.required === true));
+    assert.ok(response.body.fields.some((item) => item.id === "username"
+      && item.field === "user_name"));
+    assert.deepEqual(response.body.fields.filter((item) => item.required).map((item) => item.id),
+      ["timestamp", "hostname", "event_id", "channel"]);
+    assert.deepEqual(response.body.retainedInternalFields,
+      ["agent_id", "host_id", "raw_log", "idempotency_key"]);
     assert.equal(controlPlane.requests.length, 0);
   } finally {
     await api.close();
@@ -45,6 +53,10 @@ test("UC-09 saves selected log types as a disabled Dynamic Config draft", async 
       "Security",
       "Microsoft-Windows-Sysmon/Operational",
       "Microsoft-Windows-PowerShell/Operational",
+    ]);
+    assert.deepEqual(response.body.config.vector.selected_fields, [
+      "timestamp", "computer", "user_name", "process_name", "process_id", "source_ip",
+      "destination_ip", "destination_port", "event_id", "channel", "message",
     ]);
     assert.deepEqual(response.body.config.sensors, {
       sysmon_enabled: true,
@@ -87,6 +99,55 @@ test("UC-09 rejects invalid draft definitions before contacting the control plan
   }
 });
 
+test("UC-10 maps selected UI fields to a validated Dynamic Config contract", async () => {
+  const controlPlane = await startMockDynamicConfig();
+  const api = await startApi(controlPlane.url);
+  try {
+    const response = await postJson(api.url + "/api/dashboard/dynamic-config/policies", {
+      name: "Minimal investigation fields",
+      logTypes: ["windows-security", "sysmon"],
+      selectedFields: ["timestamp", "hostname", "event_id", "channel", "username", "destination_port", "message"],
+      draft: true,
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.config.vector.selected_fields, [
+      "timestamp", "computer", "event_id", "channel", "user_name", "destination_port", "message",
+    ]);
+    assert.equal(response.body.enabled, false);
+    assert.equal(response.body.rollout.enabled, false);
+    assert.deepEqual(controlPlane.requests[0].body.config.vector.selected_fields,
+      response.body.config.vector.selected_fields);
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
+test("UC-10 rejects invalid or unsafe field selections before contacting the control plane", async () => {
+  const controlPlane = await startMockDynamicConfig();
+  const api = await startApi(controlPlane.url);
+  try {
+    const base = { name: "Invalid fields", logTypes: ["sysmon"], draft: true };
+    const cases = [
+      [{ ...base, selectedFields: "timestamp" }, "selectedFields must be an array"],
+      [{ ...base, selectedFields: [] }, "at least one supported field"],
+      [{ ...base, selectedFields: ["timestamp", "hostname", "event_id", "channel", "unknown"] }, "unsupported selected field"],
+      [{ ...base, selectedFields: ["timestamp", "hostname", "event_id", "channel", "message", "message"] }, "must not contain duplicates"],
+      [{ ...base, selectedFields: ["timestamp", "hostname", "event_id"] }, "must include required fields: channel"],
+      [{ ...base, selectedFields: ["timestamp", "", "hostname", "event_id", "channel"] }, "must not contain empty identifiers"],
+    ];
+    for (const [body, message] of cases) {
+      const response = await postJson(api.url + "/api/dashboard/dynamic-config/policies", body);
+      assert.equal(response.status, 400);
+      assert.match(response.body.message, new RegExp(message));
+    }
+    assert.equal(controlPlane.requests.length, 0);
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
 test("UC-09 reports Dynamic Config outages without claiming a draft was saved", async () => {
   const port = await freePort();
   const api = await startApi("http://127.0.0.1:" + port);
@@ -105,15 +166,18 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
   const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
   const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
-  for (const id of ["dynamicLogForm", "dynamicPolicyName", "dynamicLogTypeOptions",
+  for (const id of ["dynamicLogForm", "dynamicPolicyName", "dynamicLogTypeOptions", "dynamicFieldOptions",
     "dynamicDraftStatus", "dynamicDraftSave"]) {
     assert.ok(html.includes('id="' + id + '"'));
   }
   assert.match(app, /dynamic-config\/catalog/);
   assert.match(app, /saveDynamicLogDraft/);
-  assert.match(app, /logTypes, draft: true/);
+  assert.match(app, /logTypes, selectedFields, draft: true/);
+  assert.match(app, /name="dynamicField"/);
+  assert.ok(app.includes('${item.required ? "disabled" : ""}'));
   assert.match(app, /dynamicSaveInFlight/);
   assert.match(css, /\.dynamic-log-options/);
+  assert.ok(css.includes(".dynamic-field-options"));
   assert.match(css, /grid-template-columns: 1fr/);
 });
 

@@ -326,7 +326,7 @@
               <div class="panel-title">
                 <div>
                   <h3>Create Dynamic Logs draft</h3>
-                  <span>Select endpoint log types; granular data-field selection is configured separately.</span>
+                  <span>Select endpoint log types and the normalized fields exported by the policy.</span>
                 </div>
                 <span id="dynamicDraftStatus">Choose at least one log type</span>
               </div>
@@ -339,6 +339,13 @@
                   <legend>Log types</legend>
                   <div id="dynamicLogTypeOptions" class="dynamic-log-options">
                     <div class="empty-state">Loading supported log types...</div>
+                  </div>
+                </fieldset>
+                <fieldset class="dynamic-log-fieldset">
+                  <legend>Data fields</legend>
+                  <p class="dynamic-field-note">Required routing fields remain selected. Host identity and raw evidence are retained internally.</p>
+                  <div id="dynamicFieldOptions" class="dynamic-field-options">
+                    <div class="empty-state">Loading supported data fields...</div>
                   </div>
                 </fieldset>
                 <div class="dynamic-builder-actions">
