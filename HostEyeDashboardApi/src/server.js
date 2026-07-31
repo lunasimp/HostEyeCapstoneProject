@@ -25,6 +25,12 @@ const routes = [
   ["GET", /^\/api\/dashboard\/overview\/top-hosts$/, overviewTopHosts],
   ["GET", /^\/api\/dashboard\/overview\/event-types$/, overviewEventTypes],
   ["GET", /^\/api\/dashboard\/overview\/security-timeline$/, overviewSecurityTimeline],
+  ["GET", /^\/api\/dashboard\/hosts\/summary$/, hostsSummary],
+  ["GET", /^\/api\/dashboard\/agents\/registered$/, registeredAgents],
+  ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
+  ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
+  ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
+  ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -181,6 +187,393 @@ async function overviewSecurityTimeline(ctx, res) {
     LIMIT ${limit}
   `);
   sendJson(res, 200, { items: rows });
+}
+
+async function hostsSummary(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const logsWhere = timeWhere(ctx.url, ["computer != ''"]);
+  const metricsWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
+  const host = ctx.url.searchParams.get("host");
+  const agentPredicates = host ? `WHERE computer = ${sqlString(host)}` : "";
+
+  const [logRows, agentRows, metricRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        computer,
+        count() AS totalEvents,
+        min(kafka_timestamp) AS firstSeen,
+        max(kafka_timestamp) AS lastLogSeen,
+        uniqExact(channel) AS channels,
+        uniqExact(event_id) AS eventIds
+      FROM default.windows_system_logs
+      ${logsWhere.sql}
+      GROUP BY computer
+      ORDER BY lastLogSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        agent_id AS agentId,
+        host_id AS hostId,
+        computer,
+        min(first_seen) AS agentFirstSeen,
+        max(last_seen) AS agentLastSeen,
+        argMax(shipper_version, last_seen) AS shipperVersion,
+        argMax(status, last_seen) AS agentStatus,
+        argMax(enrollment_status, last_seen) AS enrollmentStatus,
+        argMax(last_chunk_id, last_seen) AS registeredLastChunk,
+        argMax(last_ack_status, last_seen) AS registeredLastAckStatus
+      FROM default.registered_agents
+      ${agentPredicates}
+      GROUP BY agent_id, host_id, computer
+      ORDER BY agentLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, metric_timestamp) AS metricAgentId,
+        argMax(host_id, metric_timestamp) AS metricHostId,
+        argMax(shipper_version, metric_timestamp) AS metricShipperVersion,
+        max(metric_timestamp) AS lastMetricSeen,
+        argMax(chunk_id, metric_timestamp) AS metricLastChunk,
+        argMax(spool_file, metric_timestamp) AS spoolFile,
+        argMax(ack_status, metric_timestamp) AS metricLastAckStatus,
+        argMax(status_code, metric_timestamp) AS statusCode,
+        argMax(success, metric_timestamp) AS success,
+        argMax(data_loss, metric_timestamp) AS dataLoss,
+        argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+        argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+        count() AS uploadSamples
+      FROM default.shipper_runtime_metrics
+      ${metricsWhere.sql}
+      GROUP BY computer
+      ORDER BY lastMetricSeen DESC
+      LIMIT ${limit}
+    `),
+  ]);
+
+  const byHost = new Map();
+  const ensureHost = (row) => {
+    const computer = String(row.computer || row.hostId || row.agentId || "").trim();
+    if (!computer) return null;
+    if (!byHost.has(computer)) {
+      byHost.set(computer, {
+        computer,
+        agentId: "",
+        hostId: "",
+        shipperVersion: "",
+        agentStatus: "",
+        enrollmentStatus: "",
+        agentFirstSeen: null,
+        agentLastSeen: null,
+        firstSeen: null,
+        lastLogSeen: null,
+        lastMetricSeen: null,
+        lastSeen: null,
+        lastChunk: "",
+        lastAckStatus: "",
+        statusCode: 0,
+        success: null,
+        dataLoss: false,
+        spoolDepthBytes: 0,
+        pendingFileCount: 0,
+        uploadSamples: 0,
+        totalEvents: 0,
+        channels: 0,
+        eventIds: 0,
+      });
+    }
+    return byHost.get(computer);
+  };
+
+  for (const row of logRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    Object.assign(item, {
+      firstSeen: row.firstSeen || null,
+      lastLogSeen: row.lastLogSeen || null,
+      totalEvents: Number(row.totalEvents || 0),
+      channels: Number(row.channels || 0),
+      eventIds: Number(row.eventIds || 0),
+    });
+  }
+
+  for (const row of agentRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    if (!item.agentLastSeen || dateValue(row.agentLastSeen) >= dateValue(item.agentLastSeen)) {
+      Object.assign(item, {
+        agentId: row.agentId || item.agentId,
+        hostId: row.hostId || item.hostId,
+        shipperVersion: row.shipperVersion || item.shipperVersion,
+        agentStatus: row.agentStatus || "",
+        enrollmentStatus: row.enrollmentStatus || "",
+        agentFirstSeen: row.agentFirstSeen || null,
+        agentLastSeen: row.agentLastSeen || null,
+        lastChunk: row.registeredLastChunk || item.lastChunk,
+        lastAckStatus: row.registeredLastAckStatus || item.lastAckStatus,
+      });
+    }
+  }
+
+  for (const row of metricRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: item.agentId || row.metricAgentId || "",
+      hostId: item.hostId || row.metricHostId || "",
+      shipperVersion: item.shipperVersion || row.metricShipperVersion || "",
+      lastMetricSeen: row.lastMetricSeen || null,
+      lastChunk: row.metricLastChunk || row.spoolFile || item.lastChunk,
+      lastAckStatus: row.metricLastAckStatus || item.lastAckStatus,
+      statusCode: Number(row.statusCode || 0),
+      success: row.success === undefined || row.success === null ? null : Number(row.success) === 1,
+      dataLoss: Number(row.dataLoss || 0) === 1,
+      spoolDepthBytes: Number(row.spoolDepthBytes || 0),
+      pendingFileCount: Number(row.pendingFileCount || 0),
+      uploadSamples: Number(row.uploadSamples || 0),
+    });
+  }
+
+  const hosts = [...byHost.values()]
+    .map((item) => {
+      item.lastSeen = latestDate(item.agentLastSeen, item.lastLogSeen, item.lastMetricSeen);
+      const activity = hostStatus(item.lastSeen);
+      const collection = collectionStatus(item, activity.level);
+      return {
+        ...item,
+        statusLevel: activity.level,
+        statusLabel: activity.label,
+        ageSeconds: activity.ageSeconds,
+        collectionLevel: collection.level,
+        collectionLabel: collection.label,
+      };
+    })
+    .sort((left, right) => dateValue(right.lastSeen) - dateValue(left.lastSeen))
+    .slice(0, limit);
+
+  const groups = ["online", "active", "delayed", "stale", "unknown"].map((level) => ({
+    level,
+    label: hostLevelLabel(level),
+    count: hosts.filter((item) => item.statusLevel === level).length,
+    hosts: hosts.filter((item) => item.statusLevel === level).slice(0, 20),
+  }));
+  const collectionGroups = ["ok", "delayed", "failed", "stale", "disabled", "unknown"].map((level) => ({
+    level,
+    label: collectionLevelLabel(level),
+    count: hosts.filter((item) => item.collectionLevel === level).length,
+  }));
+
+  sendJson(res, 200, { hosts, groups, collectionGroups });
+}
+
+async function registeredAgents(ctx, res) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const rows = await queryRows(`
+    SELECT
+      agent_id AS agentId,
+      host_id AS hostId,
+      computer,
+      argMax(cert_serial, last_seen) AS certSerial,
+      min(first_seen) AS firstSeen,
+      max(last_seen) AS lastSeen,
+      argMaxIf(schema_version, last_seen, schema_version != 'legacy') AS schemaVersion,
+      argMax(source_platform, last_seen) AS sourcePlatform,
+      argMax(shipper_version, last_seen) AS shipperVersion,
+      argMax(status, last_seen) AS status,
+      argMax(enrollment_status, last_seen) AS enrollmentStatus,
+      argMax(last_chunk_id, last_seen) AS lastChunkId,
+      argMax(last_ack_status, last_seen) AS lastAckStatus,
+      argMax(last_event_count, last_seen) AS lastEventCount,
+      argMax(normal_jitter_window_ms, last_seen) AS normalJitterWindowMs,
+      argMax(recovery_jitter_window_ms, last_seen) AS recoveryJitterWindowMs,
+      argMax(max_events, last_seen) AS maxEvents,
+      argMax(max_bytes, last_seen) AS maxBytes
+    FROM default.registered_agents
+    GROUP BY agent_id, host_id, computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => {
+      const status = hostStatus(row.lastSeen);
+      return {
+        ...row,
+        statusLevel: status.level,
+        statusLabel: status.label,
+        ageSeconds: status.ageSeconds,
+      };
+    }),
+  });
+}
+
+async function jitterSummary(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const rows = await queryRows(`
+    SELECT
+      count() AS samples,
+      uniqExact(computer) AS hosts,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const worstRows = await queryRows(`
+    SELECT
+      computer,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY p95JitterMs DESC, spoolDepthBytes DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    worstHost: worstRows[0] || null,
+  });
+}
+
+async function jitterHosts(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      anyLast(agent_id) AS agentId,
+      count() AS samples,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      min(planned_jitter_ms) AS minJitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(batch_size) AS maxBatchSize,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(pending_file_count) AS pendingFileCount,
+      max(send_duration_ms) AS maxSendDurationMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: jitterStatus(row),
+      statusLabel: jitterStatusLabel(jitterStatus(row)),
+    })),
+  });
+}
+
+async function chunksSummary(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const rows = await queryRows(`
+    SELECT
+      count() AS chunks,
+      uniqExact(computer) AS hosts,
+      sum(batch_size) AS eventsSent,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      sum(if(success = 1, 1, 0)) AS okChunks,
+      sum(if(success = 0, 1, 0)) AS failedChunks,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const latestRows = await queryRows(`
+    SELECT
+      computer,
+      argMax(spool_file, metric_timestamp) AS spoolFile,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT 1
+  `);
+
+  sendJson(res, 200, {
+    ...(rows[0] || {}),
+    latestChunk: latestRows[0] || null,
+  });
+}
+
+async function chunksHosts(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      argMax(agent_id, metric_timestamp) AS agentId,
+      argMax(spool_file, metric_timestamp) AS lastChunk,
+      argMax(line_offset, metric_timestamp) AS lineOffset,
+      argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
+      argMax(byte_offset, metric_timestamp) AS byteOffset,
+      argMax(next_byte_offset, metric_timestamp) AS nextByteOffset,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(batch_bytes, metric_timestamp) AS batchBytes,
+      argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(data_loss, metric_timestamp) AS dataLoss,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      argMax(backoff_delay_ms, metric_timestamp) AS backoffDelayMs,
+      argMax(next_retry_at, metric_timestamp) AS nextRetryAt,
+      argMax(lease_id, metric_timestamp) AS leaseId,
+      argMax(lease_expires_at, metric_timestamp) AS leaseExpiresAt,
+      argMax(lease_ttl_seconds, metric_timestamp) AS leaseTtlSeconds,
+      argMax(max_batch_mb, metric_timestamp) AS maxBatchMb,
+      argMax(max_upload_rate_kbps, metric_timestamp) AS maxUploadRateKbps,
+      argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+      count() AS chunks,
+      sum(batch_size) AS eventsSent,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  sendJson(res, 200, {
+    items: rows.map((row) => ({
+      ...row,
+      statusLevel: chunkStatus(row),
+      statusLabel: chunkStatusLabel(chunkStatus(row)),
+    })),
+  });
 }
 
 async function processTopProcesses(ctx, res) {
@@ -947,6 +1340,126 @@ function heatLevel(value, max) {
   if (ratio >= 0.3) return 3;
   if (ratio >= 0.1) return 2;
   return 1;
+}
+
+function operationalTimeWhere(url, timestampColumn, extraPredicates = []) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const predicates = [
+    `${timestampColumn} >= ${sqlDate(from)}`,
+    `${timestampColumn} <= ${sqlDate(to)}`,
+    ...extraPredicates,
+  ];
+  const host = url.searchParams.get("host");
+  if (host) predicates.push(`computer = ${sqlString(host)}`);
+  return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
+}
+
+function dateValue(value) {
+  if (!value) return 0;
+  const normalized = String(value).includes("T") ? String(value) : String(value).replace(" ", "T");
+  const parsed = new Date(normalized).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function latestDate(...values) {
+  let latest = null;
+  let latestValue = 0;
+  for (const value of values) {
+    const timestamp = dateValue(value);
+    if (timestamp >= latestValue && timestamp > 0) {
+      latest = value;
+      latestValue = timestamp;
+    }
+  }
+  return latest;
+}
+
+function hostStatus(lastSeen) {
+  const timestamp = dateValue(lastSeen);
+  if (!timestamp) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (ageSeconds <= 5 * 60) return { level: "online", label: hostLevelLabel("online"), ageSeconds };
+  if (ageSeconds <= 60 * 60) return { level: "active", label: hostLevelLabel("active"), ageSeconds };
+  if (ageSeconds <= 24 * 60 * 60) return { level: "delayed", label: hostLevelLabel("delayed"), ageSeconds };
+  return { level: "stale", label: hostLevelLabel("stale"), ageSeconds };
+}
+
+function hostLevelLabel(level) {
+  if (level === "online") return "Online <= 5m";
+  if (level === "active") return "Active <= 1h";
+  if (level === "delayed") return "Delayed <= 24h";
+  if (level === "stale") return "Stale > 24h";
+  return "Unknown";
+}
+
+function collectionStatus(row, activityLevel) {
+  const lifecycle = `${row.agentStatus || ""} ${row.enrollmentStatus || ""}`.toLowerCase();
+  if (/disabled|revoked|decommissioned/.test(lifecycle)) {
+    return { level: "disabled", label: collectionLevelLabel("disabled") };
+  }
+
+  const ack = String(row.lastAckStatus || "").toLowerCase();
+  const statusCode = Number(row.statusCode || 0);
+  const uploadFailed = statusCode >= 400
+    || (statusCode > 0 && row.success === false)
+    || row.dataLoss === true
+    || /fail|reject|denied|invalid/.test(ack);
+  if (uploadFailed) return { level: "failed", label: collectionLevelLabel("failed") };
+
+  if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) {
+    return { level: "delayed", label: collectionLevelLabel("delayed") };
+  }
+
+  const hasCollectionSignal = Boolean(row.lastLogSeen || row.lastMetricSeen || row.lastChunk || Number(row.totalEvents || 0));
+  if (!hasCollectionSignal) return { level: "unknown", label: collectionLevelLabel("unknown") };
+  if (activityLevel === "stale") return { level: "stale", label: collectionLevelLabel("stale") };
+  if (activityLevel === "unknown") return { level: "unknown", label: collectionLevelLabel("unknown") };
+  return { level: "ok", label: collectionLevelLabel("ok") };
+}
+
+function collectionLevelLabel(level) {
+  if (level === "ok") return "Healthy";
+  if (level === "delayed") return "Backlogged";
+  if (level === "failed") return "Upload failed";
+  if (level === "stale") return "No recent activity";
+  if (level === "disabled") return "Disabled";
+  return "No collection data";
+}
+
+function jitterStatus(row) {
+  const age = hostStatus(row.lastSeen).ageSeconds;
+  if (age === null || age > 30 * 60) return "silent";
+  const p95 = Number(row.p95JitterMs || 0);
+  const spool = Number(row.spoolDepthBytes || 0);
+  const pending = Number(row.pendingFileCount || 0);
+  if (spool >= 1024 * 1024 * 1024 || pending >= 20) return "delayed";
+  if (p95 >= 45000) return "bursty";
+  return "stable";
+}
+
+function jitterStatusLabel(level) {
+  if (level === "stable") return "Stable";
+  if (level === "bursty") return "Bursty";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
+}
+
+function chunkStatus(row) {
+  const statusCode = Number(row.statusCode || 0);
+  if (statusCode >= 400 || (statusCode > 0 && Number(row.success || 0) !== 1)) return "failed";
+  if (Number(row.dataLoss || 0) === 1) return "failed";
+  if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) return "delayed";
+  if (!row.lastSeen) return "silent";
+  return "ok";
+}
+
+function chunkStatusLabel(level) {
+  if (level === "ok") return "OK";
+  if (level === "failed") return "Failed";
+  if (level === "delayed") return "Delayed";
+  return "Silent";
 }
 
 function dateParam(url, name, fallback) {

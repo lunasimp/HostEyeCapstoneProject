@@ -1,0 +1,330 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const minute = 60 * 1000;
+const now = Date.now();
+const time = (ageMs) => new Date(now - ageMs).toISOString();
+
+test("UC-02 merges enrollment, log and shipper telemetry into collection status", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+
+  try {
+    const response = await getJson(api.url + "/api/dashboard/hosts/summary?limit=50");
+    assert.equal(response.status, 200);
+
+    const byHost = new Map(response.body.hosts.map((host) => [host.computer, host]));
+    assert.equal(byHost.get("HOST-ONLINE").statusLevel, "online");
+    assert.equal(byHost.get("HOST-ACTIVE").statusLevel, "active");
+    assert.equal(byHost.get("HOST-DELAYED").statusLevel, "delayed");
+    assert.equal(byHost.get("HOST-STALE").statusLevel, "stale");
+    assert.equal(byHost.get("HOST-UNKNOWN").statusLevel, "unknown");
+
+    assert.equal(byHost.get("HOST-ONLINE").collectionLevel, "ok");
+    assert.equal(byHost.get("HOST-FAILED").collectionLevel, "failed");
+    assert.equal(byHost.get("HOST-BACKLOG").collectionLevel, "delayed");
+    assert.equal(byHost.get("HOST-STALE").collectionLevel, "stale");
+    assert.equal(byHost.get("HOST-DISABLED").collectionLevel, "disabled");
+    assert.equal(byHost.get("HOST-REGISTERED").collectionLevel, "unknown");
+
+    const registeredOnly = byHost.get("HOST-REGISTERED");
+    assert.equal(registeredOnly.agentId, "agent-registered");
+    assert.equal(registeredOnly.totalEvents, 0);
+    assert.equal(registeredOnly.lastLogSeen, null);
+
+    const online = byHost.get("HOST-ONLINE");
+    assert.equal(online.lastAckStatus, "durable_commit");
+    assert.equal(online.statusCode, 202);
+    assert.equal(online.pendingFileCount, 2);
+    assert.equal(online.totalEvents, 120);
+
+    assert.equal(response.body.groups.find((group) => group.level === "unknown").count, 1);
+    assert.equal(response.body.collectionGroups.find((group) => group.level === "failed").count, 1);
+
+    const registered = await getJson(api.url + "/api/dashboard/agents/registered?limit=20");
+    assert.equal(registered.status, 200);
+    assert.equal(registered.body.items[0].agentId, "agent-online");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-02 exposes jitter and chunk health without fabricated fallback data", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+
+  try {
+    const [jitterSummary, jitterHosts, chunksSummary, chunkHosts] = await Promise.all([
+      getJson(api.url + "/api/dashboard/jitter/summary"),
+      getJson(api.url + "/api/dashboard/jitter/hosts?limit=100"),
+      getJson(api.url + "/api/dashboard/chunks/summary"),
+      getJson(api.url + "/api/dashboard/chunks/hosts?limit=100"),
+    ]);
+
+    assert.equal(jitterSummary.status, 200);
+    assert.equal(jitterSummary.body.hosts, "3");
+    assert.equal(jitterSummary.body.worstHost.computer, "HOST-BACKLOG");
+    assert.equal(jitterHosts.status, 200);
+    assert.equal(jitterHosts.body.items[0].statusLevel, "delayed");
+
+    assert.equal(chunksSummary.status, 200);
+    assert.equal(chunksSummary.body.failedChunks, "1");
+    assert.equal(chunksSummary.body.latestChunk.computer, "HOST-ONLINE");
+    assert.equal(chunkHosts.status, 200);
+    assert.equal(chunkHosts.body.items.find((item) => item.computer === "HOST-FAILED").statusLevel, "failed");
+    assert.equal(chunkHosts.body.items.find((item) => item.computer === "HOST-BACKLOG").statusLevel, "delayed");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-02 empty database responses are deterministic", async () => {
+  const clickhouse = await startMockClickHouse({ mode: "empty" });
+  const api = await startApi(clickhouse.url);
+
+  try {
+    const hosts = await getJson(api.url + "/api/dashboard/hosts/summary");
+    assert.equal(hosts.status, 200);
+    assert.deepEqual(hosts.body.hosts, []);
+    assert.ok(hosts.body.groups.every((group) => group.count === 0));
+    assert.ok(hosts.body.collectionGroups.every((group) => group.count === 0));
+
+    const jitter = await getJson(api.url + "/api/dashboard/jitter/hosts");
+    const chunks = await getJson(api.url + "/api/dashboard/chunks/hosts");
+    assert.deepEqual(jitter.body, { items: [] });
+    assert.deepEqual(chunks.body, { items: [] });
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-02 rejects invalid operational filters before ClickHouse queries", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+
+  try {
+    const before = clickhouse.queries.length;
+    const cases = [
+      ["/api/dashboard/hosts/summary?limit=5x", "limit must be a positive integer"],
+      ["/api/dashboard/hosts/summary?from=not-a-date", "from must be a valid date"],
+      ["/api/dashboard/chunks/hosts?from=2026-07-03T00:00:00Z&to=2026-07-02T00:00:00Z", "from must be earlier"],
+    ];
+    for (const [path, message] of cases) {
+      const response = await getJson(api.url + path);
+      assert.equal(response.status, 400);
+      assert.match(response.body.message, new RegExp(message));
+    }
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-02 reports ClickHouse failures and outages explicitly", async () => {
+  const clickhouse = await startMockClickHouse({ mode: "error" });
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/hosts/summary");
+    assert.equal(response.status, 502);
+    assert.equal(response.body.message, "ClickHouse query failed");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+
+  const unreachablePort = await freePort();
+  const outageApi = await startApi("http://127.0.0.1:" + unreachablePort);
+  try {
+    const response = await getJson(outageApi.url + "/api/dashboard/chunks/hosts");
+    assert.equal(response.status, 503);
+    assert.equal(response.body.message, "ClickHouse is not reachable");
+  } finally {
+    await outageApi.close();
+  }
+});
+
+test("UC-02 UI presents operational collection columns and uses live endpoints", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
+
+  assert.match(app, /\/api\/dashboard\/hosts\/summary/);
+  assert.match(app, /Collection health/);
+  assert.match(app, /Last log/);
+  assert.match(app, /Last upload/);
+  assert.match(app, /ACK \/ HTTP/);
+  assert.match(app, /Spool/);
+  assert.match(app, /Pending/);
+  assert.doesNotMatch(app, /renderDemoDashboard/);
+  assert.match(css, /\.status-disabled/);
+});
+
+async function startMockClickHouse(options = {}) {
+  const state = { mode: options.mode || "data", queries: [] };
+  const server = http.createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    state.queries.push(body);
+
+    if (state.mode === "error") {
+      res.writeHead(500, { "content-type": "text/plain" });
+      res.end("mock query failure");
+      return;
+    }
+
+    const rows = state.mode === "empty" ? rowsForEmptyQuery(body) : rowsForQuery(body);
+    res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+    res.end(rows.map((row) => JSON.stringify(row)).join("\n") + (rows.length ? "\n" : ""));
+  });
+
+  await listen(server);
+  return {
+    url: "http://127.0.0.1:" + server.address().port,
+    queries: state.queries,
+    close: () => closeServer(server),
+  };
+}
+
+function rowsForEmptyQuery(sql) {
+  if (sql.includes("avg(planned_jitter_ms) AS avgJitterMs") && !sql.includes("GROUP BY computer")) {
+    return [{ samples: "0", hosts: "0", avgJitterMs: "0", p95JitterMs: "0", maxJitterMs: "0" }];
+  }
+  if (sql.includes("sum(if(success = 1")) {
+    return [{ chunks: "0", hosts: "0", eventsSent: "0", failedChunks: "0" }];
+  }
+  return [];
+}
+
+function rowsForQuery(sql) {
+  if (sql.includes("max(kafka_timestamp) AS lastLogSeen")) {
+    return [
+      { computer: "HOST-ONLINE", totalEvents: "120", firstSeen: time(2 * 60 * minute), lastLogSeen: time(minute), channels: "4", eventIds: "18" },
+      { computer: "HOST-ACTIVE", totalEvents: "60", firstSeen: time(4 * 60 * minute), lastLogSeen: time(30 * minute), channels: "3", eventIds: "12" },
+      { computer: "HOST-DELAYED", totalEvents: "20", firstSeen: time(8 * 60 * minute), lastLogSeen: time(2 * 60 * minute), channels: "2", eventIds: "8" },
+      { computer: "HOST-STALE", totalEvents: "8", firstSeen: time(4 * 24 * 60 * minute), lastLogSeen: time(2 * 24 * 60 * minute), channels: "1", eventIds: "4" },
+    ];
+  }
+
+  if (sql.includes("agentFirstSeen")) {
+    return [
+      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", agentFirstSeen: time(24 * 60 * minute), agentLastSeen: time(minute), shipperVersion: "1.2.0", agentStatus: "active", enrollmentStatus: "enrolled", registeredLastChunk: "chunk-online", registeredLastAckStatus: "durable_commit" },
+      { computer: "HOST-REGISTERED", agentId: "agent-registered", hostId: "host-registered", agentFirstSeen: time(20 * minute), agentLastSeen: time(2 * minute), shipperVersion: "1.2.0", agentStatus: "active", enrollmentStatus: "enrolled" },
+      { computer: "HOST-DISABLED", agentId: "agent-disabled", hostId: "host-disabled", agentFirstSeen: time(60 * minute), agentLastSeen: time(2 * minute), shipperVersion: "1.1.0", agentStatus: "disabled", enrollmentStatus: "revoked" },
+      { computer: "HOST-UNKNOWN", agentId: "agent-unknown", hostId: "host-unknown", agentFirstSeen: null, agentLastSeen: null, shipperVersion: "1.0.0", agentStatus: "active", enrollmentStatus: "enrolled" },
+    ];
+  }
+
+  if (sql.includes("metricAgentId")) {
+    return [
+      { computer: "HOST-ONLINE", metricAgentId: "agent-online", metricHostId: "host-online", metricShipperVersion: "1.2.0", lastMetricSeen: time(minute), metricLastChunk: "chunk-online", metricLastAckStatus: "durable_commit", statusCode: "202", success: "1", dataLoss: "0", spoolDepthBytes: "4096", pendingFileCount: "2", uploadSamples: "10" },
+      { computer: "HOST-FAILED", metricAgentId: "agent-failed", metricHostId: "host-failed", metricShipperVersion: "1.2.0", lastMetricSeen: time(2 * minute), metricLastChunk: "chunk-failed", metricLastAckStatus: "rejected", statusCode: "500", success: "0", dataLoss: "0", spoolDepthBytes: "1000", pendingFileCount: "1", uploadSamples: "3" },
+      { computer: "HOST-BACKLOG", metricAgentId: "agent-backlog", metricHostId: "host-backlog", metricShipperVersion: "1.2.0", lastMetricSeen: time(3 * minute), metricLastChunk: "chunk-backlog", metricLastAckStatus: "retrying", statusCode: "0", success: "0", dataLoss: "0", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), pendingFileCount: "25", uploadSamples: "6" },
+    ];
+  }
+
+  if (sql.includes("argMax(cert_serial")) {
+    return [{ agentId: "agent-online", hostId: "host-online", computer: "HOST-ONLINE", certSerial: "abc", firstSeen: time(24 * 60 * minute), lastSeen: time(minute), schemaVersion: "1", sourcePlatform: "windows", shipperVersion: "1.2.0", status: "active", enrollmentStatus: "enrolled" }];
+  }
+
+  if (sql.includes("avg(planned_jitter_ms) AS avgJitterMs") && !sql.includes("GROUP BY computer")) {
+    return [{ samples: "20", hosts: "3", avgJitterMs: "12000", p95JitterMs: "44000", maxJitterMs: "60000", avgBatchSize: "200", maxSpoolDepthBytes: String(2 * 1024 * 1024 * 1024), lastSeen: time(minute) }];
+  }
+  if (sql.includes("ORDER BY p95JitterMs DESC")) {
+    return [{ computer: "HOST-BACKLOG", p95JitterMs: "55000", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), lastSeen: time(3 * minute) }];
+  }
+  if (sql.includes("min(planned_jitter_ms)")) {
+    return [
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", samples: "6", avgJitterMs: "30000", minJitterMs: "1000", maxJitterMs: "60000", p95JitterMs: "55000", avgBatchSize: "100", maxBatchSize: "200", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), pendingFileCount: "25", lastSeen: time(3 * minute) },
+      { computer: "HOST-ONLINE", agentId: "agent-online", samples: "10", avgJitterMs: "5000", minJitterMs: "1000", maxJitterMs: "8000", p95JitterMs: "7000", avgBatchSize: "120", maxBatchSize: "180", spoolDepthBytes: "4096", pendingFileCount: "2", lastSeen: time(minute) },
+    ];
+  }
+
+  if (sql.includes("sum(if(success = 1")) {
+    return [{ chunks: "19", hosts: "3", eventsSent: "2100", avgBatchSize: "110", maxSpoolDepthBytes: String(2 * 1024 * 1024 * 1024), okChunks: "18", failedChunks: "1", lastSeen: time(minute) }];
+  }
+  if (sql.includes("argMax(spool_file, metric_timestamp) AS spoolFile") && sql.includes("LIMIT 1")) {
+    return [{ computer: "HOST-ONLINE", spoolFile: "chunk-online.zst", statusCode: "202", success: "1", batchSize: "120", spoolDepthBytes: "4096", plannedJitterMs: "5000", lastSeen: time(minute) }];
+  }
+  if (sql.includes("argMax(line_offset")) {
+    return [
+      { computer: "HOST-ONLINE", agentId: "agent-online", lastChunk: "chunk-online.zst", statusCode: "202", success: "1", dataLoss: "0", batchSize: "120", spoolDepthBytes: "4096", pendingFileCount: "2", chunks: "10", eventsSent: "1200", lastSeen: time(minute) },
+      { computer: "HOST-FAILED", agentId: "agent-failed", lastChunk: "chunk-failed.zst", statusCode: "500", success: "0", dataLoss: "0", batchSize: "80", spoolDepthBytes: "1000", pendingFileCount: "1", chunks: "3", eventsSent: "240", lastSeen: time(2 * minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", lastChunk: "chunk-backlog.zst", statusCode: "0", success: "0", dataLoss: "0", batchSize: "100", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), pendingFileCount: "25", chunks: "6", eventsSent: "600", lastSeen: time(3 * minute) },
+    ];
+  }
+  return [];
+}
+
+async function startApi(clickhouseUrl) {
+  const port = await freePort();
+  const child = spawn(process.execPath, ["src/server.js"], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), CLICKHOUSE_URL: clickhouseUrl, NODE_ENV: "test" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let output = "";
+  child.stdout.on("data", (chunk) => { output += chunk; });
+  child.stderr.on("data", (chunk) => { output += chunk; });
+  await waitUntilReady("http://127.0.0.1:" + port, child, () => output);
+
+  return {
+    url: "http://127.0.0.1:" + port,
+    close: async () => {
+      if (child.exitCode === null) child.kill();
+      await Promise.race([
+        new Promise((resolveExit) => child.once("exit", resolveExit)),
+        new Promise((resolveTimeout) => setTimeout(resolveTimeout, 2000)),
+      ]);
+    },
+  };
+}
+
+async function waitUntilReady(baseUrl, child, output) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error("Dashboard API exited early: " + output());
+    try {
+      const response = await fetch(baseUrl + "/not-found");
+      if (response.status === 404) return;
+    } catch {
+      // Retry until the child binds the port.
+    }
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  }
+  throw new Error("Dashboard API did not start: " + output());
+}
+
+async function getJson(url) {
+  const response = await fetch(url);
+  const body = await response.text();
+  return { status: response.status, body: body ? JSON.parse(body) : null };
+}
+
+async function freePort() {
+  const server = http.createServer();
+  await listen(server);
+  const port = server.address().port;
+  await closeServer(server);
+  return port;
+}
+
+function listen(server) {
+  return new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolveClose) => server.close(resolveClose));
+}

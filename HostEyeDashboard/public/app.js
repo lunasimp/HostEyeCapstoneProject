@@ -182,29 +182,39 @@ function renderHostTable(container, rows) {
     return;
   }
 
-  const body = rows.map((host) => `
-    <tr>
-      <td title="${escapeAttr(host.computer)}">${escapeHtml(host.computer || "(empty)")}</td>
-      <td><span class="status-badge status-${escapeAttr(host.statusLevel)}">${escapeHtml(host.statusLabel)}</span></td>
-      <td title="${escapeAttr(host.lastSeen)}">${escapeHtml(formatDate(host.lastSeen))}</td>
-      <td class="numeric">${formatAge(host.ageSeconds)}</td>
-      <td class="numeric">${formatNumber(host.totalEvents)}</td>
-      <td class="numeric">${formatNumber(host.channels)}</td>
-      <td class="numeric">${formatNumber(host.eventIds)}</td>
-    </tr>
-  `).join("");
+  const body = rows.map((host) => {
+    const ackHttp = [host.lastAckStatus || "-", Number(host.statusCode || 0) || "-"].join(" / ");
+    const agent = host.agentId || host.hostId || "-";
+    return `
+      <tr>
+        <td title="${escapeAttr(host.computer)}">${escapeHtml(host.computer || "(empty)")}</td>
+        <td title="${escapeAttr(host.shipperVersion || "")}">${escapeHtml(agent)}</td>
+        <td><span class="status-badge status-${escapeAttr(host.statusLevel)}">${escapeHtml(host.statusLabel)}</span></td>
+        <td><span class="status-badge status-${escapeAttr(host.collectionLevel)}">${escapeHtml(host.collectionLabel)}</span></td>
+        <td title="${escapeAttr(host.lastLogSeen)}">${escapeHtml(formatDate(host.lastLogSeen))}</td>
+        <td title="${escapeAttr(host.lastMetricSeen)}">${escapeHtml(formatDate(host.lastMetricSeen))}</td>
+        <td title="${escapeAttr(ackHttp)}">${escapeHtml(ackHttp)}</td>
+        <td class="numeric">${formatBytes(host.spoolDepthBytes)}</td>
+        <td class="numeric">${formatNumber(host.pendingFileCount)}</td>
+        <td class="numeric">${formatNumber(host.totalEvents)}</td>
+      </tr>
+    `;
+  }).join("");
 
   container.innerHTML = `
     <table>
       <thead>
         <tr>
           <th>Host</th>
-          <th>Level</th>
-          <th>Last seen</th>
-          <th class="numeric">Age</th>
+          <th>Agent</th>
+          <th>Activity</th>
+          <th>Collection health</th>
+          <th>Last log</th>
+          <th>Last upload</th>
+          <th>ACK / HTTP</th>
+          <th class="numeric">Spool</th>
+          <th class="numeric">Pending</th>
           <th class="numeric">Events</th>
-          <th class="numeric">Channels</th>
-          <th class="numeric">Event IDs</th>
         </tr>
       </thead>
       <tbody>${body}</tbody>
