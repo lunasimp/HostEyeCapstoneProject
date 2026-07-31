@@ -358,6 +358,49 @@
               <article class="kpi severity-card high"><span>High</span><strong id="alertHigh">-</strong></article>
               <article class="kpi severity-card medium"><span>Medium</span><strong id="alertMedium">-</strong></article>
             </div>
+            <article class="panel alert-filters-panel">
+              <form id="alertFilterForm" class="search-grid alert-filter-grid">
+                <label>
+                  <span>Keyword</span>
+                  <input id="alertKeyword" type="search" maxlength="200" placeholder="rule, message, user, IP...">
+                </label>
+                <label>
+                  <span>Severity</span>
+                  <select id="alertSeverity">
+                    <option value="">All severities</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select id="alertStatus">
+                    <option value="">All statuses</option>
+                    <option value="new">New</option>
+                    <option value="acknowledged">Acknowledged</option>
+                    <option value="resolved">Resolved</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Host</span>
+                  <input id="alertHost" type="text" maxlength="255" placeholder="WIN-ENDPOINT-01">
+                </label>
+                <label>
+                  <span>From</span>
+                  <input id="alertFrom" type="datetime-local">
+                </label>
+                <label>
+                  <span>To</span>
+                  <input id="alertTo" type="datetime-local">
+                </label>
+                <div class="search-actions">
+                  <button class="refresh-btn" type="submit">Apply</button>
+                  <button id="alertReset" class="secondary-btn" type="button">Reset</button>
+                </div>
+              </form>
+            </article>
             <article class="panel alerts-panel">
               <div class="panel-title">
                 <h3>Detected alerts</h3>

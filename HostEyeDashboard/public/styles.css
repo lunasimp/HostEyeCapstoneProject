@@ -1049,6 +1049,27 @@ th.numeric {
   }
 }
 
+.alert-filters-panel {
+  margin-bottom: 16px;
+}
+
+.alert-filter-grid {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  padding: 14px;
+}
+
+@media (max-width: 980px) {
+  .alert-filter-grid {
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .alert-filter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .alerts-panel {
   min-height: 500px;
 }

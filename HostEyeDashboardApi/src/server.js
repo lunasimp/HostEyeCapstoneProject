@@ -1169,11 +1169,21 @@ async function alertsList(ctx, res) {
   const limit = limitParam(ctx.url, 100, 500);
   const offset = offsetParam(ctx.url, 100000);
   const fetchLimit = Math.min(limit + offset, 5000);
-  const eventWhere = alertTimeWhere(ctx.url, [`(${eventAlertPredicate()})`]);
-  const failedWhere = alertTimeWhere(ctx.url, [
-    "channel = 'Security'",
-    "event_id = 4625",
-  ]);
+  const filters = alertListFilters(ctx.url);
+  const eventPredicates = [`(${eventAlertPredicate()})`];
+  const failedPredicates = ["channel = 'Security'", "event_id = 4625"];
+  if (filters.severity) eventPredicates.push(`(${eventAlertSeverityExpr()}) = ${sqlString(filters.severity)}`);
+  if (filters.status && filters.status !== "new") {
+    eventPredicates.push("0");
+    failedPredicates.push("0");
+  }
+  if (filters.q) {
+    eventPredicates.push(alertEventKeywordPredicate(filters.q));
+    failedPredicates.push(alertFailedLogonKeywordPredicate(filters.q));
+  }
+  const failedSeverityHaving = alertFailedLogonSeverityHaving(filters.severity);
+  const eventWhere = alertTimeWhere(ctx.url, eventPredicates);
+  const failedWhere = alertTimeWhere(ctx.url, failedPredicates);
 
   const [eventRows, eventSummaryRows, failedRows, failedSummaryRows] = await Promise.all([
     queryRows(`
@@ -1235,7 +1245,7 @@ async function alertsList(ctx, res) {
         ${failedWhere.sql}
       )
       GROUP BY windowStart, computer, user_name, source_ip
-      HAVING evidenceCount >= 5
+      HAVING evidenceCount >= 5${failedSeverityHaving}
       ORDER BY detectedAt DESC
       LIMIT ${fetchLimit}
     `),
@@ -1251,7 +1261,7 @@ async function alertsList(ctx, res) {
           ${failedWhere.sql}
         )
         GROUP BY windowStart, computer, user_name, source_ip
-        HAVING count() >= 5
+        HAVING count() >= 5${failedSeverityHaving}
       )
       GROUP BY severity
     `),
@@ -1282,7 +1292,10 @@ async function alertsList(ctx, res) {
     offset,
     hasMore: offset + items.length < summary.total,
     filters: {
-      host: ctx.url.searchParams.get("host") || "",
+      q: filters.q || "",
+      severity: filters.severity || "",
+      status: filters.status || "",
+      host: filters.host || "",
       from: eventWhere.from.toISOString(),
       to: eventWhere.to.toISOString(),
     },
@@ -1446,6 +1459,43 @@ function eventAlertTitleExpr() {
       'Microsoft Defender detection'
     )
   `;
+}
+
+
+function alertListFilters(url) {
+  return {
+    q: optionalString(url, "q", 200),
+    host: optionalString(url, "host", 255),
+    severity: optionalEnum(url, "severity", ["critical", "high", "medium", "low"]),
+    status: optionalEnum(url, "status", ["new", "acknowledged", "resolved"]),
+  };
+}
+
+function alertEventKeywordPredicate(q) {
+  const value = sqlString(q);
+  return `(
+    positionCaseInsensitive(${eventAlertRuleExpr()}, ${value}) > 0
+    OR positionCaseInsensitive(${eventAlertTitleExpr()}, ${value}) > 0
+    OR positionCaseInsensitive(computer, ${value}) > 0
+    OR positionCaseInsensitive(user_name, ${value}) > 0
+    OR positionCaseInsensitive(source_ip, ${value}) > 0
+    OR positionCaseInsensitive(process_path, ${value}) > 0
+    OR positionCaseInsensitive(message, ${value}) > 0
+  )`;
+}
+
+function alertFailedLogonKeywordPredicate(q) {
+  return `positionCaseInsensitive(concat(
+    computer, ' ', user_name, ' ', source_ip,
+    ' HE-AUTH-001 Repeated failed logons failed logons within 5 minutes'
+  ), ${sqlString(q)}) > 0`;
+}
+
+function alertFailedLogonSeverityHaving(severity) {
+  if (severity === "high") return " AND count() >= 20";
+  if (severity === "medium") return " AND count() < 20";
+  if (severity === "critical" || severity === "low") return " AND 0";
+  return "";
 }
 
 async function logsSearch(ctx, res) {
@@ -1673,7 +1723,7 @@ function alertTimeWhere(url, extraPredicates = []) {
     `kafka_timestamp <= ${sqlDate(to)}`,
     ...extraPredicates,
   ];
-  const host = url.searchParams.get("host");
+  const host = optionalString(url, "host", 255);
   if (host) predicates.push(`computer = ${sqlString(host)}`);
   return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
 }
@@ -1832,6 +1882,15 @@ function optionalString(url, name, maxLength) {
   if (raw === null || !raw.trim()) return null;
   const value = raw.trim();
   if (value.length > maxLength) badRequest(`${name} must be at most ${maxLength} characters`);
+  return value;
+}
+
+
+function optionalEnum(url, name, values) {
+  const raw = optionalString(url, name, 64);
+  if (!raw) return null;
+  const value = raw.toLowerCase();
+  if (!values.includes(value)) badRequest(`${name} must be one of: ${values.join(", ")}`);
   return value;
 }
 

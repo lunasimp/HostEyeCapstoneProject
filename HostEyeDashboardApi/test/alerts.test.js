@@ -88,6 +88,9 @@ test("UC-06 rejects invalid list parameters before querying ClickHouse", async (
       ["/api/alerts?from=2026-07-03T00:00:00Z&to=2026-07-02T00:00:00Z", "from must be earlier"],
       ["/api/alerts?limit=0", "limit must be a positive integer"],
       ["/api/alerts?offset=-1", "offset must be a non-negative integer"],
+      ["/api/alerts?severity=urgent", "severity must be one of"],
+      ["/api/alerts?status=closed", "status must be one of"],
+      ["/api/alerts?q=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "q must be at most 200 characters"],
     ];
     for (const [path, message] of cases) {
       const response = await getJson(api.url + path);
@@ -95,6 +98,65 @@ test("UC-06 rejects invalid list parameters before querying ClickHouse", async (
       assert.match(response.body.message, new RegExp(message));
     }
     assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-08 filters alerts consistently by keyword, severity, status, host, and time", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const params = new URLSearchParams({
+      from: "2026-07-01T00:00:00.000Z",
+      to: "2026-07-02T00:00:00.000Z",
+      q: "needle-ps",
+      severity: "HIGH",
+      status: "NEW",
+      host: "HOST-A",
+    });
+    const response = await getJson(api.url + "/api/alerts?" + params);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 1);
+    assert.equal(response.body.items.length, 1);
+    assert.equal(response.body.items[0].ruleId, "HE-PS-001");
+    assert.deepEqual(response.body.summary, {
+      total: 1, critical: 0, high: 1, medium: 0, low: 0,
+    });
+    assert.deepEqual(response.body.filters, {
+      q: "needle-ps",
+      severity: "high",
+      status: "new",
+      host: "HOST-A",
+      from: "2026-07-01T00:00:00.000Z",
+      to: "2026-07-02T00:00:00.000Z",
+    });
+
+    assert.equal(clickhouse.queries.length, 4);
+    for (const sql of clickhouse.queries) {
+      assert.match(sql, /computer = 'HOST-A'/);
+      assert.match(sql, /needle-ps/);
+      assert.match(sql, /2026-07-01T00:00:00.000Z/);
+      assert.match(sql, /2026-07-02T00:00:00.000Z/);
+    }
+    assert.equal(clickhouse.queries.filter((sql) => sql.includes("= 'high'")).length, 2);
+    assert.equal(clickhouse.queries.filter((sql) => sql.includes("HAVING") && sql.includes("count() >= 20")).length, 2);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-08 returns an empty result for statuses not yet assigned to generated alerts", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/alerts?" + RANGE + "&status=resolved");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 0);
+    assert.deepEqual(response.body.items, []);
+    assert.ok(clickhouse.queries.every((sql) => /AND 0/.test(sql)));
   } finally {
     await api.close();
     await clickhouse.close();
@@ -183,6 +245,23 @@ test("UC-07 Dashboard exposes an accessible alert detail dialog", async () => {
   assert.match(app, /data-alert-id/);
   assert.match(app, /alertDetailRequestId/);
   assert.match(css, /\.alert-detail-dialog/);
+});
+
+test("UC-08 Dashboard exposes responsive alert filters with apply and reset actions", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
+  for (const id of ["alertFilterForm", "alertKeyword", "alertSeverity", "alertStatus",
+    "alertHost", "alertFrom", "alertTo", "alertReset"]) {
+    assert.ok(html.includes('id="' + id + '"'));
+  }
+  assert.match(app, /alertFilterForm/);
+  assert.match(app, /alertKeyword/);
+  assert.match(app, /alertSeverity/);
+  assert.match(app, /alertStatus/);
+  assert.ok(app.includes('dateTimeInputIso(el("alertFrom")'));
+  assert.ok(app.includes("loadAlerts({ reset: true })"));
+  assert.match(css, /.alert-filter-grid/);
 });
 
 test("UC-06 Dashboard exposes alert totals and a paginated alert table", async () => {
@@ -294,6 +373,66 @@ test("UC-06 Docker integration detects alerts from real ClickHouse telemetry", {
   }
 });
 
+test("UC-08 Docker integration filters real ClickHouse alerts", {
+  skip: process.env.HOSTEYE_CLICKHOUSE_INTEGRATION !== "1",
+}, async () => {
+  const clickhouseUrl = process.env.CLICKHOUSE_URL || "http://127.0.0.1:8123";
+  const suffix = Date.now().toString(36);
+  const host = `UC08-DOCKER-${suffix}`;
+  const keyPrefix = `uc08-docker-${suffix}`;
+  const keyword = `needle-uc08-${suffix}`;
+  const now = new Date();
+  const from = new Date(now.getTime() - 5 * 60 * 1000).toISOString();
+  const to = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
+  const timestamp = clickhouseDate(now);
+  const rows = [
+    {
+      kafka_timestamp: timestamp, timestamp, computer: host,
+      channel: "Microsoft-Windows-PowerShell/Operational", event_id: 4104,
+      level: "Warning", script_block_text: "Invoke-Expression payload",
+      message: keyword + " suspicious PowerShell", idempotency_key: keyPrefix + "-ps",
+    },
+    {
+      kafka_timestamp: timestamp, timestamp, computer: host,
+      channel: "Microsoft-Windows-Sysmon/Operational", event_id: 25,
+      level: "Critical", message: "unrelated process tampering",
+      idempotency_key: keyPrefix + "-tamper",
+    },
+  ];
+  for (let index = 0; index < 6; index++) {
+    rows.push({
+      kafka_timestamp: timestamp, timestamp, computer: host,
+      channel: "Security", event_id: 4625, level: "Information",
+      user_name: "uc08-user", source_ip: "10.80.0.10",
+      message: "An account failed to log on", idempotency_key: keyPrefix + "-failed-" + index,
+    });
+  }
+
+  await clickhouseRequest(clickhouseUrl, "INSERT INTO default.windows_system_logs FORMAT JSONEachRow\n"
+    + rows.map((row) => JSON.stringify(row)).join("\n"));
+  const api = await startApi(clickhouseUrl);
+  try {
+    const params = new URLSearchParams({ from, to, host, q: keyword, severity: "high", status: "new" });
+    const response = await getJson(api.url + "/api/alerts?" + params);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.total, 1);
+    assert.equal(response.body.items.length, 1);
+    assert.equal(response.body.items[0].ruleId, "HE-PS-001");
+    assert.equal(response.body.items[0].idempotencyKey, keyPrefix + "-ps");
+    assert.equal(response.body.summary.high, 1);
+
+    params.set("status", "resolved");
+    const resolved = await getJson(api.url + "/api/alerts?" + params);
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.body.total, 0);
+    assert.deepEqual(resolved.body.items, []);
+  } finally {
+    await api.close();
+    await clickhouseRequest(clickhouseUrl,
+      `ALTER TABLE default.windows_system_logs DELETE WHERE idempotency_key LIKE '${keyPrefix}%' SETTINGS mutations_sync = 1`);
+  }
+});
+
 async function startMockClickHouse(options = {}) {
   const state = { mode: options.mode || "data", queries: [] };
   const server = http.createServer(async (req, res) => {
@@ -321,6 +460,23 @@ async function startMockClickHouse(options = {}) {
 }
 
 function rowsForQuery(sql) {
+
+  if (/\bAND 0\b/.test(sql)) return [];
+  if (sql.includes("'needle-ps'")) {
+    if (sql.includes("concat('event:', idempotency_key)")) {
+      return [{
+        alertId: "event:ps", detectedAt: "2026-07-01 02:00:00.000", severity: "high",
+        ruleId: "HE-PS-001", title: "Suspicious PowerShell content", status: "new",
+        computer: "HOST-A", channel: "Microsoft-Windows-PowerShell/Operational",
+        eventId: "4104", userName: "demo", processPath: "powershell.exe",
+        message: "needle-ps Invoke-Expression", evidenceCount: "1", idempotencyKey: "ps",
+      }];
+    }
+    if (sql.includes("GROUP BY severity") && sql.includes("event_id IN (8, 25)")) {
+      return [{ severity: "high", total: "1" }];
+    }
+    return [];
+  }
 
   if (sql.includes("left(event_data_json, 4000)") && sql.includes("idempotency_key = 'tamper'")) {
     return [{

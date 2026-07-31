@@ -9,6 +9,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-03 - Search and filter logs | Implemented | 6 automated tests passed; 1 real ClickHouse Docker integration test passed; full default suite 18 passed / 1 integration skip; desktop/mobile browser QA passed | `uc/UC-03-log-search` |
 | UC-06 - View alerts | Implemented | 5 mock/API tests passed; real ClickHouse Docker integration 6/6 passed; full default suite 23 passed / 2 optional integration skips; desktop/mobile browser QA passed | `uc/UC-06-alert-list` |
 | UC-07 - View alert details | Implemented | 9 alert API/UI tests passed; full default suite 27 passed / 2 optional integration skips; real ClickHouse event and failed-logon detail flows passed; desktop/mobile browser QA passed | `uc/UC-07-alert-detail` |
+| UC-08 - Search and filter alerts | Implemented | 12 alert API/UI tests passed; 2 real ClickHouse alert integration flows passed; full default suite 30 passed / 3 optional integration skips; desktop/mobile browser QA passed | `uc/UC-08-alert-filter` |
 
 ## UC-02 verified behavior
 
@@ -46,3 +47,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Correctly preserves ClickHouse timestamps without applying an unintended local-timezone offset.
 - Passed real ClickHouse flows for a Sysmon process-tampering alert and a six-event failed-logon alert; all temporary rows were removed.
 - Passed desktop/mobile browser QA with no horizontal page overflow or console errors.
+
+
+## UC-08 verified behavior
+
+- Filters both single-event and grouped failed-logon alerts by keyword, severity, status, host, and time range.
+- Applies the same filters to the alert rows, severity summary, total count, and pagination metadata.
+- Validates malformed severity, status, host, keyword, date, and pagination values before querying ClickHouse.
+- Provides a responsive Dashboard filter form with Apply and Reset controls while retaining stale-response and alert-detail protections.
+- Treats current telemetry-derived alerts as `new`; acknowledged or resolved filters deterministically return no matches until alert-state persistence is implemented by its dedicated use case.
+- Passed real ClickHouse filtering with temporary PowerShell, Sysmon, and failed-logon telemetry; all temporary `uc08-docker-*` rows were removed.
+- Passed desktop/mobile browser QA with working Apply/Reset behavior and no horizontal overflow.

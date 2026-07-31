@@ -58,6 +58,15 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("searchPrev")?.addEventListener("click", () => changeSearchPage(-1));
   el("searchNext")?.addEventListener("click", () => changeSearchPage(1));
+  el("alertFilterForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadAlerts({ reset: true }).catch((error) => console.error(error));
+  });
+  el("alertReset")?.addEventListener("click", () => {
+    el("alertFilterForm")?.reset();
+    state.alertOffset = 0;
+    loadAlerts({ reset: true }).catch((error) => console.error(error));
+  });
   el("alertsPrev")?.addEventListener("click", () => changeAlertPage(-1));
   el("alertsNext")?.addEventListener("click", () => changeAlertPage(1));
   el("alertDetailClose")?.addEventListener("click", closeAlertDetail);
@@ -167,12 +176,19 @@ async function loadAlerts(options = {}) {
   if (options.reset) state.alertOffset = 0;
   const params = new URLSearchParams();
   const range = selectedRange();
-  params.set("from", range.from);
-  params.set("to", range.to);
+  params.set("from", dateTimeInputIso(el("alertFrom")?.value, range.from));
+  params.set("to", dateTimeInputIso(el("alertTo")?.value, range.to));
   params.set("limit", "100");
   params.set("offset", String(state.alertOffset || 0));
-  const host = el("hostFilter")?.value;
-  if (host) params.set("host", host);
+  const values = {
+    q: el("alertKeyword")?.value.trim(),
+    severity: el("alertSeverity")?.value,
+    status: el("alertStatus")?.value,
+    host: el("alertHost")?.value.trim() || el("hostFilter")?.value,
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (value) params.set(key, value);
+  }
 
   el("alertsMeta").textContent = "Loading alerts...";
   try {
@@ -257,11 +273,12 @@ async function openAlertDetail(alertId) {
   document.body.classList.add("modal-open");
   el("alertDetailContent").innerHTML = `<div class="empty-state">Loading alert evidence...</div>`;
   const params = new URLSearchParams();
+  const appliedFilters = state.alertResult?.filters || {};
   const range = selectedRange();
-  params.set("from", range.from);
-  params.set("to", range.to);
+  params.set("from", appliedFilters.from || range.from);
+  params.set("to", appliedFilters.to || range.to);
   params.set("limit", "100");
-  const host = el("hostFilter")?.value;
+  const host = appliedFilters.host || el("alertHost")?.value.trim() || el("hostFilter")?.value;
   if (host) params.set("host", host);
   try {
     const data = await api(`/api/alerts/${encodeURIComponent(alertId)}?${params.toString()}`);
