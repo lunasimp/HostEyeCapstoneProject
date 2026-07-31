@@ -4,6 +4,10 @@ const palette = ["#ff8200", "#4c8dff", "#6dd17c", "#ff5364", "#b184ff", "#f7c948
 const state = {
   hosts: [],
   loading: false,
+  searchOffset: 0,
+  searchLoaded: false,
+  searchResult: null,
+  searchRequestId: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -20,6 +24,7 @@ const pages = {
   "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
   "agent-errors": { title: "Agent Chunk Errors", eyebrow: "[ AGENT DIAGNOSTICS ]" },
+  search: { title: "Log Search", eyebrow: "[ TELEMETRY SEARCH ]" },
 };
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -36,6 +41,17 @@ document.addEventListener("DOMContentLoaded", () => {
   el("hostFilter").addEventListener("change", loadDashboard);
   el("heatmapBucket")?.addEventListener("change", loadHeatmap);
   el("hostLevelFilter")?.addEventListener("change", () => renderHostsScreen(state.hostSummary || { hosts: [], groups: [] }));
+  el("logSearchForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadLogSearch({ reset: true }).catch((error) => console.error(error));
+  });
+  el("searchReset")?.addEventListener("click", () => {
+    el("logSearchForm")?.reset();
+    state.searchOffset = 0;
+    loadLogSearch({ reset: true }).catch((error) => console.error(error));
+  });
+  el("searchPrev")?.addEventListener("click", () => changeSearchPage(-1));
+  el("searchNext")?.addEventListener("click", () => changeSearchPage(1));
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
       const section = button.closest(".section-card");
@@ -66,6 +82,9 @@ function showPage(page) {
   const meta = pages[selectedPage];
   el("pageHeading").textContent = meta.title;
   el("pageEyebrow").textContent = meta.eyebrow;
+  if (selectedPage === "search" && !state.searchLoaded) {
+    loadLogSearch({ reset: true }).catch((error) => console.error(error));
+  }
 }
 
 async function loadDashboard() {
@@ -123,6 +142,77 @@ function resetKpis() {
     const node = el(id);
     if (node) node.textContent = "-";
   });
+}
+
+async function loadLogSearch(options = {}) {
+  const requestId = ++state.searchRequestId;
+  if (options.reset) state.searchOffset = 0;
+  const limit = Number(el("searchLimit")?.value || 100);
+  const params = new URLSearchParams();
+  const range = selectedRange();
+  params.set("from", dateTimeInputIso(el("searchFrom")?.value, range.from));
+  params.set("to", dateTimeInputIso(el("searchTo")?.value, range.to));
+  params.set("limit", String(limit));
+  params.set("offset", String(state.searchOffset || 0));
+
+  const values = {
+    q: el("searchKeyword")?.value.trim(),
+    host: el("searchHost")?.value.trim() || el("hostFilter")?.value,
+    channel: el("searchChannel")?.value.trim(),
+    eventId: el("searchEventId")?.value.trim(),
+  };
+  for (const [key, value] of Object.entries(values)) {
+    if (value) params.set(key, value);
+  }
+
+  el("searchMeta").textContent = "Searching...";
+  try {
+    const data = await api(`/api/logs/search?${params.toString()}`);
+    if (requestId !== state.searchRequestId) return;
+    state.searchLoaded = true;
+    state.searchResult = data;
+    renderLogSearch(data);
+  } catch (error) {
+    if (requestId !== state.searchRequestId) return;
+    el("searchMeta").textContent = "Search failed";
+    el("searchResultsTable").innerHTML = `<div class="empty-state">${escapeHtml(error.message || "Search failed")}</div>`;
+    throw error;
+  }
+}
+
+function renderLogSearch(data) {
+  const rows = data.items || [];
+  const start = data.total > 0 ? data.offset + 1 : 0;
+  const end = data.offset + rows.length;
+  el("searchMeta").textContent = `Showing ${formatNumber(start)}-${formatNumber(end)} of ${formatNumber(data.total)} logs`;
+  el("searchPrev").disabled = data.offset <= 0;
+  el("searchNext").disabled = !data.hasMore;
+
+  renderTable(el("searchResultsTable"), rows, [
+    ["Time", "time", "date"],
+    ["Host", "computer"],
+    ["Channel", "channel"],
+    ["Event ID", "eventId", "numeric"],
+    ["Level", "level"],
+    ["User", "userName"],
+    ["Process", "processPath"],
+    ["Source IP", "sourceIp"],
+    ["Destination IP", "destinationIp"],
+    ["Message", "message"],
+  ]);
+}
+
+function dateTimeInputIso(value, fallback) {
+  if (!value) return fallback;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString();
+}
+
+function changeSearchPage(direction) {
+  const result = state.searchResult || {};
+  const limit = Number(result.limit || el("searchLimit")?.value || 100);
+  state.searchOffset = Math.max(0, Number(result.offset || 0) + direction * limit);
+  loadLogSearch().catch((error) => console.error(error));
 }
 
 async function loadSummaryAndHosts() {

@@ -1164,34 +1164,71 @@ async function hostsHeatmapCell(ctx, res) {
 }
 
 async function logsSearch(ctx, res) {
-  const q = requiredString(ctx.url, "q");
-  const where = timeWhere(ctx.url, [
-    `(
-      positionCaseInsensitive(message, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(command_line, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(process_path, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(raw_log, ${sqlString(q)}) > 0
-    )`,
-  ]);
+  const q = optionalString(ctx.url, "q", 200);
+  const keywordPredicate = q ? [`(
+    positionCaseInsensitive(message, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(command_line, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(process_path, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(raw_log, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(user_name, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(dns_query, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(target_filename, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(target_object, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(source_ip, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(destination_ip, ${sqlString(q)}) > 0
+  )`] : [];
+  const where = timeWhere(ctx.url, keywordPredicate);
   const limit = limitParam(ctx.url, 100, 500);
-  const rows = await queryRows(`
-    SELECT
-      kafka_timestamp AS time,
-      computer,
-      channel,
-      event_id AS eventId,
-      level,
-      user_name AS userName,
-      process_path AS processPath,
-      left(command_line, 800) AS commandLine,
-      left(message, 500) AS message,
-      idempotency_key AS idempotencyKey
-    FROM default.windows_system_logs
-    ${where.sql}
-    ORDER BY kafka_timestamp DESC
-    LIMIT ${limit}
-  `);
-  sendJson(res, 200, { items: rows });
+  const offset = offsetParam(ctx.url, 100000);
+
+  const [countRows, rows] = await Promise.all([
+    queryRows(`
+      SELECT count() AS total
+      FROM default.windows_system_logs
+      ${where.sql}
+    `),
+    queryRows(`
+      SELECT
+        kafka_timestamp AS time,
+        computer,
+        channel,
+        event_id AS eventId,
+        level,
+        provider_name AS providerName,
+        user_name AS userName,
+        process_path AS processPath,
+        left(command_line, 800) AS commandLine,
+        source_ip AS sourceIp,
+        destination_ip AS destinationIp,
+        dns_query AS dnsQuery,
+        target_filename AS targetFilename,
+        target_object AS targetObject,
+        left(message, 500) AS message,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      ${where.sql}
+      ORDER BY kafka_timestamp DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `),
+  ]);
+
+  const total = Number(countRows[0]?.total || 0);
+  sendJson(res, 200, {
+    items: rows,
+    total,
+    limit,
+    offset,
+    hasMore: offset + rows.length < total,
+    filters: {
+      q: q || "",
+      host: ctx.url.searchParams.get("host") || "",
+      channel: ctx.url.searchParams.get("channel") || "",
+      eventId: ctx.url.searchParams.get("eventId") || "",
+      from: where.from.toISOString(),
+      to: where.to.toISOString(),
+    },
+  });
 }
 
 async function logsRaw(ctx, res) {
@@ -1489,6 +1526,25 @@ function parseDate(value, name) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) badRequest(`${name} must be a valid date`);
   return date;
+}
+
+function optionalString(url, name, maxLength) {
+  const raw = url.searchParams.get(name);
+  if (raw === null || !raw.trim()) return null;
+  const value = raw.trim();
+  if (value.length > maxLength) badRequest(`${name} must be at most ${maxLength} characters`);
+  return value;
+}
+
+function offsetParam(url, max) {
+  const raw = url.searchParams.get("offset");
+  if (!raw) return 0;
+  if (!/^\d+$/.test(raw)) badRequest("offset must be a non-negative integer");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+    badRequest(`offset must be between 0 and ${max}`);
+  }
+  return value;
 }
 
 function requiredString(url, name) {
