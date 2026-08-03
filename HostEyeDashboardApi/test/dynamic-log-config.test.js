@@ -205,6 +205,121 @@ test("UC-11 preview validates input but remains available when the control plane
   }
 });
 
+test("UC-12 assigns a disabled draft to a known endpoint group and enables signed rollout", async () => {
+  const draft = {
+    policy_id: "policy-draft-group-lab",
+    version: 3,
+    name: "Group investigation baseline",
+    enabled: false,
+    target: { type: "default" },
+    rollout: { enabled: false, percent: 100, min_agent_version: "0.1.0" },
+    config: {
+      config_schema_version: 1,
+      vector: {
+        enabled: true,
+        channels: ["Security", "Microsoft-Windows-Sysmon/Operational"],
+        selected_fields: ["timestamp", "computer", "event_id", "channel", "message"],
+        batch_max_events: 500,
+        batch_timeout_secs: 5,
+      },
+      shipper: {
+        enabled: true,
+        gateway_url: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+        normal_jitter_window_seconds: 300,
+        recovery_jitter_window_seconds: 1800,
+        base_backoff_seconds: 2,
+        max_backoff_seconds: 300,
+        max_spool_size_mb: 8192,
+      },
+      sensors: { sysmon_enabled: true, powershell_enabled: false, network_events_enabled: true },
+    },
+    updated_at: "2026-08-01T00:00:00.000Z",
+  };
+  const controlPlane = await startMockDynamicConfig({
+    policies: [draft],
+    agents: [{
+      agent_id: "agent-lab-001",
+      host_id: "host-lab-001",
+      group_id: "group-lab",
+      last_ack_status: "applied",
+    }],
+  });
+  const api = await startApi(controlPlane.url);
+  try {
+    const response = await postJson(api.url + "/api/dashboard/dynamic-config/assignments", {
+      policyId: draft.policy_id,
+      targetType: "group",
+      targetValue: "group-lab",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.status, "assigned");
+    assert.equal(response.body.applyMode, "next_agent_poll");
+    assert.deepEqual(response.body.target, { type: "group", group_id: "group-lab" });
+    assert.equal(response.body.policy.policy_id, draft.policy_id);
+    assert.equal(response.body.policy.version, 4);
+    assert.equal(response.body.policy.enabled, true);
+    assert.deepEqual(response.body.policy.rollout, {
+      enabled: true,
+      percent: 100,
+      min_agent_version: "0.1.0",
+    });
+    assert.deepEqual(response.body.policy.config, draft.config);
+    assert.equal(controlPlane.requests.length, 1);
+    assert.equal(controlPlane.requests[0].headers["x-hosteye-admin-token"], "test-admin-token");
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
+test("UC-12 rejects unsafe or unknown assignments without mutating policy state", async () => {
+  const draft = {
+    policy_id: "policy-draft-known",
+    version: 1,
+    name: "Known draft",
+    enabled: false,
+    target: { type: "default" },
+    rollout: { enabled: false, percent: 100, min_agent_version: "0.1.0" },
+    config: {
+      config_schema_version: 1,
+      vector: { enabled: true, channels: ["Security"], selected_fields: ["timestamp", "computer", "event_id", "channel"], batch_max_events: 1000, batch_timeout_secs: 10 },
+      shipper: { enabled: true, gateway_url: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry", normal_jitter_window_seconds: 300, recovery_jitter_window_seconds: 1800, base_backoff_seconds: 2, max_backoff_seconds: 300, max_spool_size_mb: 8192 },
+      sensors: { sysmon_enabled: false, powershell_enabled: false, network_events_enabled: true },
+    },
+    updated_at: "2026-08-01T00:00:00.000Z",
+  };
+  const active = {
+    ...draft,
+    policy_id: "policy-active",
+    enabled: true,
+    rollout: { ...draft.rollout, enabled: true },
+  };
+  const controlPlane = await startMockDynamicConfig({
+    policies: [draft, active],
+    agents: [{ agent_id: "agent-known", host_id: "host-known", group_id: "group-known" }],
+  });
+  const api = await startApi(controlPlane.url);
+  try {
+    const cases = [
+      [{ policyId: "missing", targetType: "default" }, "draft does not exist"],
+      [{ policyId: active.policy_id, targetType: "default" }, "only a disabled"],
+      [{ policyId: draft.policy_id, targetType: "agent", targetValue: "agent-missing" }, "target agent does not exist"],
+      [{ policyId: draft.policy_id, targetType: "group", targetValue: "group-missing" }, "target group does not exist"],
+      [{ policyId: draft.policy_id, targetType: "site", targetValue: "site-a" }, "targetType must be one of"],
+      [{ policyId: draft.policy_id, targetType: "group" }, "targetValue is required"],
+    ];
+    for (const [body, message] of cases) {
+      const response = await postJson(api.url + "/api/dashboard/dynamic-config/assignments", body);
+      assert.equal(response.status, 400);
+      assert.match(response.body.message, new RegExp(message));
+    }
+    assert.equal(controlPlane.requests.length, 0);
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
 test("UC-09 reports Dynamic Config outages without claiming a draft was saved", async () => {
   const port = await freePort();
   const api = await startApi("http://127.0.0.1:" + port);
@@ -225,7 +340,9 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
   for (const id of ["dynamicLogForm", "dynamicPolicyName", "dynamicLogTypeOptions", "dynamicFieldOptions",
     "dynamicDraftStatus", "dynamicDraftPreview", "dynamicDraftSave", "dynamicPreviewPanel",
-    "dynamicPreviewSummary", "dynamicPreviewJson"]) {
+    "dynamicPreviewSummary", "dynamicPreviewJson", "dynamicAssignmentForm", "dynamicAssignmentPolicy",
+    "dynamicAssignmentTargetType", "dynamicAssignmentTarget", "dynamicAssignmentStatus",
+    "dynamicAssignmentSubmit"]) {
     assert.ok(html.includes('id="' + id + '"'));
   }
   assert.match(app, /dynamic-config\/catalog/);
@@ -233,6 +350,10 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   assert.match(app, /previewDynamicLogDraft/);
   assert.match(app, /dynamic-config\/preview/);
   assert.match(app, /Preview ready; no policy saved/);
+  assert.match(app, /dynamic-config\/assignments/);
+  assert.match(app, /assignDynamicConfig/);
+  assert.match(app, /Waiting for endpoint poll and ACK/);
+  assert.match(app, /Latest ACK:/);
   assert.match(app, /body: \{ \.\.\.values, draft: true, targetType: "default" \}/);
   assert.match(app, /name="dynamicField"/);
   assert.ok(app.includes('${item.required ? "disabled" : ""}'));
@@ -240,28 +361,43 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   assert.match(css, /\.dynamic-log-options/);
   assert.ok(css.includes(".dynamic-field-options"));
   assert.ok(css.includes(".dynamic-preview-summary"));
+  assert.ok(css.includes(".dynamic-assignment-grid"));
   assert.match(css, /grid-template-columns: 1fr/);
 });
 
-async function startMockDynamicConfig() {
-  const state = { requests: [] };
+async function startMockDynamicConfig(options = {}) {
+  const state = {
+    requests: [],
+    policies: structuredClone(options.policies || []),
+    agents: structuredClone(options.agents || []),
+    audit: structuredClone(options.audit || []),
+  };
   const server = http.createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.method === "POST" && req.url === "/api/v1/dynamic-config/policies") {
-      state.requests.push({ headers: req.headers, body: JSON.parse(body) });
+      const parsed = JSON.parse(body);
+      state.requests.push({ headers: req.headers, body: parsed });
+      const index = state.policies.findIndex((policy) => policy.policy_id === parsed.policy_id);
+      if (index >= 0) state.policies[index] = parsed;
+      else state.policies.push(parsed);
       res.writeHead(200, { "content-type": "application/json" });
       res.end(body);
       return;
     }
     if (req.method === "GET" && req.url === "/api/v1/dynamic-config/policies") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end("[]");
+      res.end(JSON.stringify(state.policies));
       return;
     }
-    if (req.method === "GET" && ["/api/v1/dynamic-config/agents", "/api/v1/dynamic-config/audit"].includes(req.url)) {
+    if (req.method === "GET" && req.url === "/api/v1/dynamic-config/agents") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end("[]");
+      res.end(JSON.stringify(state.agents));
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/v1/dynamic-config/audit") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(state.audit));
       return;
     }
     res.writeHead(404);

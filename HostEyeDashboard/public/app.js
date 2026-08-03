@@ -15,6 +15,8 @@ const state = {
   alertDetailRequestId: 0,
   dynamicSaveInFlight: false,
   dynamicPreviewRequestId: 0,
+  dynamicAssignmentInFlight: false,
+  dynamicAssignmentData: { policies: [], agents: [], groups: [] },
 };
 
 const el = (id) => document.getElementById(id);
@@ -68,6 +70,11 @@ document.addEventListener("DOMContentLoaded", () => {
     previewDynamicLogDraft().catch((error) => console.error(error));
   });
   el("dynamicLogForm")?.addEventListener("input", clearDynamicPreview);
+  el("dynamicAssignmentForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    assignDynamicConfig().catch((error) => console.error(error));
+  });
+  el("dynamicAssignmentTargetType")?.addEventListener("change", renderDynamicAssignmentTargets);
   el("alertFilterForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadAlerts({ reset: true }).catch((error) => console.error(error));
@@ -781,10 +788,14 @@ async function loadDynamicConfig() {
       catalog.fields || [],
       catalog.fieldDefaults || [],
     );
-    renderDynamicPolicies(policies.items || summary.policies || []);
-    renderDynamicAgents(agents.items || summary.agents || []);
-    renderDynamicGroups(summary.groups || []);
+    const policyRows = policies.items || summary.policies || [];
+    const agentRows = agents.items || summary.agents || [];
+    const groupRows = summary.groups || [];
+    renderDynamicPolicies(policyRows);
+    renderDynamicAgents(agentRows);
+    renderDynamicGroups(groupRows);
     renderDynamicAudit(audit.items || []);
+    renderDynamicAssignmentOptions(policyRows, agentRows, groupRows);
   } catch (error) {
     el("dynamicPolicyCount").textContent = "-";
     el("dynamicActivePolicyCount").textContent = "-";
@@ -796,6 +807,9 @@ async function loadDynamicConfig() {
     ["dynamicPoliciesTable", "dynamicAgentsTable", "dynamicGroupsTable", "dynamicAuditTable"].forEach((id) => {
       el(id).innerHTML = `<div class="empty-state">Dynamic Config service is offline</div>`;
     });
+    el("dynamicAssignmentPolicy").innerHTML = '<option value="">Control plane offline</option>';
+    el("dynamicAssignmentSubmit").disabled = true;
+    el("dynamicAssignmentStatus").textContent = "Assignment unavailable while the control plane is offline";
   }
 }
 
@@ -909,6 +923,112 @@ function renderDynamicConfigPreview(preview) {
   el("dynamicPreviewJson").textContent = JSON.stringify(preview.policy || {}, null, 2);
   el("dynamicPreviewState").textContent = preview.previewOnly ? "Preview only" : "Draft";
   el("dynamicPreviewPanel").hidden = false;
+}
+
+function renderDynamicAssignmentOptions(policies, agents, groups) {
+  const previousPolicy = el("dynamicAssignmentPolicy")?.value || "";
+  const drafts = policies.filter((policy) => policy.enabled === false && policy.rollout?.enabled === false);
+  state.dynamicAssignmentData = { policies: drafts, agents, groups };
+
+  el("dynamicAssignmentPolicy").innerHTML = drafts.length
+    ? drafts.map((policy) => `
+      <option value="${escapeAttr(policy.policy_id)}">${escapeHtml(policy.name || policy.policy_id)} (v${formatNumber(policy.version || 1)})</option>
+    `).join("")
+    : '<option value="">No disabled drafts available</option>';
+  if (previousPolicy && drafts.some((policy) => policy.policy_id === previousPolicy)) {
+    el("dynamicAssignmentPolicy").value = previousPolicy;
+  }
+  el("dynamicAssignmentSubmit").disabled = !drafts.length;
+
+  const activePolicyIds = new Set(
+    policies.filter((policy) => policy.enabled !== false && policy.rollout?.enabled !== false)
+      .map((policy) => policy.policy_id),
+  );
+  const latestAck = agents
+    .filter((agent) => activePolicyIds.has(agent.last_policy_id || agent.current_policy_id || agent.policy_id))
+    .sort((left, right) => String(right.last_seen_at || right.last_seen || "")
+      .localeCompare(String(left.last_seen_at || left.last_seen || "")))[0];
+  if (latestAck) {
+    const status = latestAck.last_ack_status || latestAck.status || "seen";
+    const policyId = latestAck.last_policy_id || latestAck.current_policy_id || latestAck.policy_id || "-";
+    const version = latestAck.last_version || latestAck.current_version || latestAck.policy_version || 0;
+    const message = latestAck.last_ack_message ? ` | ${latestAck.last_ack_message}` : "";
+    el("dynamicAssignmentStatus").textContent =
+      `Latest ACK: ${latestAck.agent_id || "agent"} ${status} ${policyId} v${version}${message}`;
+  } else if (!drafts.length) {
+    el("dynamicAssignmentStatus").textContent = "No disabled drafts available for assignment";
+  }
+  renderDynamicAssignmentTargets();
+}
+
+function renderDynamicAssignmentTargets() {
+  const type = el("dynamicAssignmentTargetType")?.value || "group";
+  const target = el("dynamicAssignmentTarget");
+  if (!target) return;
+
+  if (type === "default") {
+    target.innerHTML = '<option value="">All eligible endpoints</option>';
+    target.disabled = true;
+    return;
+  }
+
+  target.disabled = false;
+  if (type === "agent") {
+    const agents = [...state.dynamicAssignmentData.agents]
+      .sort((left, right) => String(left.agent_id || "").localeCompare(String(right.agent_id || "")));
+    target.innerHTML = agents.length
+      ? agents.map((agent) => `
+        <option value="${escapeAttr(agent.agent_id)}">${escapeHtml(agent.agent_id)} | ${escapeHtml(agent.host_id || "unknown host")} | ${escapeHtml(agent.group_id || "unknown group")}</option>
+      `).join("")
+      : '<option value="">No agents have checked in</option>';
+    return;
+  }
+
+  const counts = new Map();
+  for (const agent of state.dynamicAssignmentData.agents) {
+    const groupId = agent.group_id || "";
+    if (groupId) counts.set(groupId, (counts.get(groupId) || 0) + 1);
+  }
+  target.innerHTML = counts.size
+    ? [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([groupId, count]) => `
+      <option value="${escapeAttr(groupId)}">${escapeHtml(groupId)} (${formatNumber(count)} agents)</option>
+    `).join("")
+    : '<option value="">No endpoint groups available</option>';
+}
+
+async function assignDynamicConfig() {
+  if (state.dynamicAssignmentInFlight) return;
+  const policyId = el("dynamicAssignmentPolicy")?.value || "";
+  const targetType = el("dynamicAssignmentTargetType")?.value || "";
+  const targetValue = targetType === "default" ? "" : (el("dynamicAssignmentTarget")?.value || "");
+  if (!policyId) {
+    el("dynamicAssignmentStatus").textContent = "Select a disabled Dynamic Logs draft";
+    return;
+  }
+  if (targetType !== "default" && !targetValue) {
+    el("dynamicAssignmentStatus").textContent = `No ${targetType} is available for assignment`;
+    return;
+  }
+
+  state.dynamicAssignmentInFlight = true;
+  el("dynamicAssignmentSubmit").disabled = true;
+  el("dynamicAssignmentStatus").textContent = "Assigning and enabling signed policy...";
+  try {
+    const result = await api("/api/dashboard/dynamic-config/assignments", {
+      method: "POST",
+      body: { policyId, targetType, targetValue },
+    });
+    await loadDynamicConfig();
+    const target = formatPolicyTarget(result.target);
+    el("dynamicAssignmentStatus").textContent =
+      `Assigned ${result.policy?.name || policyId} to ${target}. Waiting for endpoint poll and ACK.`;
+  } catch (error) {
+    el("dynamicAssignmentStatus").textContent = error.message || "Configuration assignment failed";
+    throw error;
+  } finally {
+    state.dynamicAssignmentInFlight = false;
+    el("dynamicAssignmentSubmit").disabled = !state.dynamicAssignmentData.policies.length;
+  }
 }
 
 async function saveDynamicLogDraft() {

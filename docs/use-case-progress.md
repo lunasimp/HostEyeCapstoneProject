@@ -13,6 +13,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-09 - Configure Dynamic Logs | Implemented | 5 API/control-plane/UI tests passed; full default Dashboard API suite 35 passed / 3 optional integration skips; live control-plane read and desktop/mobile browser QA passed | `uc/UC-09-dynamic-log-config` |
 | UC-10 - Select log data fields | Implemented | 7 Dynamic Config API/UI tests passed; full Dashboard API suite 37 passed / 3 optional integration skips; Rust source parse and desktop/mobile browser QA passed | `uc/UC-10-log-field-selection` |
 | UC-11 - Preview Dynamic Logs configuration | Implemented | 16 focused tests passed; full Dashboard API suite 40 passed / 3 optional integration skips; live preview and all-time Dashboard browser QA passed | `uc/UC-11-config-preview` |
+| UC-12 - Assign Dynamic Logs configuration | Implemented | 11 Dynamic Config tests passed; full Dashboard API suite 42 passed / 3 optional integration skips; isolated signed apply and desktop/mobile browser QA passed | `uc/UC-12-config-assignment` |
 
 ## UC-02 verified behavior
 
@@ -96,3 +97,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Distinguishes all-time ClickHouse rows from the active Dashboard time range and provides an explicit `All time` range option.
 - Reports the latest telemetry timestamp and stale-data age so an ingestion outage is not mistaken for Dashboard truncation.
 - Browser QA confirmed that previewing did not change the live policy count and that the all-time Overview displays all 2,682,431 available rows.
+
+
+## UC-12 verified behavior
+
+- Assigns only disabled Dynamic Logs drafts and preserves the reviewed canonical channels, fields, sensor switches, shipper settings, and other configuration values.
+- Supports default-fleet, endpoint-group, and single-agent targets; agent and group assignments must reference identities already known to the control plane.
+- Enables the policy and full target rollout atomically with a new version; staged percentage rollout remains outside this assignment use case.
+- Keeps application asynchronous and truthful: the Dashboard reports that it is waiting until an endpoint polls the signed policy and sends an ACK.
+- Displays the latest endpoint ACK, policy version, apply status, and apply message without claiming success before the endpoint responds.
+- Passed an isolated end-to-end flow in which the Rust client selected the group policy, verified and applied the signed envelope, wrote the resulting state/config files, and ACKed policy version 2 as `applied`.
+- Passed desktop and 390px mobile browser QA with no horizontal overflow, 44px mobile action control, and no console errors; no real endpoint group was modified.

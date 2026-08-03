@@ -74,6 +74,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
   ["GET", /^\/api\/dashboard\/dynamic-config\/catalog$/, dynamicConfigCatalog],
   ["POST", /^\/api\/dashboard\/dynamic-config\/preview$/, dynamicConfigPreview],
+  ["POST", /^\/api\/dashboard\/dynamic-config\/assignments$/, dynamicConfigAssignPolicy],
   ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
@@ -995,6 +996,71 @@ async function dynamicConfigUpsertPolicy(ctx, res) {
     body: policy,
   });
   sendJson(res, 200, saved);
+}
+
+async function dynamicConfigAssignPolicy(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    badRequest("assignment body must be a JSON object");
+  }
+
+  const policyId = optionalPolicyText(body.policyId, "policyId", 160);
+  if (!policyId) badRequest("policyId is required");
+  const targetType = String(body.targetType || "").trim().toLowerCase();
+  if (!["default", "group", "agent"].includes(targetType)) {
+    badRequest("targetType must be one of: default, group, agent");
+  }
+  const targetValue = optionalPolicyText(body.targetValue, "targetValue", 255);
+  if ((targetType === "group" || targetType === "agent") && !targetValue) {
+    badRequest("targetValue is required for group/agent assignment");
+  }
+  const [policies, agents] = await Promise.all([
+    dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
+    dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
+  ]);
+  const policy = (Array.isArray(policies) ? policies : []).find((item) => item.policy_id === policyId);
+  if (!policy) badRequest("selected Dynamic Logs draft does not exist");
+  if (policy.enabled !== false || policy.rollout?.enabled !== false) {
+    badRequest("only a disabled Dynamic Logs draft can be assigned");
+  }
+
+  const agentRows = Array.isArray(agents) ? agents : [];
+  if (targetType === "agent" && !agentRows.some((agent) => agent.agent_id === targetValue)) {
+    badRequest("selected target agent does not exist");
+  }
+  if (targetType === "group" && !agentRows.some((agent) => agent.group_id === targetValue)) {
+    badRequest("selected target group does not exist");
+  }
+
+  const target = targetType === "group"
+    ? { type: "group", group_id: targetValue }
+    : targetType === "agent"
+      ? { type: "agent", agent_id: targetValue }
+      : { type: "default" };
+  const assigned = {
+    ...policy,
+    version: boundedPolicyInteger(policy.version, "policy.version", 1, Number.MAX_SAFE_INTEGER - 1, 1) + 1,
+    enabled: true,
+    target,
+    rollout: {
+      enabled: true,
+      percent: 100,
+      min_agent_version: "0.1.0",
+    },
+    updated_at: new Date().toISOString(),
+  };
+  const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
+    method: "POST",
+    admin: true,
+    body: assigned,
+  });
+  sendJson(res, 200, {
+    status: "assigned",
+    applyMode: "next_agent_poll",
+    sourcePolicyId: policyId,
+    target,
+    policy: saved,
+  });
 }
 
 function buildDynamicPolicy(input) {

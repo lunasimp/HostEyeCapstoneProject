@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260803-uc11">
+    <link rel="stylesheet" href="./styles.css?v=20260803-uc12">
   </head>
   <body>
     <div class="app-shell">
@@ -371,6 +371,41 @@
                   <pre id="dynamicPreviewJson"></pre>
                 </details>
               </section>
+            </article>
+            <article class="panel dynamic-assignment-panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Assign and enable configuration</h3>
+                  <span>Target a disabled draft to an endpoint, endpoint group, or the default fleet.</span>
+                </div>
+                <span id="dynamicAssignmentStatus">Select a draft and target</span>
+              </div>
+              <form id="dynamicAssignmentForm" class="dynamic-assignment-grid">
+                <label>
+                  <span>Disabled draft</span>
+                  <select id="dynamicAssignmentPolicy" required>
+                    <option value="">Loading drafts...</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target scope</span>
+                  <select id="dynamicAssignmentTargetType">
+                    <option value="group" selected>Endpoint group</option>
+                    <option value="agent">Single endpoint agent</option>
+                    <option value="default">Default fleet</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target</span>
+                  <select id="dynamicAssignmentTarget" required>
+                    <option value="">Loading targets...</option>
+                  </select>
+                </label>
+                <div class="dynamic-assignment-actions">
+                  <p>The control plane signs the assigned policy. Endpoints apply it on their next poll and report the result by ACK.</p>
+                  <button id="dynamicAssignmentSubmit" class="refresh-btn" type="submit">Assign and enable</button>
+                </div>
+              </form>
             </article>
             <div class="grid two">
               <article class="panel">
