@@ -73,6 +73,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/dynamic-config\/agents$/, dynamicConfigAgents],
   ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
   ["GET", /^\/api\/dashboard\/dynamic-config\/catalog$/, dynamicConfigCatalog],
+  ["POST", /^\/api\/dashboard\/dynamic-config\/preview$/, dynamicConfigPreview],
   ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
@@ -116,12 +117,26 @@ server.listen(config.port, () => {
 });
 
 async function health(_ctx, res) {
-  const rows = await queryRows("SELECT count() AS rows FROM default.windows_system_logs");
+  const result = await queryRows(`
+    SELECT
+      count() AS rows,
+      min(kafka_timestamp) AS firstSeen,
+      max(kafka_timestamp) AS lastSeen,
+      dateDiff('second', max(kafka_timestamp), now()) AS dataAgeSeconds
+    FROM default.windows_system_logs
+  `);
+  const row = result[0] || {};
+  const rows = Number(row.rows || 0);
+  const dataAgeSeconds = rows > 0 ? Math.max(0, Number(row.dataAgeSeconds || 0)) : null;
   sendJson(res, 200, {
     status: "ok",
     clickhouse: config.clickhouseUrl,
     database: config.database,
-    rows: Number(rows[0]?.rows || 0),
+    rows,
+    firstSeen: rows > 0 ? row.firstSeen || null : null,
+    lastSeen: rows > 0 ? row.lastSeen || null : null,
+    dataAgeSeconds,
+    stale: dataAgeSeconds !== null && dataAgeSeconds > 24 * 60 * 60,
   });
 }
 
@@ -932,6 +947,42 @@ async function dynamicConfigCatalog(_ctx, res) {
     fields: DYNAMIC_LOG_FIELDS.map((item) => ({ ...item })),
     fieldDefaults: DYNAMIC_LOG_FIELDS.map((item) => item.id),
     retainedInternalFields: ["agent_id", "host_id", "raw_log", "idempotency_key"],
+  });
+}
+
+async function dynamicConfigPreview(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const policy = buildDynamicPolicy({ ...body, draft: true });
+  const selectedTypeIds = Array.isArray(body.logTypes)
+    ? [...new Set(body.logTypes.map((item) => String(item || "").trim().toLowerCase()))]
+    : [];
+  const selectedLogTypes = DYNAMIC_LOG_TYPES
+    .filter((item) => selectedTypeIds.includes(item.id))
+    .map((item) => ({ id: item.id, name: item.name }));
+  const selectedFields = policy.config.vector.selected_fields.map((field) => {
+    const catalogField = DYNAMIC_LOG_FIELDS.find((item) => item.field === field);
+    return {
+      id: catalogField?.id || field,
+      field,
+      name: catalogField?.name || field,
+      required: catalogField?.required === true,
+    };
+  });
+
+  sendJson(res, 200, {
+    previewOnly: true,
+    summary: {
+      name: policy.name,
+      state: "disabled draft",
+      target: policy.target,
+      logTypes: selectedLogTypes,
+      channels: policy.config.vector.channels,
+      selectedFields,
+      retainedInternalFields: ["agent_id", "host_id", "raw_log", "idempotency_key"],
+      sensors: policy.config.sensors,
+      rollout: policy.rollout,
+    },
+    policy,
   });
 }
 

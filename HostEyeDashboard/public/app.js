@@ -14,6 +14,7 @@ const state = {
   alertRequestId: 0,
   alertDetailRequestId: 0,
   dynamicSaveInFlight: false,
+  dynamicPreviewRequestId: 0,
 };
 
 const el = (id) => document.getElementById(id);
@@ -63,6 +64,10 @@ document.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     saveDynamicLogDraft().catch((error) => console.error(error));
   });
+  el("dynamicDraftPreview")?.addEventListener("click", () => {
+    previewDynamicLogDraft().catch((error) => console.error(error));
+  });
+  el("dynamicLogForm")?.addEventListener("input", clearDynamicPreview);
   el("alertFilterForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadAlerts({ reset: true }).catch((error) => console.error(error));
@@ -126,7 +131,15 @@ async function loadDashboard() {
 
   try {
     const health = await api("/api/health");
-    setStatus("Connected", true, `${formatNumber(health.rows)} rows`);
+    const latest = health.lastSeen ? `latest ${formatDate(health.lastSeen)}` : "no telemetry";
+    const age = health.dataAgeSeconds === null || health.dataAgeSeconds === undefined
+      ? ""
+      : ` | ${formatAge(health.dataAgeSeconds)} old`;
+    setStatus(
+      health.stale ? "Connected - telemetry stale" : "Connected",
+      true,
+      `${formatNumber(health.rows)} rows all-time | ${latest}${age}`,
+    );
 
     await loadSummaryAndHosts();
     await Promise.all([
@@ -431,6 +444,9 @@ async function loadSummaryAndHosts() {
   ]);
 
   el("kpiEvents").textContent = formatNumber(summary.totalEvents);
+  el("kpiEventsLabel").textContent = el("rangeSelect").value === "all"
+    ? "All-time events"
+    : "Events in selected range";
   el("kpiHosts").textContent = formatNumber(summary.totalHosts);
   el("kpiEventIds").textContent = formatNumber(summary.totalEventIds);
   el("kpiLastSeen").textContent = formatDate(summary.lastSeen);
@@ -810,26 +826,95 @@ function renderDynamicLogCatalog(items, defaults, fields, fieldDefaults) {
   `).join("");
 }
 
-async function saveDynamicLogDraft() {
-  if (state.dynamicSaveInFlight) return;
-  const name = el("dynamicPolicyName")?.value.trim();
-  const logTypes = Array.from(document.querySelectorAll('input[name="dynamicLogType"]:checked'))
-    .map((input) => input.value);
-  const selectedFields = Array.from(document.querySelectorAll('input[name="dynamicField"]:checked'))
-    .map((input) => input.value);
-  if (!name) {
+function dynamicDraftFormValues() {
+  return {
+    name: el("dynamicPolicyName")?.value.trim() || "",
+    logTypes: Array.from(document.querySelectorAll('input[name="dynamicLogType"]:checked'))
+      .map((input) => input.value),
+    selectedFields: Array.from(document.querySelectorAll('input[name="dynamicField"]:checked'))
+      .map((input) => input.value),
+  };
+}
+
+function validateDynamicDraftValues(values) {
+  if (!values.name) {
     el("dynamicDraftStatus").textContent = "Configuration name is required";
     el("dynamicPolicyName")?.focus();
-    return;
+    return false;
   }
-  if (!logTypes.length) {
+  if (!values.logTypes.length) {
     el("dynamicDraftStatus").textContent = "Select at least one log type";
-    return;
+    return false;
   }
-  if (!selectedFields.length) {
+  if (!values.selectedFields.length) {
     el("dynamicDraftStatus").textContent = "Select at least one data field";
-    return;
+    return false;
   }
+  return true;
+}
+
+function clearDynamicPreview() {
+  const panel = el("dynamicPreviewPanel");
+  const wasVisible = panel && !panel.hidden;
+  state.dynamicPreviewRequestId++;
+  if (panel) panel.hidden = true;
+  if (wasVisible) el("dynamicDraftStatus").textContent = "Configuration changed; preview again";
+}
+
+async function previewDynamicLogDraft() {
+  const values = dynamicDraftFormValues();
+  if (!validateDynamicDraftValues(values)) return;
+
+  const requestId = ++state.dynamicPreviewRequestId;
+  const button = el("dynamicDraftPreview");
+  button.disabled = true;
+  el("dynamicDraftStatus").textContent = "Building read-only preview...";
+  try {
+    const preview = await api("/api/dashboard/dynamic-config/preview", {
+      method: "POST",
+      body: { ...values, draft: true, targetType: "default" },
+    });
+    if (requestId !== state.dynamicPreviewRequestId) return;
+    renderDynamicConfigPreview(preview);
+    el("dynamicDraftStatus").textContent = "Preview ready; no policy saved";
+  } catch (error) {
+    if (requestId !== state.dynamicPreviewRequestId) return;
+    el("dynamicDraftStatus").textContent = error.message || "Preview could not be generated";
+    throw error;
+  } finally {
+    if (requestId === state.dynamicPreviewRequestId) button.disabled = false;
+  }
+}
+
+function renderDynamicConfigPreview(preview) {
+  const summary = preview.summary || {};
+  const fields = summary.selectedFields || [];
+  const required = fields.filter((item) => item.required);
+  const sensors = Object.entries(summary.sensors || {})
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name.replace(/_enabled$/, "").replace(/_/g, " "));
+  const rows = [
+    ["Configuration", summary.name || "-"],
+    ["State", summary.state || "disabled draft"],
+    ["Log types", (summary.logTypes || []).map((item) => item.name).join(", ") || "-"],
+    ["Windows channels", (summary.channels || []).join(", ") || "-"],
+    ["Selected fields", fields.map((item) => `${item.name} -> ${item.field}`).join(", ") || "-"],
+    ["Required fields", required.map((item) => item.name).join(", ") || "-"],
+    ["Retained internally", (summary.retainedInternalFields || []).join(", ") || "-"],
+    ["Enabled sensors", sensors.join(", ") || "none"],
+  ];
+  el("dynamicPreviewSummary").innerHTML = rows.map(([label, value]) => `
+    <div><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>
+  `).join("");
+  el("dynamicPreviewJson").textContent = JSON.stringify(preview.policy || {}, null, 2);
+  el("dynamicPreviewState").textContent = preview.previewOnly ? "Preview only" : "Draft";
+  el("dynamicPreviewPanel").hidden = false;
+}
+
+async function saveDynamicLogDraft() {
+  if (state.dynamicSaveInFlight) return;
+  const values = dynamicDraftFormValues();
+  if (!validateDynamicDraftValues(values)) return;
 
   state.dynamicSaveInFlight = true;
   el("dynamicDraftSave").disabled = true;
@@ -837,9 +922,10 @@ async function saveDynamicLogDraft() {
   try {
     const saved = await api("/api/dashboard/dynamic-config/policies", {
       method: "POST",
-      body: { name, logTypes, selectedFields, draft: true, targetType: "default" },
+      body: { ...values, draft: true, targetType: "default" },
     });
-    el("dynamicDraftStatus").textContent = `Draft ${saved.policy_id || name} saved`;
+    el("dynamicDraftStatus").textContent = `Draft ${saved.policy_id || values.name} saved`;
+    clearDynamicPreview();
     el("dynamicLogForm").reset();
     await loadDynamicConfig();
   } catch (error) {
@@ -1132,6 +1218,9 @@ function query(extra = {}) {
 function selectedRange() {
   const now = new Date();
   const value = el("rangeSelect").value;
+  if (value === "all") {
+    return { from: new Date(0).toISOString(), to: now.toISOString() };
+  }
   const hours = value === "1h" ? 1 : value === "6h" ? 6 : value === "24h" ? 24 : 24 * 30;
   return {
     from: new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString(),
@@ -1142,6 +1231,7 @@ function selectedRange() {
 function selectedBucket() {
   const value = el("rangeSelect").value;
   if (value === "1h") return "second";
+  if (value === "all") return "day";
   if (value === "30d") return "minute";
   return "minute";
 }

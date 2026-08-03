@@ -12,6 +12,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-08 - Search and filter alerts | Implemented | 12 alert API/UI tests passed; 2 real ClickHouse alert integration flows passed; full default suite 30 passed / 3 optional integration skips; desktop/mobile browser QA passed | `uc/UC-08-alert-filter` |
 | UC-09 - Configure Dynamic Logs | Implemented | 5 API/control-plane/UI tests passed; full default Dashboard API suite 35 passed / 3 optional integration skips; live control-plane read and desktop/mobile browser QA passed | `uc/UC-09-dynamic-log-config` |
 | UC-10 - Select log data fields | Implemented | 7 Dynamic Config API/UI tests passed; full Dashboard API suite 37 passed / 3 optional integration skips; Rust source parse and desktop/mobile browser QA passed | `uc/UC-10-log-field-selection` |
+| UC-11 - Preview Dynamic Logs configuration | Implemented | 16 focused tests passed; full Dashboard API suite 40 passed / 3 optional integration skips; live preview and all-time Dashboard browser QA passed | `uc/UC-11-config-preview` |
 
 ## UC-02 verified behavior
 
@@ -84,3 +85,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Keeps the policy disabled with rollout off; preview remains UC-11 and assignment/application remains UC-12.
 - Passed desktop/mobile browser QA with optional-field selection, four locked required fields, no horizontal overflow, correct responsive columns, and no console errors.
 - Rust syntax parsing passed; Cargo tests remain unavailable because `ed25519-dalek` is not present in the offline dependency cache.
+
+
+## UC-11 verified behavior
+
+- Builds a read-only preview from the current Dynamic Logs form without creating or updating a control-plane policy.
+- Shows the configuration name, disabled draft state, selected log types, Windows channels, canonical field mappings, required fields, retained internal fields, and enabled sensors.
+- Exposes the canonical policy JSON with rollout disabled and remains available when the Dynamic Config control plane is offline.
+- Invalidates an existing preview whenever the form changes and rejects missing names, empty log selections, and invalid field selections before previewing.
+- Distinguishes all-time ClickHouse rows from the active Dashboard time range and provides an explicit `All time` range option.
+- Reports the latest telemetry timestamp and stale-data age so an ingestion outage is not mistaken for Dashboard truncation.
+- Browser QA confirmed that previewing did not change the live policy count and that the all-time Overview displays all 2,682,431 available rows.

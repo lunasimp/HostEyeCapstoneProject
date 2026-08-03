@@ -148,6 +148,63 @@ test("UC-10 rejects invalid or unsafe field selections before contacting the con
   }
 });
 
+test("UC-11 previews the canonical policy without contacting the control plane", async () => {
+  const controlPlane = await startMockDynamicConfig();
+  const api = await startApi(controlPlane.url);
+  try {
+    const response = await postJson(api.url + "/api/dashboard/dynamic-config/preview", {
+      name: "Preview investigation policy",
+      logTypes: ["windows-security", "sysmon"],
+      selectedFields: ["timestamp", "hostname", "event_id", "channel", "username", "message"],
+      targetType: "default",
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.body.previewOnly, true);
+    assert.equal(response.body.summary.state, "disabled draft");
+    assert.deepEqual(response.body.summary.logTypes, [
+      { id: "windows-security", name: "Windows Security" },
+      { id: "sysmon", name: "Sysmon" },
+    ]);
+    assert.deepEqual(response.body.summary.channels, [
+      "Security", "Microsoft-Windows-Sysmon/Operational",
+    ]);
+    assert.deepEqual(response.body.summary.selectedFields.map((item) => item.field),
+      ["timestamp", "computer", "event_id", "channel", "user_name", "message"]);
+    assert.deepEqual(response.body.summary.selectedFields.filter((item) => item.required).map((item) => item.field),
+      ["timestamp", "computer", "event_id", "channel"]);
+    assert.equal(response.body.policy.enabled, false);
+    assert.equal(response.body.policy.rollout.enabled, false);
+    assert.equal(controlPlane.requests.length, 0);
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
+test("UC-11 preview validates input but remains available when the control plane is offline", async () => {
+  const unreachablePort = await freePort();
+  const api = await startApi("http://127.0.0.1:" + unreachablePort);
+  try {
+    const preview = await postJson(api.url + "/api/dashboard/dynamic-config/preview", {
+      name: "Offline preview",
+      logTypes: ["windows-system"],
+      selectedFields: ["timestamp", "hostname", "event_id", "channel"],
+    });
+    assert.equal(preview.status, 200);
+    assert.equal(preview.body.previewOnly, true);
+
+    const invalid = await postJson(api.url + "/api/dashboard/dynamic-config/preview", {
+      name: "Unsafe preview",
+      logTypes: ["windows-system"],
+      selectedFields: ["timestamp", "hostname", "event_id"],
+    });
+    assert.equal(invalid.status, 400);
+    assert.match(invalid.body.message, /required fields: channel/);
+  } finally {
+    await api.close();
+  }
+});
+
 test("UC-09 reports Dynamic Config outages without claiming a draft was saved", async () => {
   const port = await freePort();
   const api = await startApi("http://127.0.0.1:" + port);
@@ -167,17 +224,22 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
   const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
   for (const id of ["dynamicLogForm", "dynamicPolicyName", "dynamicLogTypeOptions", "dynamicFieldOptions",
-    "dynamicDraftStatus", "dynamicDraftSave"]) {
+    "dynamicDraftStatus", "dynamicDraftPreview", "dynamicDraftSave", "dynamicPreviewPanel",
+    "dynamicPreviewSummary", "dynamicPreviewJson"]) {
     assert.ok(html.includes('id="' + id + '"'));
   }
   assert.match(app, /dynamic-config\/catalog/);
   assert.match(app, /saveDynamicLogDraft/);
-  assert.match(app, /logTypes, selectedFields, draft: true/);
+  assert.match(app, /previewDynamicLogDraft/);
+  assert.match(app, /dynamic-config\/preview/);
+  assert.match(app, /Preview ready; no policy saved/);
+  assert.match(app, /body: \{ \.\.\.values, draft: true, targetType: "default" \}/);
   assert.match(app, /name="dynamicField"/);
   assert.ok(app.includes('${item.required ? "disabled" : ""}'));
   assert.match(app, /dynamicSaveInFlight/);
   assert.match(css, /\.dynamic-log-options/);
   assert.ok(css.includes(".dynamic-field-options"));
+  assert.ok(css.includes(".dynamic-preview-summary"));
   assert.match(css, /grid-template-columns: 1fr/);
 });
 

@@ -8,6 +8,28 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+test("Dashboard health distinguishes all-time rows from stale telemetry", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const health = await getJson(api.url + "/api/health");
+    assert.equal(health.status, 200);
+    assert.deepEqual(health.body, {
+      status: "ok",
+      clickhouse: clickhouse.url,
+      database: "default",
+      rows: 12,
+      firstSeen: "2026-06-14 11:06:56.673",
+      lastSeen: "2026-07-07 07:02:02.000",
+      dataAgeSeconds: 500000,
+      stale: true,
+    });
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
 test("UC-01 overview endpoints return backend data and apply consistent filters", async () => {
   const clickhouse = await startMockClickHouse();
   const api = await startApi(clickhouse.url);
@@ -156,6 +178,11 @@ test("UC-01 dashboard UI uses HostEye terminology and never activates demo fallb
   assert.match(app, /renderErrorEverywhere\(error\.message/);
   assert.match(html, /<title>HostEye Dashboard<\/title>/);
   assert.match(html, /<strong>HostEye Overview<\/strong>/);
+  assert.match(html, /<option value="all">All time<\/option>/);
+  assert.match(html, /id="kpiEventsLabel">Events in selected range/);
+  assert.match(app, /rows all-time/);
+  assert.match(app, /Connected - telemetry stale/);
+  assert.match(app, /value === "all"/);
   assert.doesNotMatch(html, /SOC Overview|HostEye SOC Dashboard/);
 });
 
@@ -205,7 +232,12 @@ function rowsForEmptyQuery(sql) {
 }
 
 function rowsForQuery(sql) {
-  if (sql.includes("count() AS rows")) return [{ rows: "12" }];
+  if (sql.includes("count() AS rows")) return [{
+    rows: "12",
+    firstSeen: "2026-06-14 11:06:56.673",
+    lastSeen: "2026-07-07 07:02:02.000",
+    dataAgeSeconds: "500000",
+  }];
   if (sql.includes("uniqExact(computer) AS totalHosts")) {
     return [{
       totalEvents: "12",

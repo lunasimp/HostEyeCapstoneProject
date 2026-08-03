@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260731-uc06">
+    <link rel="stylesheet" href="./styles.css?v=20260803-uc11">
   </head>
   <body>
     <div class="app-shell">
@@ -37,6 +37,7 @@
               <option value="6h">Last 6 hours</option>
               <option value="24h">Last 24 hours</option>
               <option value="30d" selected>Last 30 days</option>
+              <option value="all">All time</option>
             </select>
           </label>
 
@@ -74,7 +75,7 @@
         </section>
 
         <section class="kpi-grid page-view" id="kpis" data-page="overview">
-          <article class="kpi"><span>Total events</span><strong id="kpiEvents">-</strong></article>
+          <article class="kpi"><span id="kpiEventsLabel">Events in selected range</span><strong id="kpiEvents">-</strong></article>
           <article class="kpi"><span>Total hosts</span><strong id="kpiHosts">-</strong></article>
           <article class="kpi"><span>Event IDs</span><strong id="kpiEventIds">-</strong></article>
           <article class="kpi"><span>Last seen</span><strong id="kpiLastSeen">-</strong></article>
@@ -349,10 +350,27 @@
                   </div>
                 </fieldset>
                 <div class="dynamic-builder-actions">
-                  <p>Drafts remain disabled and are not sent to endpoints until they are assigned and enabled.</p>
-                  <button id="dynamicDraftSave" class="refresh-btn" type="submit">Save draft</button>
+                  <p>Preview is read-only. Drafts remain disabled until they are assigned and enabled.</p>
+                  <div class="dynamic-action-buttons">
+                    <button id="dynamicDraftPreview" class="secondary-btn" type="button">Preview configuration</button>
+                    <button id="dynamicDraftSave" class="refresh-btn" type="submit">Save draft</button>
+                  </div>
                 </div>
               </form>
+              <section id="dynamicPreviewPanel" class="dynamic-preview" aria-live="polite" hidden>
+                <div class="dynamic-preview-header">
+                  <div>
+                    <strong>Configuration preview</strong>
+                    <span>No policy has been saved or sent to an endpoint.</span>
+                  </div>
+                  <span id="dynamicPreviewState">Disabled draft</span>
+                </div>
+                <div id="dynamicPreviewSummary" class="dynamic-preview-summary"></div>
+                <details>
+                  <summary>Canonical policy JSON</summary>
+                  <pre id="dynamicPreviewJson"></pre>
+                </details>
+              </section>
             </article>
             <div class="grid two">
               <article class="panel">
