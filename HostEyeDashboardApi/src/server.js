@@ -71,6 +71,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/dynamic-config\/summary$/, dynamicConfigSummary],
   ["GET", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigPolicies],
   ["GET", /^\/api\/dashboard\/dynamic-config\/agents$/, dynamicConfigAgents],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/config-status$/, dynamicConfigStatus],
   ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
   ["GET", /^\/api\/dashboard\/dynamic-config\/catalog$/, dynamicConfigCatalog],
   ["POST", /^\/api\/dashboard\/dynamic-config\/preview$/, dynamicConfigPreview],
@@ -934,6 +935,98 @@ async function dynamicConfigPolicies(_ctx, res) {
 async function dynamicConfigAgents(_ctx, res) {
   const agents = await dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true });
   sendJson(res, 200, { items: Array.isArray(agents) ? agents : [] });
+}
+
+async function dynamicConfigStatus(_ctx, res) {
+  const [policies, agents] = await Promise.all([
+    dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
+    dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
+  ]);
+  const policyRows = Array.isArray(policies) ? policies : [];
+  const items = (Array.isArray(agents) ? agents : []).map((agent) => mapDynamicConfigStatus(agent, policyRows));
+  const states = countBy(items, (item) => item.state);
+  sendJson(res, 200, {
+    totals: {
+      agents: items.length,
+      applied: stateCount(states, "applied") + stateCount(states, "rendered"),
+      pending: stateCount(states, "pending_agent_poll") + stateCount(states, "sent_waiting_ack"),
+      failed: stateCount(states, "apply_failed"),
+    },
+    states,
+    items,
+  });
+}
+
+function mapDynamicConfigStatus(agent, policies) {
+  const assigned = selectAssignedPolicy(agent, policies);
+  const assignedPolicyId = assigned?.policy_id || "";
+  const assignedVersion = Number(assigned?.version || 0);
+  const reportedPolicyId = agent.reported_policy_id
+    || agent.current_policy_id
+    || (["applied", "rendered"].includes(agent.last_ack_status) ? agent.last_policy_id : "")
+    || "";
+  const reportedVersion = Number(agent.reported_version
+    ?? agent.current_version
+    ?? (["applied", "rendered"].includes(agent.last_ack_status) ? agent.last_version : 0)
+    ?? 0);
+  const ackMatchesAssignment = Boolean(assignedPolicyId)
+    && agent.last_policy_id === assignedPolicyId
+    && Number(agent.last_version || 0) === assignedVersion;
+  const reportedMatchesAssignment = Boolean(assignedPolicyId)
+    && reportedPolicyId === assignedPolicyId
+    && reportedVersion === assignedVersion;
+  const deliveryMatchesAssignment = agent.desired_policy_id === assignedPolicyId
+    && Number(agent.desired_version || 0) === assignedVersion;
+  const ackStatus = String(agent.last_ack_status || "not_acknowledged").toLowerCase();
+
+  let state = "pending_agent_poll";
+  if (!assigned) state = "no_active_policy";
+  else if (ackMatchesAssignment && ackStatus === "apply_failed") state = "apply_failed";
+  else if (reportedMatchesAssignment && ackStatus === "rendered") state = "rendered";
+  else if (reportedMatchesAssignment) state = "applied";
+  else if (deliveryMatchesAssignment && agent.delivery_status === "sent_waiting_ack") state = "sent_waiting_ack";
+
+  return {
+    agentId: agent.agent_id || "",
+    hostId: agent.host_id || "",
+    groupId: agent.group_id || "",
+    agentVersion: agent.agent_version || "",
+    assignedPolicyId,
+    assignedVersion,
+    reportedPolicyId,
+    reportedVersion,
+    state,
+    deliveryStatus: agent.delivery_status || "not_polled",
+    lastPollAt: agent.last_poll_at || null,
+    lastDeliveryAt: agent.last_delivery_at || null,
+    lastAckAt: agent.last_ack_at || null,
+    lastAckStatus: agent.last_ack_status || "not_acknowledged",
+    lastAckMessage: agent.last_ack_message || "",
+  };
+}
+
+function selectAssignedPolicy(agent, policies) {
+  let selected = null;
+  let selectedSpecificity = -1;
+  for (const policy of policies) {
+    if (policy.enabled === false || policy.rollout?.enabled === false) continue;
+    const target = policy.target || { type: "default" };
+    let specificity = -1;
+    if (target.type === "agent" && target.agent_id === agent.agent_id) specificity = 2;
+    else if (target.type === "group" && target.group_id === agent.group_id) specificity = 1;
+    else if (!target.type || target.type === "default") specificity = 0;
+    if (specificity < 0) continue;
+    if (specificity > selectedSpecificity
+      || (specificity === selectedSpecificity && Number(policy.version || 0) > Number(selected?.version || 0))) {
+      selected = policy;
+      selectedSpecificity = specificity;
+    }
+  }
+  return selected;
+}
+
+function stateCount(states, state) {
+  return Number(states.find((item) => item.key === state)?.count || 0);
 }
 
 async function dynamicConfigAudit(_ctx, res) {

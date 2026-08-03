@@ -1583,3 +1583,24 @@ body.modal-open {
     padding: 14px;
   }
 }
+
+.dynamic-status-panel {
+  grid-column: 1 / -1;
+}
+
+#dynamicAgentsTable table {
+  min-width: 1120px;
+}
+
+#dynamicAgentsTable th,
+#dynamicAgentsTable td {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#dynamicAgentsTable th:last-child,
+#dynamicAgentsTable td:last-child {
+  min-width: 260px;
+}

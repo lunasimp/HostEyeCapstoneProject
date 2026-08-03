@@ -320,6 +320,75 @@ test("UC-12 rejects unsafe or unknown assignments without mutating policy state"
   }
 });
 
+test("UC-13 reports assigned, sent, applied, failed, and current config state per endpoint", async () => {
+  const basePolicy = {
+    policy_id: "policy-default-v10",
+    version: 10,
+    enabled: true,
+    target: { type: "default" },
+    rollout: { enabled: true, percent: 100, min_agent_version: "0.1.0" },
+  };
+  const groupPolicy = {
+    ...basePolicy,
+    policy_id: "policy-group-lab",
+    version: 4,
+    target: { type: "group", group_id: "group-lab" },
+  };
+  const now = "2026-08-03T08:00:00.000Z";
+  const controlPlane = await startMockDynamicConfig({
+    policies: [basePolicy, groupPolicy],
+    agents: [
+      {
+        agent_id: "agent-applied", host_id: "host-applied", group_id: "group-lab",
+        reported_policy_id: groupPolicy.policy_id, reported_version: 4,
+        desired_policy_id: groupPolicy.policy_id, desired_version: 4,
+        delivery_status: "applied", last_poll_at: now, last_ack_at: now,
+        last_policy_id: groupPolicy.policy_id, last_version: 4,
+        last_ack_status: "applied", last_ack_message: "Atomic apply completed",
+      },
+      {
+        agent_id: "agent-sent", host_id: "host-sent", group_id: "group-lab",
+        reported_policy_id: "policy-previous", reported_version: 3,
+        desired_policy_id: groupPolicy.policy_id, desired_version: 4,
+        delivery_status: "sent_waiting_ack", last_poll_at: now, last_delivery_at: now,
+        last_policy_id: "policy-previous", last_version: 3, last_ack_status: "applied",
+      },
+      {
+        agent_id: "agent-pending", host_id: "host-pending", group_id: "group-lab",
+        reported_policy_id: "policy-previous", reported_version: 3,
+        desired_policy_id: "policy-previous", desired_version: 3,
+        delivery_status: "up_to_date", last_poll_at: now,
+        last_policy_id: "policy-previous", last_version: 3, last_ack_status: "applied",
+      },
+      {
+        agent_id: "agent-failed", host_id: "host-failed", group_id: "group-lab",
+        reported_policy_id: "policy-previous", reported_version: 3,
+        desired_policy_id: groupPolicy.policy_id, desired_version: 4,
+        delivery_status: "apply_failed", last_poll_at: now, last_ack_at: now,
+        last_policy_id: groupPolicy.policy_id, last_version: 4,
+        last_ack_status: "apply_failed", last_ack_message: "validation command failed",
+      },
+    ],
+  });
+  const api = await startApi(controlPlane.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/dynamic-config/config-status");
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.totals, { agents: 4, applied: 1, pending: 2, failed: 1 });
+    const byAgent = new Map(response.body.items.map((item) => [item.agentId, item]));
+    assert.equal(byAgent.get("agent-applied").state, "applied");
+    assert.equal(byAgent.get("agent-applied").assignedPolicyId, groupPolicy.policy_id);
+    assert.equal(byAgent.get("agent-applied").reportedPolicyId, groupPolicy.policy_id);
+    assert.equal(byAgent.get("agent-sent").state, "sent_waiting_ack");
+    assert.equal(byAgent.get("agent-pending").state, "pending_agent_poll");
+    assert.equal(byAgent.get("agent-failed").state, "apply_failed");
+    assert.match(byAgent.get("agent-failed").lastAckMessage, /validation command failed/);
+  } finally {
+    await api.close();
+    await controlPlane.close();
+  }
+});
+
 test("UC-09 reports Dynamic Config outages without claiming a draft was saved", async () => {
   const port = await freePort();
   const api = await startApi("http://127.0.0.1:" + port);
@@ -351,6 +420,12 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   assert.match(app, /dynamic-config\/preview/);
   assert.match(app, /Preview ready; no policy saved/);
   assert.match(app, /dynamic-config\/assignments/);
+  assert.match(app, /dynamic-config\/config-status/);
+  assert.match(app, /Waiting for Agent poll/);
+  assert.match(app, /Sent; waiting for ACK/);
+  assert.match(app, /Apply failed/);
+  assert.match(html, /Endpoint configuration status/);
+  assert.match(html, /dynamic-status-panel/);
   assert.match(app, /assignDynamicConfig/);
   assert.match(app, /Waiting for endpoint poll and ACK/);
   assert.match(app, /Latest ACK:/);
@@ -362,6 +437,8 @@ test("UC-09 Dashboard exposes a responsive log-type draft workflow", async () =>
   assert.ok(css.includes(".dynamic-field-options"));
   assert.ok(css.includes(".dynamic-preview-summary"));
   assert.ok(css.includes(".dynamic-assignment-grid"));
+  assert.match(css, /#dynamicAgentsTable table/);
+  assert.match(css, /min-width: 1120px/);
   assert.match(css, /grid-template-columns: 1fr/);
 });
 

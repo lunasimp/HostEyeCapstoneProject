@@ -14,6 +14,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-10 - Select log data fields | Implemented | 7 Dynamic Config API/UI tests passed; full Dashboard API suite 37 passed / 3 optional integration skips; Rust source parse and desktop/mobile browser QA passed | `uc/UC-10-log-field-selection` |
 | UC-11 - Preview Dynamic Logs configuration | Implemented | 16 focused tests passed; full Dashboard API suite 40 passed / 3 optional integration skips; live preview and all-time Dashboard browser QA passed | `uc/UC-11-config-preview` |
 | UC-12 - Assign Dynamic Logs configuration | Implemented | 11 Dynamic Config tests passed; full Dashboard API suite 42 passed / 3 optional integration skips; isolated signed apply and desktop/mobile browser QA passed | `uc/UC-12-config-assignment` |
+| UC-13 - View Dynamic Logs configuration status | Implemented | UC-13 API status test passed; full Dashboard API suite 43 passed / 3 optional integration skips; Rust tests 2/2 passed; isolated success/failure flow and desktop/mobile browser QA passed | `uc/UC-13-config-status` |
 
 ## UC-02 verified behavior
 
@@ -108,3 +109,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Displays the latest endpoint ACK, policy version, apply status, and apply message without claiming success before the endpoint responds.
 - Passed an isolated end-to-end flow in which the Rust client selected the group policy, verified and applied the signed envelope, wrote the resulting state/config files, and ACKed policy version 2 as `applied`.
 - Passed desktop and 390px mobile browser QA with no horizontal overflow, 44px mobile action control, and no console errors; no real endpoint group was modified.
+
+## UC-13 verified behavior
+
+- Records each endpoint poll, Agent version, Agent-reported current policy/version, desired policy/version, last configuration delivery, and latest ACK without overwriting prior ACK evidence.
+- Distinguishes `Waiting for Agent poll`, `Sent; waiting for ACK`, `Applied`, `Rendered only`, `Apply failed`, and `No active policy` per endpoint.
+- Resolves the assigned configuration with the same precedence as the control plane: Agent-specific policy, then group policy, then default policy; the newest version wins within a scope.
+- Shows assigned configuration, delivery/apply state, current configuration, latest ACK, poll time, and ACK detail in a full-width responsive Dashboard table.
+- Preserves backward compatibility for existing Dynamic Config state files through defaulted fields and updates the previously incomplete Cargo lockfile for reproducible signed-config builds.
+- Passed the full Dashboard API suite with 43 tests passed and 3 optional integration skips; the UC-13 test covered applied, sent-waiting-ACK, pending-poll, and apply-failed states.
+- Passed Rust tests 2/2 and an isolated real control-plane/client flow: one render-only Agent applied policy version 2 and then reported `up_to_date`; one Agent intentionally failed pre-apply validation and was reported as `apply_failed`.
+- Passed desktop and 390px mobile browser QA with no page-level horizontal overflow or console errors; the wide status table uses contained horizontal scrolling on mobile.

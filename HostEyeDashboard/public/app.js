@@ -767,10 +767,11 @@ function openDetailForChunk(host, time) {
 
 async function loadDynamicConfig() {
   try {
-    const [summary, policies, agents, audit, catalog] = await Promise.all([
+    const [summary, policies, agents, configStatus, audit, catalog] = await Promise.all([
       api("/api/dashboard/dynamic-config/summary"),
       api("/api/dashboard/dynamic-config/policies"),
       api("/api/dashboard/dynamic-config/agents"),
+      api("/api/dashboard/dynamic-config/config-status"),
       api("/api/dashboard/dynamic-config/audit"),
       api("/api/dashboard/dynamic-config/catalog"),
     ]);
@@ -792,7 +793,7 @@ async function loadDynamicConfig() {
     const agentRows = agents.items || summary.agents || [];
     const groupRows = summary.groups || [];
     renderDynamicPolicies(policyRows);
-    renderDynamicAgents(agentRows);
+    renderDynamicAgents(configStatus.items || []);
     renderDynamicGroups(groupRows);
     renderDynamicAudit(audit.items || []);
     renderDynamicAssignmentOptions(policyRows, agentRows, groupRows);
@@ -1084,25 +1085,44 @@ function renderDynamicPolicies(rows) {
 
 function renderDynamicAgents(rows) {
   const normalized = rows.map((agent) => ({
-    agentId: agent.agent_id || agent.agentId || "-",
-    hostId: agent.host_id || agent.hostId || "-",
-    groupId: agent.group_id || agent.groupId || "unknown",
-    version: agent.agent_version || agent.agentVersion || "-",
-    policyId: agent.current_policy_id || agent.last_policy_id || agent.policy_id || "-",
-    policyVersion: agent.current_version || agent.last_version || agent.policy_version || 0,
-    lastSeen: agent.last_seen || agent.last_seen_at || agent.lastSeen || agent.updated_at || "",
-    status: agent.status || agent.last_ack_status || "seen",
+    agentId: agent.agentId || "-",
+    hostId: agent.hostId || "-",
+    groupId: agent.groupId || "unknown",
+    assigned: formatConfigVersion(agent.assignedPolicyId, agent.assignedVersion),
+    state: formatConfigState(agent.state),
+    current: formatConfigVersion(agent.reportedPolicyId, agent.reportedVersion),
+    ack: agent.lastAckStatus || "not acknowledged",
+    lastPoll: agent.lastPollAt || "",
+    message: agent.lastAckMessage || "",
   }));
   renderTable(el("dynamicAgentsTable"), normalized, [
     ["Agent", "agentId"],
     ["Host", "hostId"],
     ["Group", "groupId"],
-    ["Agent ver", "version"],
-    ["Policy", "policyId"],
-    ["Config ver", "policyVersion", "numeric"],
-    ["Status", "status"],
-    ["Last seen", "lastSeen", "date"],
+    ["Assigned config", "assigned"],
+    ["Delivery / apply", "state"],
+    ["Current config", "current"],
+    ["Latest ACK", "ack"],
+    ["Last poll", "lastPoll", "date"],
+    ["ACK detail", "message"],
   ]);
+}
+
+function formatConfigVersion(policyId, version) {
+  if (!policyId) return "none";
+  return `${policyId} v${formatNumber(version || 0)}`;
+}
+
+function formatConfigState(state) {
+  const labels = {
+    applied: "Applied",
+    rendered: "Rendered only",
+    apply_failed: "Apply failed",
+    sent_waiting_ack: "Sent; waiting for ACK",
+    pending_agent_poll: "Waiting for Agent poll",
+    no_active_policy: "No active policy",
+  };
+  return labels[state] || state || "Unknown";
 }
 
 function renderDynamicGroups(rows) {

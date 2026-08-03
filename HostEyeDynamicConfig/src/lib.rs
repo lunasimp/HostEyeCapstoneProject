@@ -169,6 +169,24 @@ pub struct AgentState {
     pub agent_id: String,
     pub host_id: String,
     pub group_id: String,
+    #[serde(default)]
+    pub agent_version: String,
+    #[serde(default)]
+    pub reported_policy_id: Option<String>,
+    #[serde(default)]
+    pub reported_version: Option<u64>,
+    #[serde(default)]
+    pub desired_policy_id: String,
+    #[serde(default)]
+    pub desired_version: u64,
+    #[serde(default)]
+    pub delivery_status: String,
+    #[serde(default)]
+    pub last_poll_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_delivery_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub last_ack_at: Option<DateTime<Utc>>,
     pub last_policy_id: String,
     pub last_version: u64,
     pub last_seen_at: DateTime<Utc>,
