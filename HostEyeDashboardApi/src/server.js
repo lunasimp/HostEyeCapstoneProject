@@ -55,6 +55,8 @@ const routes = [
   ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
   ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
   ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
+  ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
+  ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -618,6 +620,181 @@ async function chunksHosts(ctx, res) {
       statusLabel: chunkStatusLabel(chunkStatus(row)),
     })),
   });
+}
+
+async function logLossData(ctx) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const admissionWhere = operationalTimeWhere(ctx.url, "decided_at", ["computer != ''"]);
+  const chunkWhere = operationalTimeWhere(ctx.url, "last_seen", ["computer != ''", "chunk_id != ''"]);
+  const host = ctx.url.searchParams.get("host");
+  const agentWhere = host ? `WHERE computer = ${sqlString(host)}` : "";
+
+  const [agentRows, metricRows, chunkRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, last_seen) AS agentId,
+        argMax(host_id, last_seen) AS hostId,
+        max(last_seen) AS registeredLastSeen
+      FROM default.registered_agents
+      ${agentWhere}
+      GROUP BY computer
+      ORDER BY registeredLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, decided_at) AS agentId,
+        argMax(host_id, decided_at) AS hostId,
+        argMax(loss_metrics_version, decided_at) AS lossMetricsVersion,
+        argMax(collected_event_count, decided_at) AS collectedEventCount,
+        argMax(sent_event_count, decided_at) AS sentEventCount,
+        argMax(pending_event_count, decided_at) AS pendingEventCount,
+        argMax(dropped_event_count, decided_at) AS droppedEventCount,
+        argMax(queue_used_mb, decided_at) AS queueUsedMb,
+        argMax(max_spool_bytes, decided_at) AS maxSpoolBytes,
+        max(decided_at) AS metricLastSeen
+      FROM default.admission_decisions
+      ${admissionWhere.sql}
+      GROUP BY computer
+      ORDER BY metricLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        sum(eventCount) AS serverReceivedEvents,
+        count() AS receivedChunks,
+        max(chunkLastSeen) AS serverLastSeen
+      FROM (
+        SELECT
+          computer,
+          chunk_id,
+          argMax(event_count, last_seen) AS eventCount,
+          max(last_seen) AS chunkLastSeen
+        FROM default.ingest_chunks
+        ${chunkWhere.sql}
+        GROUP BY computer, chunk_id
+      )
+      GROUP BY computer
+      ORDER BY serverLastSeen DESC
+      LIMIT ${limit}
+    `),
+  ]);
+
+  const byHost = new Map();
+  const ensure = (row) => {
+    const computer = String(row.computer || row.hostId || row.agentId || "").trim();
+    if (!computer) return null;
+    if (!byHost.has(computer)) {
+      byHost.set(computer, {
+        computer,
+        agentId: "",
+        hostId: "",
+        registeredLastSeen: null,
+        metricLastSeen: null,
+        serverLastSeen: null,
+        generatedEventCount: null,
+        collectedEventCount: null,
+        sentEventCount: null,
+        pendingEventCount: null,
+        droppedEventCount: null,
+        serverReceivedEvents: 0,
+        receivedChunks: 0,
+        queueUsedBytes: null,
+        maxSpoolBytes: null,
+        atRiskEventCount: null,
+        coverage: "unavailable",
+        coverageMessage: "Endpoint has not reported UC-14 counters yet.",
+      });
+    }
+    return byHost.get(computer);
+  };
+
+  for (const row of agentRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: row.agentId || "",
+      hostId: row.hostId || "",
+      registeredLastSeen: row.registeredLastSeen || null,
+    });
+  }
+
+  for (const row of metricRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    const covered = Number(row.lossMetricsVersion || 0) >= 1;
+    const queueUsedBytes = covered ? Number(row.queueUsedMb || 0) * 1024 * 1024 : null;
+    const maxSpoolBytes = covered ? Number(row.maxSpoolBytes || 0) : null;
+    const pending = covered ? Number(row.pendingEventCount || 0) : null;
+    const pressure = maxSpoolBytes > 0 ? queueUsedBytes / maxSpoolBytes : 0;
+    Object.assign(item, {
+      agentId: item.agentId || row.agentId || "",
+      hostId: item.hostId || row.hostId || "",
+      metricLastSeen: row.metricLastSeen || null,
+      collectedEventCount: covered ? Number(row.collectedEventCount || 0) : null,
+      sentEventCount: covered ? Number(row.sentEventCount || 0) : null,
+      pendingEventCount: pending,
+      droppedEventCount: covered ? Number(row.droppedEventCount || 0) : null,
+      queueUsedBytes,
+      maxSpoolBytes,
+      atRiskEventCount: covered ? (pressure >= 0.8 ? pending : 0) : null,
+      coverage: covered ? "measured" : "unavailable",
+      coverageMessage: covered
+        ? "Collected, sent, pending, and dropped counters are reported by HostEyeShipper."
+        : "Endpoint uses an older Shipper or has not requested an upload lease in this range.",
+    });
+  }
+
+  for (const row of chunkRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      serverReceivedEvents: Number(row.serverReceivedEvents || 0),
+      receivedChunks: Number(row.receivedChunks || 0),
+      serverLastSeen: row.serverLastSeen || null,
+    });
+  }
+
+  return [...byHost.values()]
+    .map((item) => {
+      const status = logLossStatus(item);
+      return {
+        ...item,
+        lastSeen: latestDate(item.metricLastSeen, item.serverLastSeen, item.registeredLastSeen),
+        statusLevel: status.level,
+        statusLabel: status.label,
+        generatedAvailability: "unavailable",
+        generatedMessage: "Windows does not expose a trustworthy total generated-event counter to HostEye.",
+      };
+    })
+    .sort((left, right) => dateValue(right.lastSeen) - dateValue(left.lastSeen))
+    .slice(0, limit);
+}
+
+async function logLossSummary(ctx, res) {
+  const items = await logLossData(ctx);
+  const measured = items.filter((item) => item.coverage === "measured");
+  sendJson(res, 200, {
+    hosts: items.length,
+    measuredHosts: measured.length,
+    unavailableHosts: items.length - measured.length,
+    collectedEvents: sumNullable(measured, "collectedEventCount"),
+    sentEvents: sumNullable(measured, "sentEventCount"),
+    pendingEvents: sumNullable(measured, "pendingEventCount"),
+    droppedEvents: sumNullable(measured, "droppedEventCount"),
+    atRiskEvents: sumNullable(measured, "atRiskEventCount"),
+    serverReceivedEvents: items.reduce((sum, item) => sum + Number(item.serverReceivedEvents || 0), 0),
+    generatedEvents: null,
+    generatedAvailability: "unavailable",
+    generatedMessage: "HostEye does not estimate events generated by Windows without source instrumentation.",
+  });
+}
+
+async function logLossHosts(ctx, res) {
+  sendJson(res, 200, { items: await logLossData(ctx) });
 }
 
 async function processTopProcesses(ctx, res) {
@@ -2168,6 +2345,18 @@ function jitterStatusLabel(level) {
   if (level === "bursty") return "Bursty";
   if (level === "delayed") return "Delayed";
   return "Silent";
+}
+
+function sumNullable(items, field) {
+  return items.reduce((sum, item) => sum + Number(item[field] || 0), 0);
+}
+
+function logLossStatus(row) {
+  if (row.coverage !== "measured") return { level: "unknown", label: "No endpoint counters" };
+  if (Number(row.droppedEventCount || 0) > 0) return { level: "failed", label: "Loss recorded" };
+  if (Number(row.atRiskEventCount || 0) > 0) return { level: "delayed", label: "At risk" };
+  if (Number(row.pendingEventCount || 0) > 0) return { level: "bursty", label: "Waiting to send" };
+  return { level: "ok", label: "No measured loss" };
 }
 
 function chunkStatus(row) {

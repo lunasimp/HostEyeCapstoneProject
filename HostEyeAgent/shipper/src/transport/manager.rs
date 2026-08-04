@@ -208,6 +208,7 @@ impl<'a> TransportManager<'a> {
                     {
                         let mut st = self.state.lock().unwrap();
                         st.last_success_time = Some(Utc::now());
+                        st.sent_event_count = st.sent_event_count.saturating_add(parsed_event_count as u64);
                         st.save().ok();
                     }
                     return Ok(true);
@@ -322,8 +323,10 @@ impl<'a> TransportManager<'a> {
                         status.as_u16(), status.canonical_reason().unwrap_or("")),
                 });
             }
-    }
+        }
 
+        Ok(false)
+    }
 
     fn rate_limit_body(data: Vec<u8>, rate_kbps: i32) -> reqwest::Body {
         if rate_kbps <= 0 {
@@ -359,8 +362,8 @@ impl<'a> TransportManager<'a> {
         self.flush_errors_with_attempt(0).await;
     }
 
-    #[async_recursion::async_recursion]
-    async fn flush_errors_with_attempt(&self, attempt: u32) {
+    async fn flush_errors_with_attempt(&self, mut attempt: u32) {
+        loop {
         if self.control_plane_url.is_empty() {
             return; // Control Plane chưa cấu hình, bỏ qua
         }
@@ -406,7 +409,8 @@ impl<'a> TransportManager<'a> {
                     attempt, delay.as_secs_f64()
                 ));
                 tokio::time::sleep(delay).await;
-                self.flush_errors_with_attempt(attempt + 1).await;
+                attempt += 1;
+                continue;
             }
             Ok(resp) => {
                 self.logger.warn(&format!(
@@ -417,6 +421,8 @@ impl<'a> TransportManager<'a> {
             Err(e) => {
                 self.logger.warn(&format!("flush_errors: network error: {}, will retry next batch.", e));
             }
+        }
+        return;
         }
     }
 
@@ -445,8 +451,13 @@ impl<'a> TransportManager<'a> {
         let mid = events.len() / 2;
         let halves: [&[Value]; 2] = [&events[..mid], &events[mid..]];
 
-        for half_events in &halves {
-            let new_chunk_id = uuid::Uuid::new_v4().to_string().replace('-', "");
+        for (half_index, half_events) in halves.iter().enumerate() {
+            let new_chunk_id = sha256_hex(&format!(
+                "{}|{}|{}",
+                payload.get("chunk_id").and_then(|value| value.as_str()).unwrap_or("split"),
+                half_index,
+                Utc::now().timestamp_nanos_opt().unwrap_or(0),
+            ));
             let events_json = serde_json::to_string(&serde_json::Value::Array(half_events.to_vec()))?;
             let checksum = sha256_hex(&events_json);
             let event_count = half_events.len();

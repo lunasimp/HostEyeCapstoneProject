@@ -7,9 +7,16 @@ use std::{fs, path::Path};
 
 #[derive(Debug, Clone, Default)]
 pub struct SpoolStats {
-    pub bytes:             u64,
-    pub file_count:        u32,
-    pub pending_file_count: u32,
+    pub bytes:               u64,
+    pub file_count:          u32,
+    pub pending_file_count:  u32,
+    pub pending_event_count: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SpoolEnforcement {
+    pub dropped_file_count: u32,
+    pub dropped_event_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -18,6 +25,7 @@ pub struct QuotaFile {
     pub is_sent:   bool,
 }
 
+#[derive(Clone, Copy)]
 pub struct SpoolQuotaManager;
 
 impl SpoolQuotaManager {
@@ -25,17 +33,19 @@ impl SpoolQuotaManager {
 
     /// Enforce spool quota policy — xoá file cũ nếu vượt max size.
     /// Port từ EnforceSpoolPolicy()
-    pub fn enforce_spool_policy(&self, config: &ShipperConfig, logger: &FileLogger) {
-        if let Err(e) = self.try_enforce(config, logger) {
+    pub fn enforce_spool_policy(&self, config: &ShipperConfig, logger: &FileLogger) -> SpoolEnforcement {
+        self.try_enforce(config, logger).unwrap_or_else(|e| {
             logger.info(&format!("Spool policy check failed: {}", e));
-        }
+            SpoolEnforcement::default()
+        })
     }
 
-    fn try_enforce(&self, config: &ShipperConfig, logger: &FileLogger) -> anyhow::Result<()> {
+    fn try_enforce(&self, config: &ShipperConfig, logger: &FileLogger) -> anyhow::Result<SpoolEnforcement> {
         self.delete_expired_sent_files(config, logger);
+        let mut enforcement = SpoolEnforcement::default();
 
         let max_bytes = if config.max_spool_size_mb <= 0 {
-            return Ok(());
+            return Ok(enforcement);
         } else {
             config.max_spool_size_mb as u64 * 1024 * 1024
         };
@@ -44,7 +54,7 @@ impl SpoolQuotaManager {
         let target_bytes = max_bytes * watermark / 100;
         let mut total_bytes = self.get_directory_size_bytes(&config.spool_directory);
 
-        if total_bytes <= max_bytes { return Ok(()); }
+        if total_bytes <= max_bytes { return Ok(enforcement); }
 
         logger.info(&format!(
             "Spool size {} bytes exceeds max {} bytes; trimming to {} bytes.",
@@ -65,6 +75,9 @@ impl SpoolQuotaManager {
                                     candidate.full_name, len
                                 ));
                             } else {
+                                enforcement.dropped_file_count += 1;
+                                enforcement.dropped_event_count = enforcement.dropped_event_count
+                                    .saturating_add(event_count_from_path(Path::new(&candidate.full_name)).unwrap_or(0));
                                 logger.warn(&format!(
                                     "Dropped unsent spool file {} ({} bytes) to enforce spool limit. DATA_LOSS=true",
                                     candidate.full_name, len
@@ -81,7 +94,7 @@ impl SpoolQuotaManager {
                 }
             }
         }
-        Ok(())
+        Ok(enforcement)
     }
 
     fn delete_expired_sent_files(&self, config: &ShipperConfig, logger: &FileLogger) {
@@ -230,10 +243,56 @@ fn count_files(dir: &Path, spool_root: &str, stats: &mut SpoolStats) {
                     if let Some(parent) = p.parent() {
                         if parent == Path::new(spool_root) {
                             stats.pending_file_count += 1;
+                            stats.pending_event_count = stats.pending_event_count
+                                .saturating_add(event_count_from_path(&p).unwrap_or(0));
                         }
                     }
                 }
             }
         }
+    }
+}
+
+fn event_count_from_path(path: &Path) -> Option<u64> {
+    let name = path.file_name()?.to_str()?.strip_suffix(".gz")?;
+    name.rsplit('_').next()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{event_count_from_path, SpoolQuotaManager};
+    use crate::{config::ShipperConfig, util::logger::FileLogger};
+    use std::{fs, path::Path, time::{SystemTime, UNIX_EPOCH}};
+
+    #[test]
+    fn parses_event_count_from_chunk_filename() {
+        assert_eq!(event_count_from_path(Path::new("chunk_id_checksum_42.gz")), Some(42));
+        assert_eq!(event_count_from_path(Path::new("invalid.gz")), None);
+    }
+
+    #[test]
+    fn reports_pending_and_quota_dropped_events() {
+        let suffix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("hosteye-uc14-{suffix}"));
+        fs::create_dir_all(&root).unwrap();
+        let chunk = root.join("chunk_id_checksum_42.gz");
+        fs::write(&chunk, vec![0u8; 2 * 1024 * 1024]).unwrap();
+
+        let manager = SpoolQuotaManager::new();
+        let before = manager.get_spool_stats(root.to_str().unwrap());
+        assert_eq!(before.pending_file_count, 1);
+        assert_eq!(before.pending_event_count, 42);
+
+        let mut config = ShipperConfig::default();
+        config.spool_directory = root.to_string_lossy().to_string();
+        config.max_spool_size_mb = 1;
+        config.low_watermark_percent = 50;
+        config.prefer_deleting_sent_first = false;
+        let enforcement = manager.enforce_spool_policy(&config, &FileLogger::new(""));
+
+        assert_eq!(enforcement.dropped_file_count, 1);
+        assert_eq!(enforcement.dropped_event_count, 42);
+        assert!(!chunk.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }

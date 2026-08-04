@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -14,16 +14,44 @@ use tokio::net::TcpListener;
 #[path = "../control_plane/index.rs"]
 mod control_plane;
 
-#[path = "../storage/mod.rs"]
-mod storage;
+#[path = "../storage/agent_error_rows.rs"]
+mod agent_error_rows;
 
 use control_plane::{BootstrapPayload, CollectorHeartbeatPayload, ControlPlane};
-use storage::agent_error_rows::{AgentErrorReport, AgentChunkErrorRow};
+use agent_error_rows::{AgentErrorReport, AgentChunkErrorRow};
 
 #[derive(Clone)]
 struct AppState {
     control_plane: Arc<ControlPlane>,
     ch: clickhouse::Client,
+}
+
+#[derive(Debug, clickhouse::Row, Serialize)]
+struct AdmissionDecisionRow {
+    decided_at: String,
+    agent_id: String,
+    host_id: String,
+    computer: String,
+    queue_used_mb: f64,
+    next_chunk_size_mb: f64,
+    retry_count: u32,
+    rank: u32,
+    active_uploads: u32,
+    max_active_uploads: u32,
+    decision: String,
+    lease_id: String,
+    lease_ttl_seconds: u32,
+    retry_after_seconds: u32,
+    message: String,
+    max_batch_mb: f64,
+    max_upload_rate_kbps: u32,
+    lease_expires_at: String,
+    loss_metrics_version: u8,
+    collected_event_count: u64,
+    sent_event_count: u64,
+    pending_event_count: u64,
+    dropped_event_count: u64,
+    max_spool_bytes: u64,
 }
 
 #[tokio::main]
@@ -102,8 +130,10 @@ async fn bootstrap_handler(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    let metrics = payload.clone();
     match state.control_plane.bootstrap(payload, if_none_match).await {
         Ok((status_code, response)) => {
+            persist_admission_decision(&state.ch, &metrics, &response).await;
             let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
             (status, Json(serde_json::to_value(response).unwrap())).into_response()
         }
@@ -126,8 +156,10 @@ async fn legacy_admission_handler(
         .and_then(|h| h.to_str().ok())
         .map(|s| s.to_string());
 
+    let metrics = payload.clone();
     match state.control_plane.bootstrap(payload, if_none_match).await {
         Ok((status_code, response)) => {
+            persist_admission_decision(&state.ch, &metrics, &response).await;
             let status = StatusCode::from_u16(status_code).unwrap_or(StatusCode::OK);
             let legacy_response = json!({
                 "admission": response.admission,
@@ -147,6 +179,48 @@ async fn legacy_admission_handler(
                 Json(json!({ "status": "error", "message": err })),
             ).into_response()
         }
+    }
+}
+
+async fn persist_admission_decision(
+    ch: &clickhouse::Client,
+    payload: &BootstrapPayload,
+    response: &control_plane::AdmissionResponse,
+) {
+    let row = AdmissionDecisionRow {
+        decided_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        agent_id: payload.agent_id.clone().unwrap_or_default(),
+        host_id: payload.host_id.clone().unwrap_or_default(),
+        computer: payload.computer.clone().unwrap_or_default(),
+        queue_used_mb: payload.queue_used_mb.or_else(|| payload.queue_state.as_ref().and_then(|q| q.queue_used_mb)).unwrap_or(0.0),
+        next_chunk_size_mb: payload.next_chunk_size_mb.or_else(|| payload.queue_state.as_ref().and_then(|q| q.next_chunk_size_mb)).unwrap_or(0.0),
+        retry_count: payload.retry_count.or_else(|| payload.queue_state.as_ref().and_then(|q| q.retry_count)).unwrap_or(0).max(0) as u32,
+        rank: payload.retry_count.unwrap_or(0).max(0) as u32,
+        active_uploads: 0,
+        max_active_uploads: 0,
+        decision: response.admission.clone(),
+        lease_id: response.lease_id.clone(),
+        lease_ttl_seconds: response.lease_ttl_seconds.max(0) as u32,
+        retry_after_seconds: response.retry_after_seconds.max(0) as u32,
+        message: response.message.clone(),
+        max_batch_mb: response.max_batch_mb as f64,
+        max_upload_rate_kbps: response.max_upload_rate_kbps.max(0) as u32,
+        lease_expires_at: response.lease_expires_at.clone(),
+        loss_metrics_version: payload.loss_metrics_version.unwrap_or(0),
+        collected_event_count: payload.collected_event_count.unwrap_or(0),
+        sent_event_count: payload.sent_event_count.unwrap_or(0),
+        pending_event_count: payload.pending_event_count.unwrap_or(0),
+        dropped_event_count: payload.dropped_event_count.unwrap_or(0),
+        max_spool_bytes: payload.max_spool_bytes.unwrap_or(0),
+    };
+
+    match ch.insert("default.admission_decisions") {
+        Ok(mut insert) => {
+            if insert.write(&row).await.is_ok() {
+                let _ = insert.end().await;
+            }
+        }
+        Err(error) => tracing::warn!("admission decision insert init failed: {}", error),
     }
 }
 
@@ -241,7 +315,7 @@ async fn list_agent_errors_handler(
     sql.push_str(" ORDER BY quarantined_at DESC LIMIT 200");
 
     // Build query với positional args
-    let mut q = clickhouse::query::Query::new(&state.ch, &sql);
+    let mut q = state.ch.query(&sql);
     for arg in &args {
         q = q.bind(arg.as_str());
     }
@@ -291,7 +365,7 @@ async fn summary_agent_errors_handler(
         ORDER BY total DESC
     ";
 
-    match clickhouse::query::Query::new(&state.ch, sql)
+    match state.ch.query(sql)
         .bind(since.as_str())
         .fetch_all::<(String, u64, u64, u64, u64, u64, u64)>()
         .await

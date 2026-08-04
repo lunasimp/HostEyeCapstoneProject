@@ -30,6 +30,7 @@ const pages = {
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
+  "log-loss": { title: "Thong ke mat mat log", eyebrow: "[ DELIVERY ACCOUNTING ]" },
   "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
   "agent-errors": { title: "Agent Chunk Errors", eyebrow: "[ AGENT DIAGNOSTICS ]" },
@@ -158,6 +159,7 @@ async function loadDashboard() {
       loadPowerShell(),
       loadJitter(),
       loadChunks(),
+      loadLogLoss(),
       loadDynamicConfig(),
       loadHeatmap(),
       loadAgentErrors(),
@@ -763,6 +765,67 @@ function openDetailForChunk(host, time) {
   url.searchParams.set("bucket", "minute");
   url.searchParams.set("view", "both");
   window.location.href = url.toString();
+}
+
+async function loadLogLoss() {
+  const [summary, hosts] = await Promise.all([
+    api(`/api/dashboard/log-loss/summary${query()}`),
+    api(`/api/dashboard/log-loss/hosts${query({ limit: 500 })}`),
+  ]);
+
+  el("lossCollected").textContent = formatNumber(summary.collectedEvents);
+  el("lossSent").textContent = formatNumber(summary.sentEvents);
+  el("lossPending").textContent = formatNumber(summary.pendingEvents);
+  el("lossDropped").textContent = formatNumber(summary.droppedEvents);
+  el("logLossCoverage").textContent = summary.measuredHosts
+    ? `Do duoc ${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)} may. Log phat sinh tai Windows: chua co bo dem nguon dang tin cay.`
+    : "Chua co endpoint gui bo dem UC-14 trong khoang thoi gian da chon.";
+  renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
+}
+
+function renderLogLossTable(container, rows) {
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">Khong co may tram trong pham vi da chon</div>';
+    return;
+  }
+
+  const measured = (value, available) => available ? formatNumber(value) : "-";
+  const body = rows.map((row) => {
+    const available = row.coverage === "measured";
+    const queue = available && Number(row.maxSpoolBytes || 0) > 0
+      ? `${formatBytes(row.queueUsedBytes)} / ${formatBytes(row.maxSpoolBytes)}`
+      : "-";
+    return `
+      <tr>
+        <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+        <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
+        <td class="numeric" title="${escapeAttr(row.generatedMessage)}">-</td>
+        <td class="numeric">${measured(row.collectedEventCount, available)}</td>
+        <td class="numeric">${measured(row.sentEventCount, available)}</td>
+        <td class="numeric">${measured(row.pendingEventCount, available)}</td>
+        <td class="numeric">${measured(row.atRiskEventCount, available)}</td>
+        <td class="numeric">${measured(row.droppedEventCount, available)}</td>
+        <td class="numeric">${formatNumber(row.serverReceivedEvents)}</td>
+        <td class="numeric">${escapeHtml(queue)}</td>
+        <td title="${escapeAttr(row.coverageMessage)}">${escapeHtml(row.coverage === "measured" ? "Do truc tiep" : "Chua ho tro")}</td>
+        <td title="${escapeAttr(row.lastSeen)}">${escapeHtml(formatDate(row.lastSeen))}</td>
+      </tr>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>May tram</th><th>Trang thai</th>
+        <th class="numeric">Phat sinh</th><th class="numeric">Thu vao spool</th>
+        <th class="numeric">Da ACK</th><th class="numeric">Cho gui</th>
+        <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th>
+        <th class="numeric">Gateway nhan</th><th class="numeric">Spool / gioi han</th>
+        <th>Pham vi do</th><th>Cap nhat cuoi</th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
 }
 
 async function loadDynamicConfig() {

@@ -86,6 +86,75 @@ test("UC-02 exposes jitter and chunk health without fabricated fallback data", a
   }
 });
 
+test("UC-14 exposes measured loss counters and explicit unavailable fields", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+
+  try {
+    const [summary, hosts] = await Promise.all([
+      getJson(api.url + "/api/dashboard/log-loss/summary"),
+      getJson(api.url + "/api/dashboard/log-loss/hosts?limit=100"),
+    ]);
+
+    assert.equal(summary.status, 200);
+    assert.equal(summary.body.measuredHosts, 2);
+    assert.equal(summary.body.unavailableHosts, 1);
+    assert.equal(summary.body.collectedEvents, 1420);
+    assert.equal(summary.body.sentEvents, 1310);
+    assert.equal(summary.body.pendingEvents, 110);
+    assert.equal(summary.body.droppedEvents, 30);
+    assert.equal(summary.body.generatedEvents, null);
+    assert.equal(summary.body.generatedAvailability, "unavailable");
+
+    assert.equal(hosts.status, 200);
+    const byHost = new Map(hosts.body.items.map((item) => [item.computer, item]));
+    assert.equal(byHost.get("HOST-ONLINE").statusLevel, "bursty");
+    assert.equal(byHost.get("HOST-BACKLOG").statusLevel, "failed");
+    assert.equal(byHost.get("HOST-BACKLOG").atRiskEventCount, 90);
+    assert.equal(byHost.get("HOST-REGISTERED").coverage, "unavailable");
+    assert.equal(byHost.get("HOST-REGISTERED").collectedEventCount, null);
+    assert.equal(byHost.get("HOST-ONLINE").serverReceivedEvents, 1180);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-14 empty responses and validation remain deterministic", async () => {
+  const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
+  const emptyApi = await startApi(emptyClickHouse.url);
+  try {
+    const response = await getJson(emptyApi.url + "/api/dashboard/log-loss/summary");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.hosts, 0);
+    assert.equal(response.body.generatedEvents, null);
+  } finally {
+    await emptyApi.close();
+    await emptyClickHouse.close();
+  }
+
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const response = await getJson(api.url + "/api/dashboard/log-loss/hosts?limit=bad");
+    assert.equal(response.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-14 UI uses loss endpoints and marks generated counts unavailable", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.ok(app.includes("/api/dashboard/log-loss/summary"));
+  assert.match(app, /generatedMessage/);
+  assert.match(html, /id="log-loss"/);
+  assert.match(html, /Phat sinh tai Windows de trong/);
+});
+
 test("UC-02 empty database responses are deterministic", async () => {
   const clickhouse = await startMockClickHouse({ mode: "empty" });
   const api = await startApi(clickhouse.url);
@@ -228,6 +297,28 @@ function rowsForQuery(sql) {
       { computer: "HOST-ONLINE", metricAgentId: "agent-online", metricHostId: "host-online", metricShipperVersion: "1.2.0", lastMetricSeen: time(minute), metricLastChunk: "chunk-online", metricLastAckStatus: "durable_commit", statusCode: "202", success: "1", dataLoss: "0", spoolDepthBytes: "4096", pendingFileCount: "2", uploadSamples: "10" },
       { computer: "HOST-FAILED", metricAgentId: "agent-failed", metricHostId: "host-failed", metricShipperVersion: "1.2.0", lastMetricSeen: time(2 * minute), metricLastChunk: "chunk-failed", metricLastAckStatus: "rejected", statusCode: "500", success: "0", dataLoss: "0", spoolDepthBytes: "1000", pendingFileCount: "1", uploadSamples: "3" },
       { computer: "HOST-BACKLOG", metricAgentId: "agent-backlog", metricHostId: "host-backlog", metricShipperVersion: "1.2.0", lastMetricSeen: time(3 * minute), metricLastChunk: "chunk-backlog", metricLastAckStatus: "retrying", statusCode: "0", success: "0", dataLoss: "0", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), pendingFileCount: "25", uploadSamples: "6" },
+    ];
+  }
+
+  if (sql.includes("argMax(loss_metrics_version")) {
+    return [
+      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", lossMetricsVersion: "1", collectedEventCount: "1200", sentEventCount: "1180", pendingEventCount: "20", droppedEventCount: "0", queueUsedMb: "10", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", lossMetricsVersion: "1", collectedEventCount: "220", sentEventCount: "130", pendingEventCount: "90", droppedEventCount: "30", queueUsedMb: "900", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(3 * minute) },
+    ];
+  }
+
+  if (sql.includes("sum(eventCount) AS serverReceivedEvents")) {
+    return [
+      { computer: "HOST-ONLINE", serverReceivedEvents: "1180", receivedChunks: "10", serverLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", serverReceivedEvents: "130", receivedChunks: "2", serverLastSeen: time(3 * minute) },
+    ];
+  }
+
+  if (sql.includes("registeredLastSeen")) {
+    return [
+      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", registeredLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", registeredLastSeen: time(3 * minute) },
+      { computer: "HOST-REGISTERED", agentId: "agent-registered", hostId: "host-registered", registeredLastSeen: time(2 * minute) },
     ];
   }
 

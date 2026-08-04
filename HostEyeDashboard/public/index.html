@@ -24,6 +24,7 @@
           <a href="#powershell" class="nav-item">PowerShell</a>
           <a href="#jitter" class="nav-item">Jitter</a>
           <a href="#chunks" class="nav-item">Chunks</a>
+          <a href="#log-loss" class="nav-item">Log Loss</a>
           <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
           <a href="#heatmap" class="nav-item">Heatmap</a>
           <a href="#agent-errors" class="nav-item">Agent Errors</a>
@@ -304,6 +305,35 @@
                 <div id="chunkHostsTable" class="table-shell"></div>
               </article>
             </div>
+          </div>
+        </section>
+
+        <section id="log-loss" class="dashboard-section section-card is-open page-view" data-page="log-loss" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">08</span>
+            <span>
+              <strong>Thong ke mat mat log</strong>
+              <small>so dem truc tiep tu Shipper va gateway, khong noi suy</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <p class="metric-note" id="logLossCoverage">Dang tai pham vi do...</p>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Da thu vao spool</span><strong id="lossCollected">-</strong></article>
+              <article class="kpi"><span>Da gui va ACK</span><strong id="lossSent">-</strong></article>
+              <article class="kpi"><span>Dang cho gui</span><strong id="lossPending">-</strong></article>
+              <article class="kpi"><span>Da mat do quota</span><strong id="lossDropped">-</strong></article>
+            </div>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Thong ke theo may tram</h3>
+                  <span>Phat sinh tai Windows de trong khi nguon chua co bo dem dang tin cay.</span>
+                </div>
+              </div>
+              <div id="logLossHostsTable" class="table-shell"></div>
+            </article>
           </div>
         </section>
 

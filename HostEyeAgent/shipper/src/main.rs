@@ -142,6 +142,7 @@ async fn run() -> anyhow::Result<u8> {
     // Spool quota background loop
     let spool_quota_loop = if max_spool_mb > 0 {
         let config_clone  = Arc::clone(&config);
+        let state_clone   = Arc::clone(&state);
         let stop_clone    = Arc::clone(&stop_tx);
         let spool_interval = spool_check_interval;
         Some(tokio::spawn(async move {
@@ -151,7 +152,13 @@ async fn run() -> anyhow::Result<u8> {
             loop {
                 {
                     let cfg = config_clone.lock().unwrap().clone();
-                    q.enforce_spool_policy(&cfg, &dummy_logger);
+                    let enforcement = q.enforce_spool_policy(&cfg, &dummy_logger);
+                    if enforcement.dropped_event_count > 0 {
+                        let mut shipper_state = state_clone.lock().unwrap();
+                        shipper_state.dropped_event_count = shipper_state.dropped_event_count
+                            .saturating_add(enforcement.dropped_event_count);
+                        shipper_state.save().ok();
+                    }
                 }
                 tokio::select! {
                     _ = sleep(std::time::Duration::from_secs(spool_interval.max(1) as u64)) => {}

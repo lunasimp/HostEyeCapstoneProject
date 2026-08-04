@@ -34,6 +34,10 @@ impl JitterScheduler {
         }
     }
 
+    pub fn get_recovery_jitter(&self, window_seconds: i32, attempt: u32) -> Duration {
+        self.get_retry_jitter(1, window_seconds.max(1), attempt)
+    }
+
     /// Full-jitter exponential backoff (truncated binary exponential).
     pub fn get_retry_jitter(&self, base_seconds: i32, cap_seconds: i32, attempt: u32) -> Duration {
         let exp = (2u64).saturating_pow(attempt.min(16));

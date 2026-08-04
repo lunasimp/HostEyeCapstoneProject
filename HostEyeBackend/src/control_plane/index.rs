@@ -49,6 +49,12 @@ pub struct BootstrapPayload {
     pub config_etag: Option<String>,
     pub queue_used_mb: Option<f64>,
     pub retry_count: Option<i64>,
+    pub loss_metrics_version: Option<u8>,
+    pub collected_event_count: Option<u64>,
+    pub sent_event_count: Option<u64>,
+    pub pending_event_count: Option<u64>,
+    pub dropped_event_count: Option<u64>,
+    pub max_spool_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -176,5 +176,14 @@ async fn handle_ingest(
         chunk_id, event_count, compressed_bytes.len()
     ));
 
+    {
+        let mut shipper_state = state.state.lock().unwrap();
+        shipper_state.collected_event_count = shipper_state.collected_event_count
+            .saturating_add(event_count as u64);
+        if let Err(e) = shipper_state.save() {
+            state.logger.warn(&format!("Ingest: Failed to persist collection counters: {}", e));
+        }
+    }
+
     StatusCode::OK.into_response()
 }

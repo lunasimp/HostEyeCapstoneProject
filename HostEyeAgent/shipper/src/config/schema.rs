@@ -209,6 +209,15 @@ pub struct ShipperState {
     #[serde(rename = "LastSuccessTime")]
     pub last_success_time: Option<DateTime<Utc>>,
 
+    #[serde(rename = "CollectedEventCount", default)]
+    pub collected_event_count: u64,
+
+    #[serde(rename = "SentEventCount", default)]
+    pub sent_event_count: u64,
+
+    #[serde(rename = "DroppedEventCount", default)]
+    pub dropped_event_count: u64,
+
     /// Path file state trên disk — không serialize.
     #[serde(skip)]
     pub path_on_disk: String,

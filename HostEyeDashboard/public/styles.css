@@ -384,6 +384,15 @@ h3 {
   padding: 12px;
 }
 
+.metric-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--orange);
+  background: var(--surface-soft);
+  color: var(--muted);
+  line-height: 1.5;
+}
+
 .grid {
   display: grid;
   gap: 12px;
