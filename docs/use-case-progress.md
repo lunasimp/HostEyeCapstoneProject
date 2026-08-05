@@ -16,6 +16,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-12 - Assign Dynamic Logs configuration | Implemented | 11 Dynamic Config tests passed; full Dashboard API suite 42 passed / 3 optional integration skips; isolated signed apply and desktop/mobile browser QA passed | `uc/UC-12-config-assignment` |
 | UC-13 - View Dynamic Logs configuration status | Implemented | UC-13 API status test passed; full Dashboard API suite 43 passed / 3 optional integration skips; Rust tests 2/2 passed; isolated success/failure flow and desktop/mobile browser QA passed | `uc/UC-13-config-status` |
 | UC-14 - View log-loss statistics | Implemented | 3 focused API/UI tests passed; full Dashboard API suite 46 passed / 3 optional integration skips; HostEyeShipper tests 2/2 passed including real quota deletion; control plane cargo check passed; desktop/mobile browser QA passed | `uc/UC-14-log-loss-statistics` |
+| UC-15 - View log-loss ratio | Implemented | 2 focused UC-15 API/UI tests passed; full Dashboard API suite 48 passed / 3 optional integration skips; HostEyeShipper quota tests and control plane cargo check passed | uc/UC-15-log-loss-ratio |
 
 ## UC-02 verified behavior
 
@@ -133,3 +134,12 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 46 tests passed and 3 optional integration skips; HostEyeShipper tests passed 2/2, including a quota flow that removed one 42-event unsent chunk and returned the exact dropped count.
 - Control plane compilation passed after narrowing its storage module import and using the public ClickHouse query API.
 - Passed desktop and 390px mobile browser QA with no page-level horizontal overflow or console errors; the wide per-host table remains contained by its table shell.
+
+## UC-15 verified behavior
+
+- Calculates the measured quota-loss ratio from Shipper-collected and quota-dropped event counters; it does not use the unavailable Windows-generated-event count.
+- Persists cumulative collected and dropped counts by Windows Event Log channel and Event ID and reports them through the existing admission path with metrics version 2.
+- Filters the ratio by host, Agent ID, channel, Event ID, and the selected metric-reporting time range.
+- Marks older endpoints as unavailable and marks a filtered ratio as partial when a dropped chunk cannot be decoded for source attribution.
+- Shows a weighted fleet ratio and per-host ratios in the Dashboard without inferring missing telemetry or performance data.
+- Passed the full Dashboard API suite with 48 tests passed and 3 optional integration skips; HostEyeShipper compiled and quota tests passed; control plane cargo check passed.

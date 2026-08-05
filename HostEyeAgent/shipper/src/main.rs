@@ -156,7 +156,10 @@ async fn run() -> anyhow::Result<u8> {
                     if enforcement.dropped_event_count > 0 {
                         let mut shipper_state = state_clone.lock().unwrap();
                         shipper_state.dropped_event_count = shipper_state.dropped_event_count
-                            .saturating_add(enforcement.dropped_event_count);
+                            .saturating_add(enforcement.dropped_event_count);                        for (key, value) in enforcement.dropped_events_by_source {
+                            let count = shipper_state.dropped_events_by_source.entry(key).or_insert(0); *count = count.saturating_add(value);
+                        }
+                        shipper_state.unattributed_dropped_event_count = shipper_state.unattributed_dropped_event_count.saturating_add(enforcement.unattributed_dropped_event_count);
                         shipper_state.save().ok();
                     }
                 }

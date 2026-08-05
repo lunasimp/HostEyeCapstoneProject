@@ -120,6 +120,37 @@ test("UC-14 exposes measured loss counters and explicit unavailable fields", asy
   }
 });
 
+test("UC-15 calculates measured loss ratios by host, Agent, channel and Event ID", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const overall = await getJson(api.url + "/api/dashboard/log-loss/summary");
+    assert.equal(overall.status, 200);
+    assert.equal(overall.body.lossRatioPercent, 2.1127);
+
+    const filtered = await getJson(api.url + "/api/dashboard/log-loss/hosts?channel=Security&eventId=4625&agent=agent-backlog");
+    assert.equal(filtered.status, 200);
+    assert.equal(filtered.body.items.length, 1);
+    assert.equal(filtered.body.items[0].computer, "HOST-BACKLOG");
+    assert.equal(filtered.body.items[0].ratioCollectedEventCount, 50);
+    assert.equal(filtered.body.items[0].ratioDroppedEventCount, 10);
+    assert.equal(filtered.body.items[0].lossRatioPercent, 20);
+    assert.equal(filtered.body.items[0].ratioCoverage, "measured");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-15 UI exposes Agent, channel and Event ID ratio filters", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(html, /id="lossAgentFilter"/);
+  assert.match(html, /id="lossChannelFilter"/);
+  assert.match(html, /id="lossEventIdFilter"/);
+  assert.match(app, /lossRatioPercent/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -302,8 +333,8 @@ function rowsForQuery(sql) {
 
   if (sql.includes("argMax(loss_metrics_version")) {
     return [
-      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", lossMetricsVersion: "1", collectedEventCount: "1200", sentEventCount: "1180", pendingEventCount: "20", droppedEventCount: "0", queueUsedMb: "10", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(minute) },
-      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", lossMetricsVersion: "1", collectedEventCount: "220", sentEventCount: "130", pendingEventCount: "90", droppedEventCount: "30", queueUsedMb: "900", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(3 * minute) },
+      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", lossMetricsVersion: "2", collectedEventCount: "1200", sentEventCount: "1180", pendingEventCount: "20", droppedEventCount: "0", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 100, "System\u001f7036": 1100 }), droppedBySourceJson: "{}", unattributedDroppedEventCount: "0", queueUsedMb: "10", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", lossMetricsVersion: "2", collectedEventCount: "220", sentEventCount: "130", pendingEventCount: "90", droppedEventCount: "30", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 50, "Microsoft-Windows-Sysmon/Operational\u001f1": 170 }), droppedBySourceJson: JSON.stringify({ "Security\u001f4625": 10, "Microsoft-Windows-Sysmon/Operational\u001f1": 20 }), unattributedDroppedEventCount: "0", queueUsedMb: "900", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(3 * minute) },
     ];
   }
 

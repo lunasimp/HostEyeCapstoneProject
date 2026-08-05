@@ -318,8 +318,16 @@
             <b>^</b>
           </button>
           <div class="section-body">
+            <form id="lossFilterForm" class="panel-actions loss-filter-form">
+              <label class="inline-control"><span>Agent ID</span><input id="lossAgentFilter" type="text" placeholder="Tat ca Agent"></label>
+              <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="Tat ca channel"></label>
+              <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="Tat ca Event ID"></label>
+              <button class="button secondary" type="submit">Ap dung</button>
+              <button class="button ghost" id="lossFilterReset" type="button">Dat lai</button>
+            </form>
             <p class="metric-note" id="logLossCoverage">Dang tai pham vi do...</p>
             <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Ty le mat do quota</span><strong id="lossRatio">-</strong></article>
               <article class="kpi"><span>Da thu vao spool</span><strong id="lossCollected">-</strong></article>
               <article class="kpi"><span>Da gui va ACK</span><strong id="lossSent">-</strong></article>
               <article class="kpi"><span>Dang cho gui</span><strong id="lossPending">-</strong></article>

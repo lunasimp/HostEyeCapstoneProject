@@ -51,6 +51,9 @@ struct AdmissionDecisionRow {
     sent_event_count: u64,
     pending_event_count: u64,
     dropped_event_count: u64,
+    collected_events_by_source_json: String,
+    dropped_events_by_source_json: String,
+    unattributed_dropped_event_count: u64,
     max_spool_bytes: u64,
 }
 
@@ -211,6 +214,9 @@ async fn persist_admission_decision(
         sent_event_count: payload.sent_event_count.unwrap_or(0),
         pending_event_count: payload.pending_event_count.unwrap_or(0),
         dropped_event_count: payload.dropped_event_count.unwrap_or(0),
+        collected_events_by_source_json: serde_json::to_string(&payload.collected_events_by_source.clone().unwrap_or_default()).unwrap_or_else(|_| "{}".to_string()),
+        dropped_events_by_source_json: serde_json::to_string(&payload.dropped_events_by_source.clone().unwrap_or_default()).unwrap_or_else(|_| "{}".to_string()),
+        unattributed_dropped_event_count: payload.unattributed_dropped_event_count.unwrap_or(0),
         max_spool_bytes: payload.max_spool_bytes.unwrap_or(0),
     };
 

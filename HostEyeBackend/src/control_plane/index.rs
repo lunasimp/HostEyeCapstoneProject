@@ -54,6 +54,9 @@ pub struct BootstrapPayload {
     pub sent_event_count: Option<u64>,
     pub pending_event_count: Option<u64>,
     pub dropped_event_count: Option<u64>,
+    pub collected_events_by_source: Option<HashMap<String, u64>>,
+    pub dropped_events_by_source: Option<HashMap<String, u64>>,
+    pub unattributed_dropped_event_count: Option<u64>,
     pub max_spool_bytes: Option<u64>,
 }
 

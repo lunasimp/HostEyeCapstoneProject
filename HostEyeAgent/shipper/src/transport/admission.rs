@@ -42,7 +42,7 @@ impl<'a> AdmissionClient<'a> {
         spool_stats: &SpoolStats,
         retry_attempt: u32,
     ) -> Result<UploadLease, ShipperError> {
-        let (enable, admission_uri, gateway_uri, require_lease, last_success, collected, sent, dropped, max_spool_bytes) = {
+        let (enable, admission_uri, gateway_uri, require_lease, last_success, collected, sent, dropped, collected_by_source, dropped_by_source, unattributed_dropped, max_spool_bytes) = {
             let cfg = self.config.lock().unwrap();
             let state = self.state.lock().unwrap();
             let enable = cfg.enable_admission_control;
@@ -56,7 +56,8 @@ impl<'a> AdmissionClient<'a> {
             let last = state.last_success_time.map(|t| t.to_rfc3339());
             let max_spool_bytes = cfg.max_spool_size_mb.max(0) as u64 * 1024 * 1024;
             (enable, uri, gateway, require, last, state.collected_event_count,
-             state.sent_event_count, state.dropped_event_count, max_spool_bytes)
+             state.sent_event_count, state.dropped_event_count, state.collected_events_by_source.clone(),
+             state.dropped_events_by_source.clone(), state.unattributed_dropped_event_count, max_spool_bytes)
         };
 
         if !enable {
@@ -72,11 +73,14 @@ impl<'a> AdmissionClient<'a> {
         body.insert("retry_count",       serde_json::json!(retry_attempt));
         body.insert("rank",              serde_json::json!(retry_attempt));
         body.insert("last_success_time", serde_json::json!(last_success));
-        body.insert("loss_metrics_version", serde_json::json!(1));
+        body.insert("loss_metrics_version", serde_json::json!(2));
         body.insert("collected_event_count", serde_json::json!(collected));
         body.insert("sent_event_count", serde_json::json!(sent));
         body.insert("pending_event_count", serde_json::json!(spool_stats.pending_event_count));
         body.insert("dropped_event_count", serde_json::json!(dropped));
+        body.insert("collected_events_by_source", serde_json::json!(collected_by_source));
+        body.insert("dropped_events_by_source", serde_json::json!(dropped_by_source));
+        body.insert("unattributed_dropped_event_count", serde_json::json!(unattributed_dropped));
         body.insert("max_spool_bytes", serde_json::json!(max_spool_bytes));
 
         match self.http.post(&admission_uri).json(&body).send().await {

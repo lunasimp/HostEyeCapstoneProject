@@ -52,6 +52,14 @@ document.addEventListener("DOMContentLoaded", () => {
   el("hostFilter").addEventListener("change", loadDashboard);
   el("heatmapBucket")?.addEventListener("change", loadHeatmap);
   el("hostLevelFilter")?.addEventListener("change", () => renderHostsScreen(state.hostSummary || { hosts: [], groups: [] }));
+  el("lossFilterForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadLogLoss().catch((error) => console.error(error));
+  });
+  el("lossFilterReset")?.addEventListener("click", () => {
+    el("lossFilterForm")?.reset();
+    loadLogLoss().catch((error) => console.error(error));
+  });
   el("logSearchForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadLogSearch({ reset: true }).catch((error) => console.error(error));
@@ -768,11 +776,18 @@ function openDetailForChunk(host, time) {
 }
 
 async function loadLogLoss() {
+  const filters = {
+    agent: el("lossAgentFilter")?.value?.trim() || "",
+    channel: el("lossChannelFilter")?.value?.trim() || "",
+    eventId: el("lossEventIdFilter")?.value?.trim() || "",
+  };
   const [summary, hosts] = await Promise.all([
-    api(`/api/dashboard/log-loss/summary${query()}`),
-    api(`/api/dashboard/log-loss/hosts${query({ limit: 500 })}`),
+    api(`/api/dashboard/log-loss/summary${query(filters)}`),
+    api(`/api/dashboard/log-loss/hosts${query({ ...filters, limit: 500 })}`),
   ]);
 
+  el("lossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
+    ? "-" : `${Number(summary.lossRatioPercent).toFixed(4)}%`;
   el("lossCollected").textContent = formatNumber(summary.collectedEvents);
   el("lossSent").textContent = formatNumber(summary.sentEvents);
   el("lossPending").textContent = formatNumber(summary.pendingEvents);
@@ -805,6 +820,7 @@ function renderLogLossTable(container, rows) {
         <td class="numeric">${measured(row.pendingEventCount, available)}</td>
         <td class="numeric">${measured(row.atRiskEventCount, available)}</td>
         <td class="numeric">${measured(row.droppedEventCount, available)}</td>
+        <td class="numeric" title="${escapeAttr(row.ratioMessage)}">${row.lossRatioPercent === null || row.lossRatioPercent === undefined ? "-" : `${Number(row.lossRatioPercent).toFixed(4)}%`}</td>
         <td class="numeric">${formatNumber(row.serverReceivedEvents)}</td>
         <td class="numeric">${escapeHtml(queue)}</td>
         <td title="${escapeAttr(row.coverageMessage)}">${escapeHtml(row.coverage === "measured" ? "Do truc tiep" : "Chua ho tro")}</td>
@@ -819,7 +835,7 @@ function renderLogLossTable(container, rows) {
         <th>May tram</th><th>Trang thai</th>
         <th class="numeric">Phat sinh</th><th class="numeric">Thu vao spool</th>
         <th class="numeric">Da ACK</th><th class="numeric">Cho gui</th>
-        <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th>
+        <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th><th class="numeric">Ty le mat</th>
         <th class="numeric">Gateway nhan</th><th class="numeric">Spool / gioi han</th>
         <th>Pham vi do</th><th>Cap nhat cuoi</th>
       </tr></thead>

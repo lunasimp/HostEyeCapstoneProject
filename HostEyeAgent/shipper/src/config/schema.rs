@@ -217,6 +217,14 @@ pub struct ShipperState {
 
     #[serde(rename = "DroppedEventCount", default)]
     pub dropped_event_count: u64,
+    #[serde(rename = "CollectedEventsBySource", default)]
+    pub collected_events_by_source: HashMap<String, u64>,
+
+    #[serde(rename = "DroppedEventsBySource", default)]
+    pub dropped_events_by_source: HashMap<String, u64>,
+
+    #[serde(rename = "UnattributedDroppedEventCount", default)]
+    pub unattributed_dropped_event_count: u64,
 
     /// Path file state trên disk — không serialize.
     #[serde(skip)]

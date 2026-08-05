@@ -1,4 +1,4 @@
-﻿import http from "node:http";
+import http from "node:http";
 import { URL } from "node:url";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
@@ -652,6 +652,9 @@ async function logLossData(ctx) {
         argMax(sent_event_count, decided_at) AS sentEventCount,
         argMax(pending_event_count, decided_at) AS pendingEventCount,
         argMax(dropped_event_count, decided_at) AS droppedEventCount,
+        argMax(collected_events_by_source_json, decided_at) AS collectedBySourceJson,
+        argMax(dropped_events_by_source_json, decided_at) AS droppedBySourceJson,
+        argMax(unattributed_dropped_event_count, decided_at) AS unattributedDroppedEventCount,
         argMax(queue_used_mb, decided_at) AS queueUsedMb,
         argMax(max_spool_bytes, decided_at) AS maxSpoolBytes,
         max(decided_at) AS metricLastSeen
@@ -700,6 +703,12 @@ async function logLossData(ctx) {
         sentEventCount: null,
         pendingEventCount: null,
         droppedEventCount: null,
+        collectedBySource: {},
+        droppedBySource: {},
+        unattributedDroppedEventCount: null,
+        lossRatioPercent: null,
+        ratioCoverage: "unavailable",
+        ratioMessage: "Endpoint has not reported ratio counters yet.",
         serverReceivedEvents: 0,
         receivedChunks: 0,
         queueUsedBytes: null,
@@ -738,6 +747,9 @@ async function logLossData(ctx) {
       sentEventCount: covered ? Number(row.sentEventCount || 0) : null,
       pendingEventCount: pending,
       droppedEventCount: covered ? Number(row.droppedEventCount || 0) : null,
+      collectedBySource: covered ? parseCounterMap(row.collectedBySourceJson) : {},
+      droppedBySource: covered ? parseCounterMap(row.droppedBySourceJson) : {},
+      unattributedDroppedEventCount: covered ? Number(row.unattributedDroppedEventCount || 0) : null,
       queueUsedBytes,
       maxSpoolBytes,
       atRiskEventCount: covered ? (pressure >= 0.8 ? pending : 0) : null,
@@ -760,9 +772,11 @@ async function logLossData(ctx) {
 
   return [...byHost.values()]
     .map((item) => {
+      const ratio = logLossRatio(item, ctx.url);
       const status = logLossStatus(item);
       return {
         ...item,
+        ...ratio,
         lastSeen: latestDate(item.metricLastSeen, item.serverLastSeen, item.registeredLastSeen),
         statusLevel: status.level,
         statusLabel: status.label,
@@ -770,6 +784,7 @@ async function logLossData(ctx) {
         generatedMessage: "Windows does not expose a trustworthy total generated-event counter to HostEye.",
       };
     })
+    .filter((item) => !item.ratioExcluded)
     .sort((left, right) => dateValue(right.lastSeen) - dateValue(left.lastSeen))
     .slice(0, limit);
 }
@@ -785,6 +800,11 @@ async function logLossSummary(ctx, res) {
     sentEvents: sumNullable(measured, "sentEventCount"),
     pendingEvents: sumNullable(measured, "pendingEventCount"),
     droppedEvents: sumNullable(measured, "droppedEventCount"),
+    ratioCollectedEvents: sumNullable(measured.filter((item) => item.ratioCoverage !== "unavailable"), "ratioCollectedEventCount"),
+    ratioDroppedEvents: sumNullable(measured.filter((item) => item.ratioCoverage !== "unavailable"), "ratioDroppedEventCount"),
+    lossRatioPercent: weightedLossRatio(measured),
+    ratioMeasuredHosts: measured.filter((item) => item.ratioCoverage === "measured").length,
+    ratioPartialHosts: measured.filter((item) => item.ratioCoverage === "partial").length,
     atRiskEvents: sumNullable(measured, "atRiskEventCount"),
     serverReceivedEvents: items.reduce((sum, item) => sum + Number(item.serverReceivedEvents || 0), 0),
     generatedEvents: null,
@@ -2349,6 +2369,60 @@ function jitterStatusLabel(level) {
 
 function sumNullable(items, field) {
   return items.reduce((sum, item) => sum + Number(item[field] || 0), 0);
+}
+
+function parseCounterMap(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function logLossRatio(item, url) {
+  const channel = String(url.searchParams.get("channel") || "").trim();
+  const eventId = String(url.searchParams.get("eventId") || "").trim();
+  const agent = String(url.searchParams.get("agent") || "").trim();
+  if (agent && agent !== String(item.agentId || "")) {
+    return { ratioExcluded: true, ratioCoverage: "unavailable", ratioMessage: "Agent does not match the selected filter." };
+  }
+  if (item.coverage !== "measured") return {};
+  const dimensionFilter = Boolean(channel || eventId);
+  let collected = Number(item.collectedEventCount || 0);
+  let dropped = Number(item.droppedEventCount || 0);
+  if (dimensionFilter) {
+    if (Object.keys(item.collectedBySource || {}).length === 0) {
+      return { ratioCollectedEventCount: null, ratioDroppedEventCount: null, lossRatioPercent: null, ratioCoverage: "unavailable", ratioMessage: "Endpoint has not reported UC-15 channel/Event ID counters." };
+    }
+    collected = 0;
+    dropped = 0;
+    for (const [key, value] of Object.entries(item.collectedBySource)) {
+      const [keyChannel, keyEventId] = key.split("\u001f");
+      if ((!channel || channel === keyChannel) && (!eventId || eventId === keyEventId)) collected += Number(value || 0);
+    }
+    for (const [key, value] of Object.entries(item.droppedBySource)) {
+      const [keyChannel, keyEventId] = key.split("\u001f");
+      if ((!channel || channel === keyChannel) && (!eventId || eventId === keyEventId)) dropped += Number(value || 0);
+    }
+  }
+  const partial = dimensionFilter && Number(item.unattributedDroppedEventCount || 0) > 0;
+  return {
+    ratioCollectedEventCount: collected,
+    ratioDroppedEventCount: dropped,
+    lossRatioPercent: collected > 0 ? Number((dropped * 100 / collected).toFixed(4)) : (dropped === 0 ? 0 : null),
+    ratioCoverage: partial ? "partial" : "measured",
+    ratioMessage: partial
+      ? "Some dropped chunks could not be decoded, so the filtered ratio is a lower bound."
+      : (dimensionFilter ? "Ratio uses Shipper counters for the selected channel/Event ID." : "Ratio uses cumulative Shipper collected and quota-dropped counters."),
+  };
+}
+
+function weightedLossRatio(items) {
+  const included = items.filter((item) => !item.ratioExcluded && item.ratioCoverage !== "unavailable");
+  const collected = included.reduce((sum, item) => sum + Number(item.ratioCollectedEventCount || 0), 0);
+  const dropped = included.reduce((sum, item) => sum + Number(item.ratioDroppedEventCount || 0), 0);
+  return collected > 0 ? Number((dropped * 100 / collected).toFixed(4)) : (dropped === 0 && included.length ? 0 : null);
 }
 
 function logLossStatus(row) {

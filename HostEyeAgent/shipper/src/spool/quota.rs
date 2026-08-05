@@ -3,7 +3,8 @@
 
 use crate::config::ShipperConfig;
 use crate::util::logger::FileLogger;
-use std::{fs, path::Path};
+use flate2::read::GzDecoder;
+use std::{collections::HashMap, fs, io::Read, path::Path};
 
 #[derive(Debug, Clone, Default)]
 pub struct SpoolStats {
@@ -17,6 +18,8 @@ pub struct SpoolStats {
 pub struct SpoolEnforcement {
     pub dropped_file_count: u32,
     pub dropped_event_count: u64,
+    pub dropped_events_by_source: HashMap<String, u64>,
+    pub unattributed_dropped_event_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +69,8 @@ impl SpoolQuotaManager {
             match fs::metadata(&candidate.full_name) {
                 Ok(meta) => {
                     let len = meta.len();
+                    let event_count = event_count_from_path(Path::new(&candidate.full_name)).unwrap_or(0);
+                    let dimensions = if candidate.is_sent { None } else { event_dimensions_from_chunk(Path::new(&candidate.full_name)) };
                     match fs::remove_file(&candidate.full_name) {
                         Ok(_) => {
                             total_bytes = total_bytes.saturating_sub(len);
@@ -76,8 +81,15 @@ impl SpoolQuotaManager {
                                 ));
                             } else {
                                 enforcement.dropped_file_count += 1;
-                                enforcement.dropped_event_count = enforcement.dropped_event_count
-                                    .saturating_add(event_count_from_path(Path::new(&candidate.full_name)).unwrap_or(0));
+                                enforcement.dropped_event_count = enforcement.dropped_event_count.saturating_add(event_count);
+                                if let Some(counts) = dimensions {
+                                    for (key, value) in counts {
+                                        let count = enforcement.dropped_events_by_source.entry(key).or_insert(0);
+                                        *count = count.saturating_add(value);
+                                    }
+                                } else {
+                                    enforcement.unattributed_dropped_event_count = enforcement.unattributed_dropped_event_count.saturating_add(event_count);
+                                }
                                 logger.warn(&format!(
                                     "Dropped unsent spool file {} ({} bytes) to enforce spool limit. DATA_LOSS=true",
                                     candidate.full_name, len
@@ -257,6 +269,19 @@ fn event_count_from_path(path: &Path) -> Option<u64> {
     let name = path.file_name()?.to_str()?.strip_suffix(".gz")?;
     name.rsplit('_').next()?.parse().ok()
 }
+fn event_dimensions_from_chunk(path: &Path) -> Option<HashMap<String, u64>> {
+    let mut decoder = GzDecoder::new(fs::File::open(path).ok()?);
+    let mut json = String::new(); decoder.read_to_string(&mut json).ok()?;
+    let payload: serde_json::Value = serde_json::from_str(&json).ok()?;
+    let mut counts = HashMap::new();
+    for event in payload.get("events")?.as_array()? {
+        let channel = event.get("channel").and_then(|v| v.as_str()).or_else(|| event.pointer("/winlog/channel").and_then(|v| v.as_str())).unwrap_or("(unknown)");
+        let event_id = event.get("event_id").and_then(json_scalar).or_else(|| event.pointer("/winlog/event_id").and_then(json_scalar)).or_else(|| event.pointer("/event/code").and_then(json_scalar)).unwrap_or_else(|| "0".to_string());
+        let count = counts.entry(format!("{}\u{1f}{}", channel, event_id)).or_insert(0u64); *count = count.saturating_add(1);
+    }
+    Some(counts)
+}
+fn json_scalar(value: &serde_json::Value) -> Option<String> { value.as_str().map(ToOwned::to_owned).or_else(|| value.as_u64().map(|n| n.to_string())).or_else(|| value.as_i64().map(|n| n.to_string())) }
 
 #[cfg(test)]
 mod tests {

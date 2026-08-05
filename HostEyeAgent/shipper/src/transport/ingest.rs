@@ -21,6 +21,8 @@ use std::io::Write;
 use std::fs::File;
 use std::path::Path;
 
+const LOSS_DIMENSION_SEPARATOR: char = '\u{1f}';
+
 #[derive(Clone)]
 pub struct IngestState {
     pub config: Arc<Mutex<ShipperConfig>>,
@@ -81,6 +83,11 @@ async fn handle_ingest(
     }
 
     let event_count = events.len();
+    let mut event_dimensions = std::collections::HashMap::new();
+    for event in &events {
+        let count = event_dimensions.entry(loss_dimension_key(event)).or_insert(0u64);
+        *count = count.saturating_add(1);
+    }
     if event_count == 0 {
         return (StatusCode::BAD_REQUEST, "No events found in batch").into_response();
     }
@@ -179,11 +186,23 @@ async fn handle_ingest(
     {
         let mut shipper_state = state.state.lock().unwrap();
         shipper_state.collected_event_count = shipper_state.collected_event_count
-            .saturating_add(event_count as u64);
+            .saturating_add(event_count as u64);        for (key, value) in event_dimensions {
+            let count = shipper_state.collected_events_by_source.entry(key).or_insert(0);
+            *count = count.saturating_add(value);
+        }
         if let Err(e) = shipper_state.save() {
             state.logger.warn(&format!("Ingest: Failed to persist collection counters: {}", e));
         }
     }
 
     StatusCode::OK.into_response()
+}
+fn loss_dimension_key(event: &serde_json::Value) -> String {
+    let channel = event.get("channel").and_then(|v| v.as_str()).or_else(|| event.pointer("/winlog/channel").and_then(|v| v.as_str())).unwrap_or("(unknown)");
+    let event_id = event.get("event_id").and_then(json_scalar).or_else(|| event.pointer("/winlog/event_id").and_then(json_scalar)).or_else(|| event.pointer("/event/code").and_then(json_scalar)).unwrap_or_else(|| "0".to_string());
+    format!("{}{}{}", channel, LOSS_DIMENSION_SEPARATOR, event_id)
+}
+
+fn json_scalar(value: &serde_json::Value) -> Option<String> {
+    value.as_str().map(ToOwned::to_owned).or_else(|| value.as_u64().map(|n| n.to_string())).or_else(|| value.as_i64().map(|n| n.to_string()))
 }
