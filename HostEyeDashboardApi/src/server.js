@@ -58,6 +58,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
   ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
   ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
+  ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -661,6 +662,10 @@ async function logLossData(ctx) {
         argMax(unattributed_dropped_event_count, decided_at) AS unattributedDroppedEventCount,
         argMax(queue_used_mb, decided_at) AS queueUsedMb,
         argMax(max_spool_bytes, decided_at) AS maxSpoolBytes,
+        argMax(retry_count, decided_at) AS retryCount,
+        argMax(decision, decided_at) AS admissionDecision,
+        argMax(retry_after_seconds, decided_at) AS retryAfterSeconds,
+        argMax(message, decided_at) AS admissionMessage,
         max(decided_at) AS metricLastSeen
       FROM default.admission_decisions
       ${admissionWhere.sql}
@@ -754,6 +759,10 @@ async function logLossData(ctx) {
         receivedChunks: 0,
         queueUsedBytes: null,
         maxSpoolBytes: null,
+        retryCount: null,
+        admissionDecision: "",
+        retryAfterSeconds: null,
+        admissionMessage: "",
         atRiskEventCount: null,
         coverage: "unavailable",
         coverageMessage: "Endpoint has not reported UC-14 counters yet.",
@@ -793,6 +802,10 @@ async function logLossData(ctx) {
       unattributedDroppedEventCount: covered ? Number(row.unattributedDroppedEventCount || 0) : null,
       queueUsedBytes,
       maxSpoolBytes,
+      retryCount: covered ? Number(row.retryCount || 0) : null,
+      admissionDecision: covered ? String(row.admissionDecision || "") : "",
+      retryAfterSeconds: covered ? Number(row.retryAfterSeconds || 0) : null,
+      admissionMessage: covered ? String(row.admissionMessage || "") : "",
       atRiskEventCount: covered ? (pressure >= 0.8 ? pending : 0) : null,
       coverage: covered ? "measured" : "unavailable",
       coverageMessage: covered
@@ -886,6 +899,31 @@ async function logLossSummary(ctx, res) {
 
 async function logLossHosts(ctx, res) {
   sendJson(res, 200, { items: await logLossData(ctx) });
+}
+
+async function logLossRetryBacklog(ctx, res) {
+  const retryUrl = new URL(ctx.url);
+  retryUrl.searchParams.delete("channel");
+  retryUrl.searchParams.delete("eventId");
+  const measured = (await logLossData({ ...ctx, url: retryUrl })).filter((item) => item.coverage === "measured");
+  const items = measured
+    .filter((item) => Number(item.pendingEventCount || 0) > 0)
+    .map((item) => ({ ...item, ...retryBacklogStatus(item) }))
+    .sort((left, right) => Number(right.pendingEventCount || 0) - Number(left.pendingEventCount || 0));
+
+  sendJson(res, 200, {
+    summary: {
+      backlogHosts: items.length,
+      pendingEvents: sumNullable(items, "pendingEventCount"),
+      pendingBytes: sumNullable(items, "queueUsedBytes"),
+      resendingHosts: items.filter((item) => item.retryStatus === "resending").length,
+      waitingHosts: items.filter((item) => item.retryStatus === "waiting_connection").length,
+      backpressureHosts: items.filter((item) => item.retryStatus === "backpressure").length,
+      measuredHosts: measured.length,
+    },
+    items,
+    basis: "Pending event and spool counters reported directly by HostEyeShipper through upload admission.",
+  });
 }
 
 async function logLossInterruptions(ctx, res) {
@@ -2729,6 +2767,40 @@ function causeLabel(code) {
     insufficient_evidence: "Insufficient evidence",
     no_active_loss: "No active loss cause",
   })[code] || code || "Unknown";
+}
+
+function retryBacklogStatus(row) {
+  const decision = String(row.admissionDecision || "").toLowerCase();
+  const pending = Number(row.pendingEventCount || 0);
+  const retryCount = Number(row.retryCount || 0);
+  const retryAfter = Number(row.retryAfterSeconds || 0);
+  const observedAt = latestDate(row.metricLastSeen, row.transportLastSeen, row.serverLastSeen);
+
+  if (retryAfter > 0 || decision === "ng") {
+    return {
+      retryStatus: "backpressure",
+      retryStatusLabel: "Cho admission/backpressure",
+      retryStatusLevel: "delayed",
+      retryEvidence: row.admissionMessage || `Control plane requested a retry after ${retryAfter} second(s).`,
+      retryObservedAt: observedAt,
+    };
+  }
+  if (Number(row.transportSuccess || 0) === 1) {
+    return {
+      retryStatus: "resending",
+      retryStatusLabel: "Da ket noi, dang gui bu",
+      retryStatusLevel: "ok",
+      retryEvidence: `${pending} event(s) remain after the latest successful upload; retry count ${retryCount}.`,
+      retryObservedAt: observedAt,
+    };
+  }
+  return {
+    retryStatus: "waiting_connection",
+    retryStatusLabel: "Cho ket noi de gui lai",
+    retryStatusLevel: "failed",
+    retryEvidence: row.transportMessage || `${pending} event(s) remain in durable spool; retry count ${retryCount}.`,
+    retryObservedAt: observedAt,
+  };
 }
 
 function logLossStatus(row) {

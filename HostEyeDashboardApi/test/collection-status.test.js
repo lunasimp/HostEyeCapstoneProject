@@ -240,6 +240,42 @@ test("UC-17 validates its threshold before querying ClickHouse and exposes the h
   assert.match(app, /renderInterruptionHistory/);
 });
 
+test("UC-18 exposes endpoint retry backlog and recovery state from Shipper evidence", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/log-loss/retry-backlog?limit=100");
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.summary, {
+      backlogHosts: 2,
+      pendingEvents: 110,
+      pendingBytes: 910 * 1024 * 1024,
+      resendingHosts: 1,
+      waitingHosts: 0,
+      backpressureHosts: 1,
+      measuredHosts: 2,
+    });
+    const byHost = new Map(response.body.items.map((item) => [item.computer, item]));
+    assert.equal(byHost.get("HOST-ONLINE").retryStatus, "resending");
+    assert.equal(byHost.get("HOST-ONLINE").pendingEventCount, 20);
+    assert.equal(byHost.get("HOST-BACKLOG").retryStatus, "backpressure");
+    assert.equal(byHost.get("HOST-BACKLOG").retryCount, 4);
+    assert.equal(byHost.get("HOST-BACKLOG").retryAfterSeconds, 30);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-18 UI presents retry backlog totals and per-host evidence", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(app, /\/api\/dashboard\/log-loss\/retry-backlog/);
+  assert.match(app, /renderRetryBacklog/);
+  assert.match(html, /id="lossRetryEvents"/);
+  assert.match(html, /id="lossRetryTable"/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -445,8 +481,8 @@ function rowsForQuery(sql) {
 
   if (sql.includes("argMax(loss_metrics_version")) {
     return [
-      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", lossMetricsVersion: "2", collectedEventCount: "1200", sentEventCount: "1180", pendingEventCount: "20", droppedEventCount: "0", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 100, "System\u001f7036": 1100 }), droppedBySourceJson: "{}", unattributedDroppedEventCount: "0", queueUsedMb: "10", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(minute) },
-      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", lossMetricsVersion: "2", collectedEventCount: "220", sentEventCount: "130", pendingEventCount: "90", droppedEventCount: "30", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 50, "Microsoft-Windows-Sysmon/Operational\u001f1": 170 }), droppedBySourceJson: JSON.stringify({ "Security\u001f4625": 10, "Microsoft-Windows-Sysmon/Operational\u001f1": 20 }), unattributedDroppedEventCount: "0", queueUsedMb: "900", maxSpoolBytes: String(1024 * 1024 * 1024), metricLastSeen: time(3 * minute) },
+      { computer: "HOST-ONLINE", agentId: "agent-online", hostId: "host-online", lossMetricsVersion: "2", collectedEventCount: "1200", sentEventCount: "1180", pendingEventCount: "20", droppedEventCount: "0", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 100, "System\u001f7036": 1100 }), droppedBySourceJson: "{}", unattributedDroppedEventCount: "0", queueUsedMb: "10", maxSpoolBytes: String(1024 * 1024 * 1024), retryCount: "0", admissionDecision: "ok", retryAfterSeconds: "0", admissionMessage: "admitted", metricLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", hostId: "host-backlog", lossMetricsVersion: "2", collectedEventCount: "220", sentEventCount: "130", pendingEventCount: "90", droppedEventCount: "30", collectedBySourceJson: JSON.stringify({ "Security\u001f4625": 50, "Microsoft-Windows-Sysmon/Operational\u001f1": 170 }), droppedBySourceJson: JSON.stringify({ "Security\u001f4625": 10, "Microsoft-Windows-Sysmon/Operational\u001f1": 20 }), unattributedDroppedEventCount: "0", queueUsedMb: "900", maxSpoolBytes: String(1024 * 1024 * 1024), retryCount: "4", admissionDecision: "ng", retryAfterSeconds: "30", admissionMessage: "no healthy collector available", metricLastSeen: time(3 * minute) },
     ];
   }
 

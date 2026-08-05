@@ -791,10 +791,11 @@ async function loadLogLoss() {
     eventId: el("lossEventIdFilter")?.value?.trim() || "",
   };
   const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
-  const [summary, hosts, interruptions] = await Promise.all([
+  const [summary, hosts, interruptions, retryBacklog] = await Promise.all([
     api(`/api/dashboard/log-loss/summary${query(filters)}`),
     api(`/api/dashboard/log-loss/hosts${query({ ...filters, limit: 500 })}`),
     api(`/api/dashboard/log-loss/interruptions${query({ agent: filters.agent, thresholdMinutes, limit: 500 })}`),
+    api(`/api/dashboard/log-loss/retry-backlog${query({ agent: filters.agent, limit: 500 })}`),
   ]);
 
   el("lossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
@@ -808,6 +809,7 @@ async function loadLogLoss() {
     : "Chua co endpoint gui bo dem UC-14 trong khoang thoi gian da chon.";
   renderLossCauseSummary(el("lossCauseSummary"), summary.causeCounts || []);
   renderInterruptionHistory(interruptions);
+  renderRetryBacklog(retryBacklog);
   renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
 }
 
@@ -851,6 +853,48 @@ function renderInterruptionHistory(result) {
   container.innerHTML = `
     <table>
       <thead><tr><th>May tram</th><th>Agent ID</th><th>Bat dau</th><th>Ket thuc</th><th class="numeric">Thoi luong</th><th>Khoi phuc</th><th>Evidence</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
+function renderRetryBacklog(result) {
+  const summary = result.summary || {};
+  el("lossRetryHosts").textContent = formatNumber(summary.backlogHosts);
+  el("lossRetryEvents").textContent = formatNumber(summary.pendingEvents);
+  el("lossRetryBytes").textContent = formatBytes(summary.pendingBytes);
+  el("lossRetryResending").textContent = formatNumber(summary.resendingHosts);
+  el("lossRetryWaiting").textContent = formatNumber(Number(summary.waitingHosts || 0) + Number(summary.backpressureHosts || 0));
+  el("lossRetryCoverage").textContent = `${result.basis || "So dem truc tiep tu HostEyeShipper"} Pham vi do: ${formatNumber(summary.measuredHosts)} may.`;
+
+  const container = el("lossRetryTable");
+  const rows = result.items || [];
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">Khong co log dang cho gui lai trong pham vi da chon</div>';
+    return;
+  }
+
+  const body = rows.map((row) => {
+    const queue = Number(row.maxSpoolBytes || 0) > 0
+      ? `${formatBytes(row.queueUsedBytes)} / ${formatBytes(row.maxSpoolBytes)}`
+      : formatBytes(row.queueUsedBytes);
+    return `
+      <tr>
+        <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+        <td><span class="status-badge status-${escapeAttr(row.retryStatusLevel)}">${escapeHtml(row.retryStatusLabel)}</span></td>
+        <td class="numeric">${formatNumber(row.pendingEventCount)}</td>
+        <td class="numeric">${escapeHtml(queue)}</td>
+        <td class="numeric">${formatNumber(row.retryCount)}</td>
+        <td class="numeric">${Number(row.retryAfterSeconds || 0) > 0 ? `${formatNumber(row.retryAfterSeconds)}s` : "-"}</td>
+        <td title="${escapeAttr(row.retryObservedAt)}">${escapeHtml(formatDate(row.retryObservedAt))}</td>
+        <td title="${escapeAttr(row.retryEvidence)}">${escapeHtml(row.retryEvidence || "-")}</td>
+      </tr>
+    `;
+  }).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>May tram</th><th>Trang thai gui lai</th><th class="numeric">Log cho gui</th><th class="numeric">Spool / gioi han</th><th class="numeric">Lan retry</th><th class="numeric">Retry sau</th><th>Cap nhat</th><th>Evidence</th></tr></thead>
       <tbody>${body}</tbody>
     </table>
   `;

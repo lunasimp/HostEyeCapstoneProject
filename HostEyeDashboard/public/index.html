@@ -377,6 +377,24 @@
             <article class="panel">
               <div class="panel-title">
                 <div>
+                  <h3>Trang thai log cho gui lai</h3>
+                  <span>So dem durable spool va trang thai retry moi nhat do HostEyeShipper bao cao.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossRetryCoverage">Dang tai trang thai retry...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>May ton dong</span><strong id="lossRetryHosts">-</strong></article>
+                <article class="kpi"><span>Log cho gui</span><strong id="lossRetryEvents">-</strong></article>
+                <article class="kpi"><span>Dung luong spool</span><strong id="lossRetryBytes">-</strong></article>
+                <article class="kpi"><span>Dang gui bu</span><strong id="lossRetryResending">-</strong></article>
+                <article class="kpi"><span>Dang cho retry</span><strong id="lossRetryWaiting">-</strong></article>
+              </div>
+              <div id="lossRetryTable" class="table-shell"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-title">
+                <div>
                   <h3>Thong ke theo may tram</h3>
                   <span>Phat sinh tai Windows de trong khi nguon chua co bo dem dang tin cay.</span>
                 </div>

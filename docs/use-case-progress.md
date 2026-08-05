@@ -164,3 +164,13 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Uses Unix-millisecond timestamps from ClickHouse to avoid local-timezone shifts and merges host names case-insensitively in interruption summaries.
 - Passed the full Dashboard API suite with 52 tests passed and 3 optional integration skips. A live local ClickHouse flow returned one recovered and two ongoing evidence gaps at verification time.
 - Passed desktop and 390px mobile browser QA with the UC-17 panel contained within the viewport, working threshold filtering, and no console errors.
+
+## UC-18 verified behavior
+
+- Reuses the exact pending-event and durable-spool counters reported by HostEyeShipper; it does not estimate retry backlog from gateway rows or Windows event totals.
+- Exposes a dedicated retry-backlog API with per-host pending events, spool bytes/limit, retry count, retry-after delay, latest evidence time, and admission/transport evidence.
+- Distinguishes endpoints waiting for connectivity, waiting for control-plane admission/backpressure, and endpoints that have reconnected and are still sending the retained backlog.
+- Shows fleet totals and a responsive per-host retry-status table in the existing Log Loss workflow while omitting measured hosts whose pending count is zero.
+- Passed the full Dashboard API suite with 54 tests passed and 3 optional integration skips; both focused UC-18 API/UI tests passed.
+- Passed a live local ClickHouse/API flow against 3,493,714 all-time rows. No endpoint currently reported versioned pending counters in the selected range, so the API returned an explicit zero-backlog/zero-measured-host state without fabrication.
+- Passed desktop and 390px mobile browser QA with no console errors and the retry panel contained within the viewport/table shell. The pre-existing one-pixel page-level mobile overflow remains unchanged.
