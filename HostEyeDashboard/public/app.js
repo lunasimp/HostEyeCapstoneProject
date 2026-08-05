@@ -795,7 +795,16 @@ async function loadLogLoss() {
   el("logLossCoverage").textContent = summary.measuredHosts
     ? `Do duoc ${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)} may. Log phat sinh tai Windows: chua co bo dem nguon dang tin cay.`
     : "Chua co endpoint gui bo dem UC-14 trong khoang thoi gian da chon.";
+  renderLossCauseSummary(el("lossCauseSummary"), summary.causeCounts || []);
   renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
+}
+
+function renderLossCauseSummary(container, causes) {
+  if (!container) return;
+  const active = causes.filter((item) => item.code !== "no_active_loss");
+  container.innerHTML = active.length
+    ? active.map((item) => `<article class="kpi"><span>${escapeHtml(item.label)}</span><strong>${formatNumber(item.count)}</strong></article>`).join("")
+    : '<div class="empty-state">Khong co nguyen nhan mat log trong pham vi da chon</div>';
 }
 
 function renderLogLossTable(container, rows) {
@@ -814,6 +823,8 @@ function renderLogLossTable(container, rows) {
       <tr>
         <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
         <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
+        <td title="${escapeAttr(row.causeEvidence)}"><span class="status-badge status-${escapeAttr(row.causeLevel)}">${escapeHtml(row.causeLabel)}</span></td>
+        <td title="${escapeAttr(row.causeEvidence)}">${escapeHtml(row.causeEvidence || "-")}</td>
         <td class="numeric" title="${escapeAttr(row.generatedMessage)}">-</td>
         <td class="numeric">${measured(row.collectedEventCount, available)}</td>
         <td class="numeric">${measured(row.sentEventCount, available)}</td>
@@ -832,7 +843,7 @@ function renderLogLossTable(container, rows) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>May tram</th><th>Trang thai</th>
+        <th>May tram</th><th>Trang thai</th><th>Nguyen nhan</th><th>Evidence</th>
         <th class="numeric">Phat sinh</th><th class="numeric">Thu vao spool</th>
         <th class="numeric">Da ACK</th><th class="numeric">Cho gui</th>
         <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th><th class="numeric">Ty le mat</th>

@@ -151,6 +151,40 @@ test("UC-15 UI exposes Agent, channel and Event ID ratio filters", async () => {
   assert.match(app, /lossRatioPercent/);
 });
 
+test("UC-16 exposes evidence-backed log-loss causes without fabricating a diagnosis", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const [summary, hosts] = await Promise.all([
+      getJson(api.url + "/api/dashboard/log-loss/summary"),
+      getJson(api.url + "/api/dashboard/log-loss/hosts?limit=100"),
+    ]);
+    assert.equal(summary.status, 200);
+    const causes = new Map(summary.body.causeCounts.map((item) => [item.code, item.count]));
+    assert.equal(causes.get("quota_eviction"), 1);
+    assert.equal(causes.get("source_read_failure"), 1);
+
+    const byHost = new Map(hosts.body.items.map((item) => [item.computer, item]));
+    assert.equal(byHost.get("HOST-BACKLOG").causeCode, "quota_eviction");
+    assert.match(byHost.get("HOST-BACKLOG").causeEvidence, /30 event/);
+    assert.equal(byHost.get("HOST-REGISTERED").causeCode, "source_read_failure");
+    assert.equal(byHost.get("HOST-ONLINE").causeCode, "retry_backlog");
+    assert.ok(clickhouse.queries.some((sql) => sql.includes("transportStatusCode")));
+    assert.ok(clickhouse.queries.some((sql) => sql.includes("latestErrorType")));
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-16 UI renders cause summaries and per-host evidence", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(html, /id="lossCauseSummary"/);
+  assert.match(app, /causeEvidence/);
+  assert.match(app, /renderLossCauseSummary/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -328,6 +362,19 @@ function rowsForQuery(sql) {
       { computer: "HOST-ONLINE", metricAgentId: "agent-online", metricHostId: "host-online", metricShipperVersion: "1.2.0", lastMetricSeen: time(minute), metricLastChunk: "chunk-online", metricLastAckStatus: "durable_commit", statusCode: "202", success: "1", dataLoss: "0", spoolDepthBytes: "4096", pendingFileCount: "2", uploadSamples: "10" },
       { computer: "HOST-FAILED", metricAgentId: "agent-failed", metricHostId: "host-failed", metricShipperVersion: "1.2.0", lastMetricSeen: time(2 * minute), metricLastChunk: "chunk-failed", metricLastAckStatus: "rejected", statusCode: "500", success: "0", dataLoss: "0", spoolDepthBytes: "1000", pendingFileCount: "1", uploadSamples: "3" },
       { computer: "HOST-BACKLOG", metricAgentId: "agent-backlog", metricHostId: "host-backlog", metricShipperVersion: "1.2.0", lastMetricSeen: time(3 * minute), metricLastChunk: "chunk-backlog", metricLastAckStatus: "retrying", statusCode: "0", success: "0", dataLoss: "0", spoolDepthBytes: String(2 * 1024 * 1024 * 1024), pendingFileCount: "25", uploadSamples: "6" },
+    ];
+  }
+
+  if (sql.includes("transportStatusCode")) {
+    return [
+      { computer: "HOST-ONLINE", agentId: "agent-online", transportStatusCode: "202", transportSuccess: "1", transportDataLoss: "0", transportMessage: "durable commit", transportMetricType: "upload", transportLastSeen: time(minute) },
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", transportStatusCode: "0", transportSuccess: "0", transportDataLoss: "0", transportMessage: "connection refused", transportMetricType: "retrying", transportLastSeen: time(3 * minute) },
+    ];
+  }
+
+  if (sql.includes("latestErrorType")) {
+    return [
+      { agentId: "agent-registered", latestErrorType: "source_read_failed", latestErrorSeen: time(2 * minute), errorCount: "1" },
     ];
   }
 

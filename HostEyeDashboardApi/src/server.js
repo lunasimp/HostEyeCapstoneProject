@@ -297,6 +297,7 @@ async function hostsSummary(ctx, res) {
       ORDER BY lastMetricSeen DESC
       LIMIT ${limit}
     `),
+
   ]);
 
   const byHost = new Map();
@@ -626,10 +627,12 @@ async function logLossData(ctx) {
   const limit = limitParam(ctx.url, 500, 5000);
   const admissionWhere = operationalTimeWhere(ctx.url, "decided_at", ["computer != ''"]);
   const chunkWhere = operationalTimeWhere(ctx.url, "last_seen", ["computer != ''", "chunk_id != ''"]);
+  const transportWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
+  const errorWhere = operationalTimeWhere(ctx.url, "reported_at", ["agent_id != ''"]);
   const host = ctx.url.searchParams.get("host");
   const agentWhere = host ? `WHERE computer = ${sqlString(host)}` : "";
 
-  const [agentRows, metricRows, chunkRows] = await Promise.all([
+  const [agentRows, metricRows, chunkRows, transportRows, errorRows] = await Promise.all([
     queryRows(`
       SELECT
         computer,
@@ -684,6 +687,34 @@ async function logLossData(ctx) {
       ORDER BY serverLastSeen DESC
       LIMIT ${limit}
     `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, metric_timestamp) AS agentId,
+        argMax(status_code, metric_timestamp) AS transportStatusCode,
+        argMax(success, metric_timestamp) AS transportSuccess,
+        argMax(data_loss, metric_timestamp) AS transportDataLoss,
+        argMax(message, metric_timestamp) AS transportMessage,
+        argMax(metric_type, metric_timestamp) AS transportMetricType,
+        max(metric_timestamp) AS transportLastSeen
+      FROM default.shipper_runtime_metrics
+      ${transportWhere.sql}
+      GROUP BY computer
+      ORDER BY transportLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRowsOptionalTable(`
+      SELECT
+        agent_id AS agentId,
+        argMax(error_type, reported_at) AS latestErrorType,
+        max(reported_at) AS latestErrorSeen,
+        count() AS errorCount
+      FROM default.agent_chunk_errors
+      ${errorWhere.sql}
+      GROUP BY agentId
+      ORDER BY latestErrorSeen DESC
+      LIMIT ${limit}
+    `, "agent_chunk_errors"),
   ]);
 
   const byHost = new Map();
@@ -698,6 +729,15 @@ async function logLossData(ctx) {
         registeredLastSeen: null,
         metricLastSeen: null,
         serverLastSeen: null,
+        transportLastSeen: null,
+        transportStatusCode: null,
+        transportSuccess: null,
+        transportDataLoss: null,
+        transportMessage: "",
+        transportMetricType: "",
+        latestErrorType: "",
+        latestErrorSeen: null,
+        errorCount: 0,
         generatedEventCount: null,
         collectedEventCount: null,
         sentEventCount: null,
@@ -770,14 +810,41 @@ async function logLossData(ctx) {
     });
   }
 
+  for (const row of transportRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: item.agentId || row.agentId || "",
+      transportStatusCode: Number(row.transportStatusCode || 0),
+      transportSuccess: Number(row.transportSuccess || 0),
+      transportDataLoss: Number(row.transportDataLoss || 0),
+      transportMessage: row.transportMessage || "",
+      transportMetricType: row.transportMetricType || "",
+      transportLastSeen: row.transportLastSeen || null,
+    });
+  }
+
+  for (const row of errorRows) {
+    const item = [...byHost.values()].find((candidate) => candidate.agentId && candidate.agentId === row.agentId);
+    if (!item) continue;
+    Object.assign(item, {
+      latestErrorType: row.latestErrorType || "",
+      latestErrorSeen: row.latestErrorSeen || null,
+      errorCount: Number(row.errorCount || 0),
+    });
+  }
+
   return [...byHost.values()]
     .map((item) => {
       const ratio = logLossRatio(item, ctx.url);
+      const lastSeen = latestDate(item.metricLastSeen, item.transportLastSeen, item.serverLastSeen, item.registeredLastSeen);
+      const cause = logLossCause({ ...item, lastSeen });
       const status = logLossStatus(item);
       return {
         ...item,
         ...ratio,
-        lastSeen: latestDate(item.metricLastSeen, item.serverLastSeen, item.registeredLastSeen),
+        ...cause,
+        lastSeen,
         statusLevel: status.level,
         statusLabel: status.label,
         generatedAvailability: "unavailable",
@@ -805,6 +872,9 @@ async function logLossSummary(ctx, res) {
     lossRatioPercent: weightedLossRatio(measured),
     ratioMeasuredHosts: measured.filter((item) => item.ratioCoverage === "measured").length,
     ratioPartialHosts: measured.filter((item) => item.ratioCoverage === "partial").length,
+    causeCounts: countBy(items, (item) => item.causeCode).map(({ key, count }) => ({ code: key, label: causeLabel(key), count })),
+    affectedHosts: items.filter((item) => item.causeLevel === "failed" || item.causeLevel === "delayed").length,
+    unknownCauseHosts: items.filter((item) => item.causeCode === "insufficient_evidence").length,
     atRiskEvents: sumNullable(measured, "atRiskEventCount"),
     serverReceivedEvents: items.reduce((sum, item) => sum + Number(item.serverReceivedEvents || 0), 0),
     generatedEvents: null,
@@ -2157,6 +2227,16 @@ async function queryRows(sql) {
     .map((line) => JSON.parse(line));
 }
 
+async function queryRowsOptionalTable(sql, tableName) {
+  try {
+    return await queryRows(sql);
+  } catch (error) {
+    const detail = String(error?.detail || "");
+    if (error?.statusCode === 502 && (detail.includes("UNKNOWN_TABLE") || detail.includes(`Table default.${tableName} does not exist`))) return [];
+    throw error;
+  }
+}
+
 function timeWhere(url, extraPredicates = []) {
   const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const to = dateParam(url, "to", new Date());
@@ -2423,6 +2503,83 @@ function weightedLossRatio(items) {
   const collected = included.reduce((sum, item) => sum + Number(item.ratioCollectedEventCount || 0), 0);
   const dropped = included.reduce((sum, item) => sum + Number(item.ratioDroppedEventCount || 0), 0);
   return collected > 0 ? Number((dropped * 100 / collected).toFixed(4)) : (dropped === 0 && included.length ? 0 : null);
+}
+
+function logLossCause(row) {
+  const dropped = Number(row.droppedEventCount || 0);
+  const pending = Number(row.pendingEventCount || 0);
+  const queueUsed = Number(row.queueUsedBytes || 0);
+  const maxSpool = Number(row.maxSpoolBytes || 0);
+  const pressure = maxSpool > 0 ? queueUsed / maxSpool : 0;
+  const statusCode = Number(row.transportStatusCode || 0);
+  const ack = String(row.transportMetricType || "").toLowerCase();
+  const errorType = String(row.latestErrorType || "").toLowerCase();
+  const transportMessage = String(row.transportMessage || "").trim();
+  const observedAt = latestDate(row.latestErrorSeen, row.transportLastSeen, row.metricLastSeen, row.lastSeen);
+
+  if (dropped > 0 || Number(row.transportDataLoss || 0) === 1) {
+    return causeResult("quota_eviction", "failed", `HostEyeShipper recorded ${dropped} event(s) removed while enforcing the spool quota.`, observedAt);
+  }
+  if (["spool_write_failed", "ingest_write_failed"].includes(errorType)) {
+    return causeResult("spool_write_failure", "failed", `Agent reported ${errorType}.`, observedAt);
+  }
+  if (["source_read_failed", "collector_read_failed"].includes(errorType)) {
+    return causeResult("source_read_failure", "failed", `Agent reported ${errorType}.`, observedAt);
+  }
+  if (["checksum_invalid", "event_count_mismatch", "missing_fields", "schema_invalid", "conflict_409"].includes(errorType)) {
+    return causeResult("chunk_rejected", "failed", `Gateway rejected or quarantined a chunk: ${errorType}.`, observedAt);
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return causeResult("identity_rejected", "failed", `Gateway returned HTTP ${statusCode}; verify the client certificate and endpoint identity.`, observedAt);
+  }
+  if (statusCode >= 500) {
+    return causeResult("gateway_failure", "failed", transportMessage || `Gateway returned HTTP ${statusCode}.`, observedAt);
+  }
+  if (statusCode >= 400) {
+    return causeResult("upload_rejected", "failed", transportMessage || `Gateway returned HTTP ${statusCode}.`, observedAt);
+  }
+  if (statusCode === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen) {
+    return causeResult("transport_unreachable", "failed", transportMessage || "The Shipper could not obtain an HTTP response from the upload path.", observedAt);
+  }
+  if (pressure >= 1) {
+    return causeResult("spool_full", "failed", `Spool usage reached ${Math.round(pressure * 100)}% of its configured limit.`, observedAt);
+  }
+  if (pressure >= 0.8) {
+    return causeResult("spool_pressure", "delayed", `Spool usage reached ${Math.round(pressure * 100)}% with ${pending} event(s) waiting.`, observedAt);
+  }
+  if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000) {
+    return causeResult("endpoint_silent", "delayed", "No recent Agent, Shipper, gateway, or registration evidence was observed for more than 15 minutes.", row.lastSeen);
+  }
+  if (pending > 0 || ack === "retrying") {
+    return causeResult("retry_backlog", "delayed", `${pending} event(s) remain in durable spool awaiting retry.`, observedAt);
+  }
+  if (row.coverage !== "measured") {
+    return causeResult("insufficient_evidence", "unknown", "This endpoint has not reported the counters and transport evidence required to determine a cause.", observedAt);
+  }
+  return causeResult("no_active_loss", "ok", "No loss or delivery failure is present in the latest measured evidence.", observedAt);
+}
+
+function causeResult(code, level, evidence, observedAt) {
+  return { causeCode: code, causeLabel: causeLabel(code), causeLevel: level, causeEvidence: evidence, causeObservedAt: observedAt || null };
+}
+
+function causeLabel(code) {
+  return ({
+    quota_eviction: "Spool quota removed unsent data",
+    spool_write_failure: "Spool write failure",
+    source_read_failure: "Log source read failure",
+    chunk_rejected: "Chunk rejected or quarantined",
+    identity_rejected: "Endpoint identity rejected",
+    gateway_failure: "Gateway/server failure",
+    upload_rejected: "Upload rejected",
+    transport_unreachable: "Upload path unreachable",
+    spool_full: "Spool full",
+    spool_pressure: "Spool under pressure",
+    endpoint_silent: "Agent/Shipper silent",
+    retry_backlog: "Waiting for retry",
+    insufficient_evidence: "Insufficient evidence",
+    no_active_loss: "No active loss cause",
+  })[code] || code || "Unknown";
 }
 
 function logLossStatus(row) {

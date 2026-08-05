@@ -17,6 +17,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-13 - View Dynamic Logs configuration status | Implemented | UC-13 API status test passed; full Dashboard API suite 43 passed / 3 optional integration skips; Rust tests 2/2 passed; isolated success/failure flow and desktop/mobile browser QA passed | `uc/UC-13-config-status` |
 | UC-14 - View log-loss statistics | Implemented | 3 focused API/UI tests passed; full Dashboard API suite 46 passed / 3 optional integration skips; HostEyeShipper tests 2/2 passed including real quota deletion; control plane cargo check passed; desktop/mobile browser QA passed | `uc/UC-14-log-loss-statistics` |
 | UC-15 - View log-loss ratio | Implemented | 2 focused UC-15 API/UI tests passed; full Dashboard API suite 48 passed / 3 optional integration skips; HostEyeShipper quota tests and control plane cargo check passed | uc/UC-15-log-loss-ratio |
+| UC-16 - View log-loss causes | Implemented | 2 focused UC-16 API/UI tests passed; full Dashboard API suite 50 passed / 3 optional integration skips; live ClickHouse cause flow and desktop/mobile browser QA passed | uc/UC-16-log-loss-causes |
 
 ## UC-02 verified behavior
 
@@ -143,3 +144,11 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Marks older endpoints as unavailable and marks a filtered ratio as partial when a dropped chunk cannot be decoded for source attribution.
 - Shows a weighted fleet ratio and per-host ratios in the Dashboard without inferring missing telemetry or performance data.
 - Passed the full Dashboard API suite with 48 tests passed and 3 optional integration skips; HostEyeShipper compiled and quota tests passed; control plane cargo check passed.
+## UC-16 verified behavior
+
+- Classifies causes only from observed HostEyeShipper counters, upload transport results, spool pressure, registration/telemetry timestamps, and Agent chunk-error reports.
+- Distinguishes quota eviction, spool write/read failures when explicitly reported, rejected or quarantined chunks, identity rejection, gateway failure, unreachable upload paths, spool pressure/full conditions, retry backlog, and silent endpoints.
+- Returns `Insufficient evidence` when the endpoint has not reported enough telemetry instead of guessing a cause.
+- Shows fleet cause counts plus a per-host cause and supporting evidence in the existing Log Loss workflow.
+- Keeps the optional Agent error source backward-compatible when an older ClickHouse installation has not created that table yet.
+- Passed the full Dashboard API suite with 50 tests passed and 3 optional integration skips. A live local ClickHouse flow classified both stale endpoints as `Agent/Shipper silent` from their old timestamps, and browser QA passed at the normal viewport and 390px mobile width without page-level overflow.
