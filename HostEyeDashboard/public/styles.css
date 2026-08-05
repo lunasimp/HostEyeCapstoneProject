@@ -47,14 +47,16 @@ input {
   position: sticky;
   top: 0;
   z-index: 20;
-  height: 80px;
-  padding: 0 30px;
+  min-height: 80px;
+  padding: 10px 30px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.96);
   backdrop-filter: blur(14px);
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(280px, 1fr);
   align-items: center;
-  gap: 22px;
+  column-gap: 22px;
+  row-gap: 10px;
 }
 
 .brand-mark {
@@ -77,14 +79,68 @@ input {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
+  overflow: visible;
 }
 
-.nav-list::-webkit-scrollbar {
+.nav-group {
+  position: relative;
+}
+
+.nav-group > summary {
+  height: 40px;
+  padding: 0 15px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: #344054;
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.nav-group > summary::-webkit-details-marker {
   display: none;
+}
+
+.nav-group > summary::after {
+  content: "+";
+  color: var(--orange);
+}
+
+.nav-group[open] > summary,
+.nav-group.has-active > summary {
+  border-color: #ffd4c2;
+  background: #fff7f2;
+  color: var(--orange);
+}
+
+.nav-group[open] > summary::after {
+  content: "-";
+}
+
+.nav-menu {
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 0;
+  z-index: 30;
+  width: 230px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 18px 45px rgba(16, 24, 40, 0.14);
+  display: grid;
+  gap: 4px;
+}
+
+.nav-menu-right {
+  left: auto;
+  right: 0;
 }
 
 .nav-item {
@@ -93,7 +149,7 @@ input {
   border-radius: 8px;
   color: #344054;
   text-decoration: none;
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   font-family: var(--mono);
@@ -114,9 +170,13 @@ input {
 }
 
 .top-actions {
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
 }
 
 .mini-control {

@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>HostEye Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260803-uc12">
+    <link rel="stylesheet" href="./styles.css?v=20260805-nav">
   </head>
   <body>
     <div class="app-shell">
@@ -14,20 +14,35 @@
         </a>
 
         <nav class="nav-list" aria-label="Dashboard sections">
-          <a href="#overview" class="nav-item active">Overview</a>
-          <a href="#hosts" class="nav-item">Hosts</a>
-          <a href="#alerts" class="nav-item">Alerts</a>
-          <a href="#search" class="nav-item">Log Search</a>
-          <a href="#process" class="nav-item">Process</a>
-          <a href="#network" class="nav-item">Network & DNS</a>
-          <a href="#registry" class="nav-item">Registry & File</a>
-          <a href="#powershell" class="nav-item">PowerShell</a>
-          <a href="#jitter" class="nav-item">Jitter</a>
-          <a href="#chunks" class="nav-item">Chunks</a>
-          <a href="#log-loss" class="nav-item">Log Loss</a>
-          <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
-          <a href="#heatmap" class="nav-item">Heatmap</a>
-          <a href="#agent-errors" class="nav-item">Agent Errors</a>
+          <details class="nav-group">
+            <summary>Monitor</summary>
+            <div class="nav-menu">
+              <a href="#overview" class="nav-item active">Overview</a>
+              <a href="#hosts" class="nav-item">Hosts</a>
+              <a href="#heatmap" class="nav-item">Heatmap</a>
+            </div>
+          </details>
+          <details class="nav-group">
+            <summary>Analyze</summary>
+            <div class="nav-menu">
+              <a href="#alerts" class="nav-item">Alerts</a>
+              <a href="#search" class="nav-item">Log Search</a>
+              <a href="#process" class="nav-item">Process</a>
+              <a href="#network" class="nav-item">Network & DNS</a>
+              <a href="#registry" class="nav-item">Registry & File</a>
+              <a href="#powershell" class="nav-item">PowerShell</a>
+            </div>
+          </details>
+          <details class="nav-group">
+            <summary>Operate</summary>
+            <div class="nav-menu nav-menu-right">
+              <a href="#jitter" class="nav-item">Jitter</a>
+              <a href="#chunks" class="nav-item">Chunks</a>
+              <a href="#log-loss" class="nav-item">Log Loss</a>
+              <a href="#agent-errors" class="nav-item">Agent Errors</a>
+              <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
+            </div>
+          </details>
         </nav>
 
         <div class="top-actions">
@@ -700,6 +715,6 @@
         </section>
       </main>
     </div>
-    <script src="./app.js?v=20260731-uc06"></script>
+    <script src="./app.js?v=20260805-nav"></script>
   </body>
 </html>

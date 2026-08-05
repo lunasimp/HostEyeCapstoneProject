@@ -43,6 +43,12 @@ document.addEventListener("DOMContentLoaded", () => {
     item.addEventListener("click", () => {
       const page = pageFromHash(item.getAttribute("href") || "");
       showPage(page);
+      item.closest(".nav-group")?.removeAttribute("open");
+    });
+  });
+  document.addEventListener("click", (event) => {
+    document.querySelectorAll(".nav-group[open]").forEach((group) => {
+      if (!group.contains(event.target)) group.removeAttribute("open");
     });
   });
   window.addEventListener("hashchange", () => showPage(pageFromHash(window.location.hash)));
@@ -125,6 +131,9 @@ function showPage(page) {
   });
   document.querySelectorAll(".nav-item").forEach((link) => {
     link.classList.toggle("active", pageFromHash(link.getAttribute("href")) === selectedPage);
+  });
+  document.querySelectorAll(".nav-group").forEach((group) => {
+    group.classList.toggle("has-active", Boolean(group.querySelector(".nav-item.active")));
   });
   if (window.location.hash !== `#${selectedPage}`) {
     history.replaceState(null, "", `#${selectedPage}`);
