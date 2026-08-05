@@ -185,6 +185,61 @@ test("UC-16 UI renders cause summaries and per-host evidence", async () => {
   assert.match(app, /renderLossCauseSummary/);
 });
 
+test("UC-17 reports recovered and ongoing collection interruptions from observed evidence gaps", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  const from = new Date(now - 2 * 60 * minute).toISOString();
+  const to = new Date(now).toISOString();
+
+  try {
+    const response = await getJson(`${api.url}/api/dashboard/log-loss/interruptions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&thresholdMinutes=15`);
+    assert.equal(response.status, 200);
+    assert.equal(response.body.thresholdMinutes, 15);
+    assert.deepEqual(response.body.summary, { interruptions: 2, ongoing: 1, recovered: 1, affectedHosts: 2 });
+
+    const recovered = response.body.items.find((item) => item.computer === "HOST-ONLINE");
+    assert.equal(recovered.status, "recovered");
+    assert.equal(recovered.durationSeconds, 23 * 60);
+    assert.ok(recovered.endedAt);
+    assert.ok(recovered.evidenceSources.includes("shipper_metric"));
+
+    const ongoing = response.body.items.find((item) => item.computer === "HOST-BACKLOG");
+    assert.equal(ongoing.status, "ongoing");
+    assert.equal(ongoing.endedAt, null);
+    assert.equal(ongoing.durationSeconds, 25 * 60);
+
+    const recoveredOnly = await getJson(`${api.url}/api/dashboard/log-loss/interruptions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&thresholdMinutes=15&status=recovered`);
+    assert.equal(recoveredOnly.status, 200);
+    assert.equal(recoveredOnly.body.items.length, 1);
+    assert.equal(recoveredOnly.body.items[0].computer, "HOST-ONLINE");
+    assert.ok(clickhouse.queries.some((sql) => sql.includes("activitySignalUnixMs") && sql.includes("gateway_chunk")));
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-17 validates its threshold before querying ClickHouse and exposes the history UI", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const invalid = await getJson(api.url + "/api/dashboard/log-loss/interruptions?thresholdMinutes=2");
+    assert.equal(invalid.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(html, /id="lossInterruptionThreshold"/);
+  assert.match(html, /id="lossInterruptionTable"/);
+  assert.match(app, /\/api\/dashboard\/log-loss\/interruptions/);
+  assert.match(app, /renderInterruptionHistory/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -339,6 +394,16 @@ function rowsForEmptyQuery(sql) {
 }
 
 function rowsForQuery(sql) {
+  if (sql.includes("activitySignalUnixMs")) {
+    return [
+      { computer: "HOST-BACKLOG", agentId: "agent-backlog", activitySignalUnixMs: now - 40 * minute, evidenceSources: ["admission"] },
+      { computer: "HOST-ONLINE", agentId: "agent-online", activitySignalUnixMs: now - 50 * minute, evidenceSources: ["shipper_metric"] },
+      { computer: "HOST-ONLINE", agentId: "agent-online", activitySignalUnixMs: now - 48 * minute, evidenceSources: ["gateway_chunk"] },
+      { computer: "HOST-ONLINE", agentId: "agent-online", activitySignalUnixMs: now - 10 * minute, evidenceSources: ["shipper_metric", "registration"] },
+      { computer: "HOST-REGISTERED", agentId: "agent-registered", activitySignalUnixMs: now - 2 * minute, evidenceSources: ["registration"] },
+    ];
+  }
+
   if (sql.includes("max(kafka_timestamp) AS lastLogSeen")) {
     return [
       { computer: "HOST-ONLINE", totalEvents: "120", firstSeen: time(2 * 60 * minute), lastLogSeen: time(minute), channels: "4", eventIds: "18" },

@@ -18,6 +18,7 @@ This tracker records implementation-level verification. Report 5 is reserved for
 | UC-14 - View log-loss statistics | Implemented | 3 focused API/UI tests passed; full Dashboard API suite 46 passed / 3 optional integration skips; HostEyeShipper tests 2/2 passed including real quota deletion; control plane cargo check passed; desktop/mobile browser QA passed | `uc/UC-14-log-loss-statistics` |
 | UC-15 - View log-loss ratio | Implemented | 2 focused UC-15 API/UI tests passed; full Dashboard API suite 48 passed / 3 optional integration skips; HostEyeShipper quota tests and control plane cargo check passed | uc/UC-15-log-loss-ratio |
 | UC-16 - View log-loss causes | Implemented | 2 focused UC-16 API/UI tests passed; full Dashboard API suite 50 passed / 3 optional integration skips; live ClickHouse cause flow and desktop/mobile browser QA passed | uc/UC-16-log-loss-causes |
+| UC-17 - View collection interruption history | Implemented | 2 focused UC-17 API/UI tests passed; full Dashboard API suite 52 passed / 3 optional integration skips; live ClickHouse gap/recovery flow and desktop/mobile browser QA passed | uc/UC-17-collection-interruption-history |
 
 ## UC-02 verified behavior
 
@@ -152,3 +153,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Shows fleet cause counts plus a per-host cause and supporting evidence in the existing Log Loss workflow.
 - Keeps the optional Agent error source backward-compatible when an older ClickHouse installation has not created that table yet.
 - Passed the full Dashboard API suite with 50 tests passed and 3 optional integration skips. A live local ClickHouse flow classified both stale endpoints as `Agent/Shipper silent` from their old timestamps, and browser QA passed at the normal viewport and 390px mobile width without page-level overflow.
+
+## UC-17 verified behavior
+
+- Builds per-endpoint interruption history from observed Shipper metrics, admission decisions, gateway chunk receipts, and registration evidence.
+- Marks an interruption only after the configurable evidence-silence threshold is exceeded; the Dashboard exposes 15-minute, 30-minute, 60-minute, and six-hour thresholds.
+- Records the inferred start, recovery time when later evidence arrives, measured duration beyond the threshold, current status, Agent identity, and contributing evidence sources.
+- Includes interruptions already active at the beginning of the selected range by loading the latest retained baseline signal before that range.
+- Distinguishes recovered and ongoing interruptions and states explicitly that evidence silence is not proof that the Agent process stopped.
+- Uses Unix-millisecond timestamps from ClickHouse to avoid local-timezone shifts and merges host names case-insensitively in interruption summaries.
+- Passed the full Dashboard API suite with 52 tests passed and 3 optional integration skips. A live local ClickHouse flow returned one recovered and two ongoing evidence gaps at verification time.
+- Passed desktop and 390px mobile browser QA with the UC-17 panel contained within the viewport, working threshold filtering, and no console errors.

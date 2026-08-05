@@ -790,9 +790,11 @@ async function loadLogLoss() {
     channel: el("lossChannelFilter")?.value?.trim() || "",
     eventId: el("lossEventIdFilter")?.value?.trim() || "",
   };
-  const [summary, hosts] = await Promise.all([
+  const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
+  const [summary, hosts, interruptions] = await Promise.all([
     api(`/api/dashboard/log-loss/summary${query(filters)}`),
     api(`/api/dashboard/log-loss/hosts${query({ ...filters, limit: 500 })}`),
+    api(`/api/dashboard/log-loss/interruptions${query({ agent: filters.agent, thresholdMinutes, limit: 500 })}`),
   ]);
 
   el("lossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
@@ -805,6 +807,7 @@ async function loadLogLoss() {
     ? `Do duoc ${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)} may. Log phat sinh tai Windows: chua co bo dem nguon dang tin cay.`
     : "Chua co endpoint gui bo dem UC-14 trong khoang thoi gian da chon.";
   renderLossCauseSummary(el("lossCauseSummary"), summary.causeCounts || []);
+  renderInterruptionHistory(interruptions);
   renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
 }
 
@@ -814,6 +817,43 @@ function renderLossCauseSummary(container, causes) {
   container.innerHTML = active.length
     ? active.map((item) => `<article class="kpi"><span>${escapeHtml(item.label)}</span><strong>${formatNumber(item.count)}</strong></article>`).join("")
     : '<div class="empty-state">Khong co nguyen nhan mat log trong pham vi da chon</div>';
+}
+
+function renderInterruptionHistory(result) {
+  const summary = result.summary || {};
+  el("lossInterruptionCount").textContent = formatNumber(summary.interruptions);
+  el("lossInterruptionOngoing").textContent = formatNumber(summary.ongoing);
+  el("lossInterruptionRecovered").textContent = formatNumber(summary.recovered);
+  el("lossInterruptionHosts").textContent = formatNumber(summary.affectedHosts);
+  el("lossInterruptionCoverage").textContent = result.coverageTruncated
+    ? `Ket qua da cham gioi han evidence; thu hep bo loc de co lich su day du. Nguong: ${formatNumber(result.thresholdMinutes)} phut.`
+    : `${result.basis || "Evidence van hanh da quan sat."} Nguong: ${formatNumber(result.thresholdMinutes)} phut.`;
+
+  const container = el("lossInterruptionTable");
+  const rows = result.items || [];
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">Khong ghi nhan khoang gian doan vuot nguong trong pham vi da chon</div>';
+    return;
+  }
+
+  const body = rows.map((row) => `
+    <tr>
+      <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+      <td title="${escapeAttr(row.agentId)}">${escapeHtml(row.agentId || "-")}</td>
+      <td>${escapeHtml(formatDate(row.startedAt))}</td>
+      <td>${row.endedAt ? escapeHtml(formatDate(row.endedAt)) : "-"}</td>
+      <td class="numeric">${escapeHtml(formatAge(row.durationSeconds))}</td>
+      <td><span class="status-badge status-${row.status === "ongoing" ? "failed" : "ok"}">${escapeHtml(row.statusLabel)}</span></td>
+      <td title="${escapeAttr(row.evidenceMessage)}">${escapeHtml((row.evidenceSources || []).join(", ") || "-")}</td>
+    </tr>
+  `).join("");
+
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>May tram</th><th>Agent ID</th><th>Bat dau</th><th>Ket thuc</th><th class="numeric">Thoi luong</th><th>Khoi phuc</th><th>Evidence</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
 }
 
 function renderLogLossTable(container, rows) {

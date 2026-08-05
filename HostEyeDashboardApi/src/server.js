@@ -57,6 +57,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
   ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
+  ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -885,6 +886,154 @@ async function logLossSummary(ctx, res) {
 
 async function logLossHosts(ctx, res) {
   sendJson(res, 200, { items: await logLossData(ctx) });
+}
+
+async function logLossInterruptions(ctx, res) {
+  const from = dateParam(ctx.url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(ctx.url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+
+  const thresholdMinutes = ctx.url.searchParams.has("thresholdMinutes")
+    ? uintParam(ctx.url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
+    : 15;
+  if (thresholdMinutes < 5 || thresholdMinutes > 1440) {
+    badRequest("thresholdMinutes must be between 5 and 1440");
+  }
+
+  const status = (optionalString(ctx.url, "status", 32) || "").toLowerCase();
+  if (status && !["ongoing", "recovered"].includes(status)) {
+    badRequest("status must be one of: ongoing, recovered");
+  }
+
+  const host = optionalString(ctx.url, "host", 255);
+  const agent = optionalString(ctx.url, "agent", 255);
+  const limit = limitParam(ctx.url, 500, 5000);
+  const signalLimit = 100000;
+  const sourceFilter = (timestampColumn) => {
+    const predicates = [`${timestampColumn} <= ${sqlDate(to)}`, "computer != ''"];
+    if (host) predicates.push(`computer = ${sqlString(host)}`);
+    if (agent) predicates.push(`agent_id = ${sqlString(agent)}`);
+    return `WHERE ${predicates.join(" AND ")}`;
+  };
+
+  const rows = await queryRows(`
+    WITH activity AS (
+      SELECT computer, agent_id AS agentId, metric_timestamp AS signalAt, 'shipper_metric' AS source
+      FROM default.shipper_runtime_metrics
+      ${sourceFilter("metric_timestamp")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, decided_at AS signalAt, 'admission' AS source
+      FROM default.admission_decisions
+      ${sourceFilter("decided_at")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, last_seen AS signalAt, 'gateway_chunk' AS source
+      FROM default.ingest_chunks
+      ${sourceFilter("last_seen")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, last_seen AS signalAt, 'registration' AS source
+      FROM default.registered_agents
+      ${sourceFilter("last_seen")}
+    ), scoped_activity AS (
+      SELECT computer, agentId, signalAt, source
+      FROM activity
+      WHERE signalAt >= ${sqlDate(from)}
+      UNION ALL
+      SELECT
+        computer,
+        argMax(agentId, signalAt) AS agentId,
+        max(signalAt) AS baselineSignalAt,
+        argMax(source, signalAt) AS source
+      FROM activity
+      WHERE signalAt < ${sqlDate(from)}
+      GROUP BY computer
+    )
+    SELECT
+      computer,
+      argMax(agentId, signalAt) AS agentId,
+      toUnixTimestamp64Milli(max(signalAt)) AS activitySignalUnixMs,
+      groupUniqArray(source) AS evidenceSources
+    FROM scoped_activity
+    GROUP BY computer, toStartOfMinute(signalAt)
+    ORDER BY computer ASC, activitySignalUnixMs ASC
+    LIMIT ${signalLimit}
+  `);
+
+  const thresholdMs = thresholdMinutes * 60 * 1000;
+  const fromMs = from.getTime();
+  const toMs = to.getTime();
+  const byHost = new Map();
+  for (const row of rows) {
+    const computer = String(row.computer || "").trim();
+    const signalMs = Number(row.activitySignalUnixMs || 0);
+    if (!computer || !signalMs) continue;
+    const hostKey = computer.toLocaleLowerCase();
+    if (!byHost.has(hostKey)) byHost.set(hostKey, []);
+    byHost.get(hostKey).push({
+      computer,
+      agentId: row.agentId || "",
+      signalAt: new Date(signalMs).toISOString(),
+      signalMs,
+      evidenceSources: Array.isArray(row.evidenceSources) ? row.evidenceSources : [],
+    });
+  }
+
+  const interruptions = [];
+  for (const signals of byHost.values()) {
+    signals.sort((left, right) => left.signalMs - right.signalMs);
+    for (let index = 1; index < signals.length; index += 1) {
+      const previous = signals[index - 1];
+      const current = signals[index];
+      const startedMs = previous.signalMs + thresholdMs;
+      if (current.signalMs <= startedMs || current.signalMs < fromMs || startedMs > toMs) continue;
+      interruptions.push(interruptionRecord(previous, current, startedMs, current.signalMs, "recovered", thresholdMinutes));
+    }
+
+    const latest = signals[signals.length - 1];
+    const ongoingStartedMs = latest.signalMs + thresholdMs;
+    if (ongoingStartedMs <= toMs && toMs >= fromMs) {
+      interruptions.push(interruptionRecord(latest, null, ongoingStartedMs, toMs, "ongoing", thresholdMinutes));
+    }
+  }
+
+  const filtered = interruptions
+    .filter((item) => !status || item.status === status)
+    .sort((left, right) => dateValue(right.startedAt) - dateValue(left.startedAt));
+  const affectedHosts = new Set(filtered.map((item) => item.computer.toLocaleLowerCase())).size;
+
+  sendJson(res, 200, {
+    thresholdMinutes,
+    basis: "Khoang im lang duoc suy ra tu Shipper metrics, admission, gateway chunk va registration evidence da quan sat.",
+    coverageTruncated: rows.length >= signalLimit,
+    summary: {
+      interruptions: filtered.length,
+      ongoing: filtered.filter((item) => item.status === "ongoing").length,
+      recovered: filtered.filter((item) => item.status === "recovered").length,
+      affectedHosts,
+    },
+    items: filtered.slice(0, limit),
+  });
+}
+
+function interruptionRecord(previous, current, startedMs, endedMs, status, thresholdMinutes) {
+  const evidenceSources = [...new Set([
+    ...(previous.evidenceSources || []),
+    ...(current?.evidenceSources || []),
+  ])];
+  return {
+    computer: current?.computer || previous.computer,
+    agentId: current?.agentId || previous.agentId || "",
+    startedAt: new Date(startedMs).toISOString(),
+    endedAt: status === "recovered" ? new Date(endedMs).toISOString() : null,
+    durationSeconds: Math.max(0, Math.floor((endedMs - startedMs) / 1000)),
+    status,
+    statusLabel: status === "recovered" ? "Recovered" : "Ongoing",
+    lastEvidenceAt: previous.signalAt,
+    recoveryEvidenceAt: current?.signalAt || null,
+    evidenceSources,
+    evidenceMessage: status === "recovered"
+      ? `No operational evidence was observed for more than ${thresholdMinutes} minutes; later evidence confirmed recovery.`
+      : `No operational evidence has been observed for more than ${thresholdMinutes} minutes as of the selected end time.`,
+  };
 }
 
 async function processTopProcesses(ctx, res) {

@@ -337,6 +337,7 @@
               <label class="inline-control"><span>Agent ID</span><input id="lossAgentFilter" type="text" placeholder="Tat ca Agent"></label>
               <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="Tat ca channel"></label>
               <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="Tat ca Event ID"></label>
+              <label class="inline-control"><span>Nguong gian doan</span><select id="lossInterruptionThreshold"><option value="15">15 phut</option><option value="30">30 phut</option><option value="60">60 phut</option><option value="360">6 gio</option></select></label>
               <button class="button secondary" type="submit">Ap dung</button>
               <button class="button ghost" id="lossFilterReset" type="button">Dat lai</button>
             </form>
@@ -356,6 +357,22 @@
                 </div>
               </div>
               <div id="lossCauseSummary" class="kpi-grid compact-kpis"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Lich su gian doan thu thap</h3>
+                  <span>Khoang im lang vuot nguong duoc tinh tu evidence van hanh da quan sat; khong dong nghia chac chan Agent da dung.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossInterruptionCoverage">Dang tai lich su gian doan...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>Tong gian doan</span><strong id="lossInterruptionCount">-</strong></article>
+                <article class="kpi"><span>Dang gian doan</span><strong id="lossInterruptionOngoing">-</strong></article>
+                <article class="kpi"><span>Da khoi phuc</span><strong id="lossInterruptionRecovered">-</strong></article>
+                <article class="kpi"><span>May bi anh huong</span><strong id="lossInterruptionHosts">-</strong></article>
+              </div>
+              <div id="lossInterruptionTable" class="table-shell"></div>
             </article>
             <article class="panel">
               <div class="panel-title">
