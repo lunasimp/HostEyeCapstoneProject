@@ -1,0 +1,65 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "captured_at_utc":  "2026-08-05T05:44:40.3450142Z",
+    "checks":  [
+                   {
+                       "name":  "ClickHouse",
+                       "url":  "http://127.0.0.1:8123/?query=SELECT%201",
+                       "status":  "PASS",
+                       "elapsed_ms":  292,
+                       "response":  1
+                   },
+                   {
+                       "name":  "Control Plane",
+                       "url":  "http://127.0.0.1:8080/health",
+                       "status":  "PASS",
+                       "elapsed_ms":  94,
+                       "response":  {
+                                        "ok":  true,
+                                        "service":  "hosteye-control-plane"
+                                    }
+                   },
+                   {
+                       "name":  "Collector A",
+                       "url":  "http://127.0.0.1:8088/health",
+                       "status":  "PASS",
+                       "elapsed_ms":  15,
+                       "response":  {
+                                        "ok":  true,
+                                        "service":  "hosteye-data-plane",
+                                        "collector_id":  "collector-a",
+                                        "active_leases":  0,
+                                        "active_uploads":  0,
+                                        "ready":  true,
+                                        "next_available_at":  "2026-08-05T05:44:16.851Z",
+                                        "upload_slot_ms":  1000
+                                    }
+                   },
+                   {
+                       "name":  "Dynamic Config",
+                       "url":  "http://127.0.0.1:5063/healthz",
+                       "status":  "PASS",
+                       "elapsed_ms":  13,
+                       "response":  {
+                                        "service":  "hosteye-dynamic-config",
+                                        "status":  "ok"
+                                    }
+                   },
+                   {
+                       "name":  "Dashboard API",
+                       "url":  "http://127.0.0.1:5056/api/health",
+                       "status":  "PASS",
+                       "elapsed_ms":  258,
+                       "response":  {
+                                        "status":  "ok",
+                                        "clickhouse":  "http://clickhouse:8123",
+                                        "database":  "default",
+                                        "rows":  3222048,
+                                        "firstSeen":  "2026-06-14 11:06:56.673",
+                                        "lastSeen":  "2026-08-05 05:43:57.768",
+                                        "dataAgeSeconds":  43,
+                                        "stale":  false
+                                    }
+                   }
+               ]
+}

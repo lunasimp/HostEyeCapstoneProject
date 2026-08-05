@@ -1,0 +1,44 @@
+{
+  "envelope_version": 1,
+  "policy_id": "policy-default-windows-baseline",
+  "version": 1,
+  "issued_at": "2026-08-05T05:49:14.075898351Z",
+  "expires_at": "2026-08-05T06:19:14.076683189Z",
+  "agent_id": "st05-config-agent-20260805",
+  "host_id": "st05-config-host-20260805",
+  "group_id": "group-report5",
+  "config_sha256": "212411df417e43eba7326567fbca151f5437e5fd1a32f726b11d165339f4cbda",
+  "config": {
+    "config_schema_version": 1,
+    "vector": {
+      "enabled": true,
+      "channels": [
+        "Application",
+        "System",
+        "Security",
+        "Microsoft-Windows-Sysmon/Operational",
+        "Microsoft-Windows-PowerShell/Operational",
+        "Microsoft-Windows-WMI-Activity/Operational"
+      ],
+      "batch_max_events": 1000,
+      "batch_timeout_secs": 10
+    },
+    "shipper": {
+      "enabled": true,
+      "gateway_url": "https://soc-gateway.yourcorporate.com/api/v1/telemetry",
+      "normal_jitter_window_seconds": 300,
+      "recovery_jitter_window_seconds": 1800,
+      "base_backoff_seconds": 2,
+      "max_backoff_seconds": 300,
+      "max_spool_size_mb": 8192
+    },
+    "sensors": {
+      "sysmon_enabled": true,
+      "powershell_enabled": true,
+      "network_events_enabled": true
+    }
+  },
+  "signature_algorithm": "ed25519",
+  "key_id": "hosteye-demo-ed25519-v1",
+  "signature": "e490d11370f7302f6a512b6d22c68d32a8f7ab17221832e366fb857660294980d9e677a04c3b3cb65ae3956130c02223240e75ef12c270acf05039852b69aa00"
+}

@@ -1,0 +1,195 @@
+﻿{
+  "run_id": "ST-20260805-HOSTEYE-01",
+  "captured_at_utc": "2026-08-05T05:48:33.070Z",
+  "agentId": "st04-alert-agent-20260805054829",
+  "hostId": "st04-alert-host-20260805054829",
+  "computer": "ST04-ALERT-20260805054829",
+  "chunkId": "860c732c7949fe7451f556adcc4a6899fad7b4e1cf90f5f5b92416c2dc16f1b2",
+  "admission": {
+    "admission": "ok",
+    "config_status": "changed",
+    "config_etag": "\"80911f06ec45882acc3f5a40\"",
+    "agent_config": {
+      "config_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "normal_jitter_window_ms": 30000,
+      "recovery_jitter_window_ms": 300000,
+      "max_events": 500,
+      "max_bytes": 524288,
+      "enabled": true,
+      "routing": {
+        "control_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+        "admission_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+        "telemetry_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+        "config_url": "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+      },
+      "limits": {
+        "max_events": 500,
+        "max_bytes": 524288
+      },
+      "jitter": {
+        "normal_jitter_window_ms": 30000,
+        "recovery_jitter_window_ms": 300000
+      }
+    },
+    "collector_id": "collector-a",
+    "collector_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-a",
+    "routing": {
+      "control_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+      "admission_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+      "telemetry_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-a",
+      "config_url": "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+    },
+    "server_time": "2026-08-05T05:48:29.482Z",
+    "send_after": "2026-08-05T05:48:29.482Z",
+    "send_not_before": "2026-08-05T05:48:29.482Z",
+    "send_delay_ms": 0,
+    "schedule_reason": "collector_ready_now",
+    "collector_ready_at": "2026-08-05T05:48:25.616Z",
+    "collector_reserved_until": "2026-08-05T05:48:30.482Z",
+    "collector_upload_slot_ms": 1000,
+    "lease_id": "51eea0c3-26ba-407c-8d69-7523626b5655",
+    "lease_ttl_seconds": 30,
+    "lease_expires_at": "2026-08-05T05:48:59.484Z",
+    "max_batch_mb": 5,
+    "max_upload_rate_kbps": 1024,
+    "retry_after_seconds": 0,
+    "message": "upload lease granted"
+  },
+  "ack": {
+    "ack": true,
+    "commit": true,
+    "status": "raw_stored",
+    "index_status": "index_queued",
+    "index_message": "forwarded to vector gateway",
+    "chunk_id": "860c732c7949fe7451f556adcc4a6899fad7b4e1cf90f5f5b92416c2dc16f1b2",
+    "checksum": "d4d771bdbb3b9321b6ee92aac19a5e49e4a1434fe073ddd49066d44745305363",
+    "event_count": 1,
+    "invalid_event_count": 0,
+    "sequence_number": 1,
+    "lease_id": "51eea0c3-26ba-407c-8d69-7523626b5655",
+    "agent_config": {
+      "config_version": "1.0.0",
+      "schema_version": "1.0.0",
+      "normal_jitter_window_ms": 30000,
+      "recovery_jitter_window_ms": 300000,
+      "max_events": 500,
+      "max_bytes": 524288,
+      "enabled": true,
+      "routing": {
+        "control_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+        "admission_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+        "telemetry_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+        "config_url": "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+      },
+      "limits": {
+        "max_events": 500,
+        "max_bytes": 524288
+      },
+      "jitter": {
+        "normal_jitter_window_ms": 30000,
+        "recovery_jitter_window_ms": 300000
+      }
+    }
+  },
+  "alert_count": 1,
+  "list": {
+    "items": [
+      {
+        "alertId": "event:fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072",
+        "detectedAt": "2026-08-05 05:48:29.774",
+        "severity": "high",
+        "ruleId": "HE-PS-001",
+        "title": "Suspicious PowerShell content",
+        "status": "new",
+        "computer": "ST04-ALERT-20260805054829",
+        "agentId": "st04-alert-agent-20260805054829",
+        "hostId": "st04-alert-host-20260805054829",
+        "channel": "Microsoft-Windows-PowerShell/Operational",
+        "eventId": 4104,
+        "userName": "ST04\\analyst",
+        "sourceIp": "",
+        "processPath": "",
+        "message": "Synthetic system-test alert marker; content is not executed",
+        "evidenceCount": 1,
+        "idempotencyKey": "fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072"
+      }
+    ],
+    "summary": {
+      "total": 1,
+      "critical": 0,
+      "high": 1,
+      "medium": 0,
+      "low": 0
+    },
+    "total": 1,
+    "limit": 20,
+    "offset": 0,
+    "hasMore": false,
+    "filters": {
+      "q": "",
+      "severity": "",
+      "status": "",
+      "host": "ST04-ALERT-20260805054829",
+      "from": "2026-08-05T05:38:32.836Z",
+      "to": "2026-08-05T05:49:32.836Z"
+    }
+  },
+  "selected_alert_id": "event:fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072",
+  "detail": {
+    "alert": {
+      "alertId": "event:fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072",
+      "detectedAt": "2026-08-05 05:48:29.774",
+      "severity": "high",
+      "ruleId": "HE-PS-001",
+      "title": "Suspicious PowerShell content",
+      "status": "new",
+      "computer": "ST04-ALERT-20260805054829",
+      "agentId": "st04-alert-agent-20260805054829",
+      "hostId": "st04-alert-host-20260805054829",
+      "channel": "Microsoft-Windows-PowerShell/Operational",
+      "eventId": 4104,
+      "providerName": "Microsoft-Windows-PowerShell",
+      "level": "Warning",
+      "userName": "ST04\\analyst",
+      "userId": "",
+      "sourceIp": "",
+      "destinationIp": "",
+      "processPath": "",
+      "commandLine": "",
+      "scriptBlockText": "Invoke-Expression 'HOSTEYE_ST04_MARKER'",
+      "hashes": "",
+      "message": "Synthetic system-test alert marker; content is not executed",
+      "rawLog": "",
+      "eventDataJson": "{\"ScriptBlockText\":\"Invoke-Expression 'HOSTEYE_ST04_MARKER'\",\"User\":\"ST04\\\\analyst\"}",
+      "evidenceCount": 1,
+      "idempotencyKey": "fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072"
+    },
+    "evidence": [
+      {
+        "relation": "primary",
+        "time": "2026-08-05 05:48:29.774",
+        "idempotencyKey": "fb12a610295c6ace9be2144bba3f6ec1268964fbac9f5b3fd5287effb4c43072",
+        "computer": "ST04-ALERT-20260805054829",
+        "agentId": "st04-alert-agent-20260805054829",
+        "hostId": "st04-alert-host-20260805054829",
+        "channel": "Microsoft-Windows-PowerShell/Operational",
+        "eventId": 4104,
+        "providerName": "Microsoft-Windows-PowerShell",
+        "level": "Warning",
+        "userName": "ST04\\analyst",
+        "sourceIp": "",
+        "destinationIp": "",
+        "processPath": "",
+        "commandLine": "",
+        "message": "Synthetic system-test alert marker; content is not executed",
+        "rawLog": ""
+      }
+    ],
+    "evidenceTotal": 1,
+    "context": {
+      "type": "event",
+      "windowMinutes": 5
+    }
+  }
+}

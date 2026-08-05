@@ -1,0 +1,48 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "captured_at_utc":  "2026-08-05T05:58:44.4920282Z",
+    "desktop":  {
+                    "viewport":  "1280x720",
+                    "routes":  [
+                                   "overview",
+                                   "alerts",
+                                   "search",
+                                   "log-loss",
+                                   "dynamic-config"
+                               ],
+                    "headings":  [
+                                     "Overview",
+                                     "Security Alerts",
+                                     "Log Search",
+                                     "Thong ke mat mat log",
+                                     "Cau hinh dong"
+                                 ],
+                    "horizontal_overflow":  false,
+                    "console_errors":  0,
+                    "console_warnings":  0,
+                    "screenshot":  "st08-desktop.png"
+                },
+    "mobile":  {
+                   "viewport":  "390x844",
+                   "routes":  [
+                                  "overview",
+                                  "alerts",
+                                  "search",
+                                  "log-loss",
+                                  "dynamic-config"
+                              ],
+                   "main_starts_below_header_at_scroll_top":  true,
+                   "content_overlap":  false,
+                   "document_overflow_pixels":  1,
+                   "navigation_is_horizontally_scrollable":  true,
+                   "console_errors":  0,
+                   "console_warnings":  0,
+                   "screenshot":  "st08-mobile.png"
+               },
+    "observations":  [
+                         "All tested routes rendered a visible H1 and content sections.",
+                         "No browser console errors or warnings were observed.",
+                         "Mobile document width exceeded the client width by 1 pixel; a horizontal scrollbar remained visible.",
+                         "Two Vietnamese route headings are rendered without diacritics; this is a localization polish issue, not mojibake or a blocked workflow."
+                     ]
+}

@@ -1,0 +1,42 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "captured_at_utc":  "2026-08-05T05:54:13.9621166Z",
+    "services":  [
+                     {
+                         "name":  "HostEyeAgent",
+                         "status":  "Running",
+                         "start_type":  "Manual"
+                     },
+                     {
+                         "name":  "HostEyeShipper",
+                         "status":  "Running",
+                         "start_type":  "Automatic"
+                     }
+                 ],
+    "shipper_state":  {
+                          "last_success_utc":  "2026-07-29T06:39:47.445799100Z",
+                          "tracked_input_files":  46
+                      },
+    "spool":  {
+                  "chunk_files":  192719,
+                  "total_bytes":  9497438277,
+                  "oldest_utc":  "\/Date(1785472858708)\/",
+                  "newest_utc":  "\/Date(1785906151359)\/"
+              },
+    "local_mirror":  {
+                         "state_present":  true,
+                         "updated_at":  "2026-08-05T05:43:57.814Z",
+                         "mirrored":  5404,
+                         "failed":  0,
+                         "completed_count":  5000,
+                         "container":  "hosteye-local-mirror-vector",
+                         "mode":  "read-only mirror of new chunks",
+                         "deletes_or_authoritatively_acks_spool":  false
+                     },
+    "dashboard_health":  {
+                             "rows":  3222051,
+                             "last_seen":  "2026-08-05 05:48:29.774",
+                             "data_age_seconds":  344,
+                             "stale":  false
+                         }
+}
