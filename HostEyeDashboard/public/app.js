@@ -13,6 +13,7 @@ const state = {
   alertResult: null,
   alertRequestId: 0,
   alertDetailRequestId: 0,
+  lossDetailRequestId: 0,
   dynamicSaveInFlight: false,
   dynamicPreviewRequestId: 0,
   dynamicAssignmentInFlight: false,
@@ -105,8 +106,13 @@ document.addEventListener("DOMContentLoaded", () => {
   el("alertDetailModal")?.addEventListener("click", (event) => {
     if (event.target === el("alertDetailModal")) closeAlertDetail();
   });
+  el("lossDetailClose")?.addEventListener("click", closeLossDetail);
+  el("lossDetailModal")?.addEventListener("click", (event) => {
+    if (event.target === el("lossDetailModal")) closeLossDetail();
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && !el("alertDetailModal")?.hidden) closeAlertDetail();
+    if (event.key === "Escape" && !el("lossDetailModal")?.hidden) closeLossDetail();
   });
   document.querySelectorAll(".section-toggle").forEach((button) => {
     button.addEventListener("click", () => {
@@ -950,6 +956,7 @@ function renderLogLossTable(container, rows) {
     return `
       <tr>
         <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
+        <td><button class="secondary-btn alert-view-btn loss-detail-button" type="button" data-machine="${escapeAttr(row.computer)}" data-agent="${escapeAttr(row.agentId)}">Xem chi tiet</button></td>
         <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
         <td><span class="status-badge status-${escapeAttr(row.riskState === "normal" ? "ok" : row.riskState === "unknown" ? "unknown" : row.riskState === "backlog" ? "bursty" : row.riskState === "at_risk" ? "delayed" : "failed")}" title="${escapeAttr((row.riskFlags || []).join(", "))}">${escapeHtml(row.riskStateLabel || "-")}</span></td>
         <td title="${escapeAttr(row.causeEvidence)}"><span class="status-badge status-${escapeAttr(row.causeLevel)}">${escapeHtml(row.causeLabel)}</span></td>
@@ -972,7 +979,7 @@ function renderLogLossTable(container, rows) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>May tram</th><th>Trang thai</th><th>Rui ro</th><th>Nguyen nhan</th><th>Evidence</th>
+        <th>May tram</th><th>Chi tiet</th><th>Trang thai</th><th>Rui ro</th><th>Nguyen nhan</th><th>Evidence</th>
         <th class="numeric">Phat sinh</th><th class="numeric">Thu vao spool</th>
         <th class="numeric">Da ACK</th><th class="numeric">Cho gui</th>
         <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th><th class="numeric">Ty le mat</th>
@@ -981,6 +988,101 @@ function renderLogLossTable(container, rows) {
       </tr></thead>
       <tbody>${body}</tbody>
     </table>
+  `;
+  container.querySelectorAll(".loss-detail-button").forEach((button) => {
+    button.addEventListener("click", () => openLossDetail(button.dataset.machine, button.dataset.agent));
+  });
+}
+
+async function openLossDetail(machine, agent) {
+  if (!machine) return;
+  const requestId = ++state.lossDetailRequestId;
+  el("lossDetailModal").hidden = false;
+  document.body.classList.add("modal-open");
+  el("lossDetailTitle").textContent = `Chi tiet mat mat log - ${machine}`;
+  el("lossDetailContent").innerHTML = '<div class="empty-state">Dang tai evidence theo may...</div>';
+  try {
+    const data = await api(`/api/dashboard/log-loss/host-detail${query({
+      machine,
+      agent,
+      thresholdMinutes: el("lossInterruptionThreshold")?.value || "15",
+    })}`);
+    if (requestId !== state.lossDetailRequestId) return;
+    renderLossDetail(data);
+  } catch (error) {
+    if (requestId !== state.lossDetailRequestId) return;
+    el("lossDetailContent").innerHTML = `<div class="empty-state">${escapeHtml(error.message || "Khong tai duoc chi tiet mat log")}</div>`;
+  }
+}
+
+function closeLossDetail() {
+  state.lossDetailRequestId += 1;
+  el("lossDetailModal").hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function renderLossDetail(data) {
+  const host = data.host || {};
+  const loss = data.loss || {};
+  const period = data.affectedPeriod || {};
+  const recovery = data.recovery || {};
+  const available = loss.coverage === "measured";
+  const value = (number) => available && number !== null && number !== undefined ? formatNumber(number) : "-";
+  const ratio = loss.lossRatioPercent === null || loss.lossRatioPercent === undefined ? "-" : `${Number(loss.lossRatioPercent).toFixed(4)}%`;
+  const fields = [
+    ["May tram", host.computer || "-"],
+    ["Agent ID", host.agentId || "-"],
+    ["Host ID", host.hostId || "-"],
+    ["Trang thai rui ro", host.riskStateLabel || "-"],
+    ["Nguyen nhan", host.causeLabel || "-"],
+    ["Trang thai khoi phuc", recovery.label || "-"],
+    ["Bat dau anh huong", period.startedAt ? formatDate(period.startedAt) : "-"],
+    ["Ket thuc anh huong", period.endedAt ? formatDate(period.endedAt) : (recovery.status === "ongoing" ? "Dang tiep dien" : "-")],
+  ].map(([label, fieldValue]) => `<div class="alert-detail-field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(fieldValue)}</strong></div>`).join("");
+  const counters = [
+    ["Thu vao spool", value(loss.collectedEventCount)],
+    ["Da ACK", value(loss.sentEventCount)],
+    ["Dang cho gui", value(loss.pendingEventCount)],
+    ["Co nguy co", value(loss.atRiskEventCount)],
+    ["Da mat do quota", value(loss.recordedDroppedEventCount)],
+    ["Ty le mat do duoc", ratio],
+    ["So lan gian doan", formatNumber(period.interruptionCount || 0)],
+    ["Tong thoi gian anh huong", period.interruptionCount ? formatAge(period.totalDurationSeconds || 0) : "-"],
+  ].map(([label, fieldValue]) => `<div class="alert-detail-field"><span>${escapeHtml(label)}</span><strong>${escapeHtml(fieldValue)}</strong></div>`).join("");
+  const affectedKeys = new Set((data.affectedSources || []).map((source) => `${source.channel}\u001f${source.eventId}`));
+  const sourceRows = (data.sourceBreakdown || []).map((source) => {
+    const key = `${source.channel}\u001f${source.eventId}`;
+    const sourceRatio = source.lossRatioPercent === null || source.lossRatioPercent === undefined ? "-" : `${Number(source.lossRatioPercent).toFixed(4)}%`;
+    return `<tr>
+      <td>${escapeHtml(source.channel || "-")}</td><td>${escapeHtml(source.eventId || "-")}</td>
+      <td>${affectedKeys.has(key) ? '<span class="status-badge status-failed">Co mat log</span>' : '<span class="status-badge status-ok">Khong ghi nhan mat</span>'}</td>
+      <td class="numeric">${formatNumber(source.collectedEventCount)}</td>
+      <td class="numeric">${formatNumber(source.droppedEventCount)}</td>
+      <td class="numeric">${escapeHtml(sourceRatio)}</td>
+    </tr>`;
+  }).join("");
+  const interruptionRows = (data.interruptions || []).map((entry) => `<tr>
+    <td>${escapeHtml(formatDate(entry.startedAt))}</td>
+    <td>${entry.endedAt ? escapeHtml(formatDate(entry.endedAt)) : "-"}</td>
+    <td class="numeric">${escapeHtml(formatAge(entry.durationSeconds))}</td>
+    <td><span class="status-badge status-${entry.status === "recovered" ? "ok" : "failed"}">${escapeHtml(entry.status === "recovered" ? "Da khoi phuc" : "Dang gian doan")}</span></td>
+    <td>${escapeHtml((entry.evidenceSources || []).join(", ") || "-")}</td>
+  </tr>`).join("");
+
+  el("lossDetailContent").innerHTML = `
+    <div class="alert-detail-summary">${fields}</div>
+    <div class="alert-detail-summary">${counters}</div>
+    <p class="alert-detail-message">${escapeHtml(loss.message || host.coverageMessage || "Chua co evidence chi tiet")}</p>
+    <section class="loss-detail-section">
+      <h4>Channel va Event ID lien quan</h4>
+      <p class="metric-note">Pham vi source: ${escapeHtml(data.sourceCoverage || "unavailable")}. Chi danh dau mat log khi Shipper co bo dem dropped theo source.</p>
+      <div class="table-shell">${sourceRows ? `<table><thead><tr><th>Channel</th><th>Event ID</th><th>Trang thai</th><th class="numeric">Thu vao spool</th><th class="numeric">Da mat</th><th class="numeric">Ty le</th></tr></thead><tbody>${sourceRows}</tbody></table>` : '<div class="empty-state">Endpoint chua gui bo dem channel/Event ID</div>'}</div>
+    </section>
+    <section class="loss-detail-section">
+      <h4>Khoang thoi gian bi anh huong</h4>
+      <p class="metric-note">${escapeHtml(period.basis || "Chi hien thi tu evidence da quan sat.")}</p>
+      <div class="table-shell">${interruptionRows ? `<table><thead><tr><th>Bat dau</th><th>Ket thuc</th><th class="numeric">Thoi luong</th><th>Khoi phuc</th><th>Evidence</th></tr></thead><tbody>${interruptionRows}</tbody></table>` : '<div class="empty-state">Khong co khoang gian doan trong pham vi da chon</div>'}</div>
+    </section>
   `;
 }
 

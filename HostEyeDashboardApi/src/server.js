@@ -57,6 +57,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
   ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
+  ["GET", /^\/api\/dashboard\/log-loss\/host-detail$/, logLossHostDetail],
   ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
   ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
   ["GET", /^\/api\/dashboard\/log-loss\/alerts$/, logLossAlerts],
@@ -915,6 +916,102 @@ async function logLossHosts(ctx, res) {
   sendJson(res, 200, { items, filters: { machine: machine || "", riskState: riskState || "" } });
 }
 
+async function logLossHostDetail(ctx, res) {
+  const machine = requiredString(ctx.url, "machine");
+  if (machine.length > 255) badRequest("machine must be at most 255 characters");
+  const agent = optionalString(ctx.url, "agent", 255);
+  const thresholdMinutes = ctx.url.searchParams.has("thresholdMinutes")
+    ? uintParam(ctx.url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
+    : 15;
+  if (thresholdMinutes < 5 || thresholdMinutes > 1440) badRequest("thresholdMinutes must be between 5 and 1440");
+
+  const dataUrl = new URL(ctx.url);
+  dataUrl.searchParams.delete("host");
+  dataUrl.searchParams.delete("machine");
+  for (const name of ["machine", "riskState", "channel", "eventId"]) dataUrl.searchParams.delete(name);
+  dataUrl.searchParams.set("limit", "500");
+  const candidates = await logLossData({ ...ctx, url: dataUrl });
+  const matchingAgent = agent ? candidates.filter((item) => String(item.agentId || "") === agent) : candidates;
+  const item = matchingAgent.find((candidate) => String(candidate.computer || "") === machine)
+    || matchingAgent.find((candidate) => String(candidate.computer || "").toLowerCase() === machine.toLowerCase());
+  if (!item) return sendJson(res, 404, { message: "Host log-loss detail not found" });
+
+  const interruptionUrl = new URL(ctx.url);
+  interruptionUrl.searchParams.set("host", item.computer);
+  for (const name of ["machine", "agent", "riskState", "channel", "eventId"]) interruptionUrl.searchParams.delete(name);
+  interruptionUrl.searchParams.set("thresholdMinutes", String(thresholdMinutes));
+  interruptionUrl.searchParams.set("limit", "500");
+  const interruptionData = await logLossInterruptionData(interruptionUrl);
+  const interruptions = (interruptionData.items || []).filter((entry) => String(entry.computer || "").toLowerCase() === String(item.computer || "").toLowerCase());
+  const ongoing = interruptions.find((entry) => entry.status === "ongoing") || null;
+  const latest = interruptions[0] || null;
+  const sourceBreakdown = logLossSourceBreakdown(item);
+  const firstStartedAt = interruptions.length
+    ? interruptions.reduce((earliest, entry) => dateValue(entry.startedAt) < dateValue(earliest) ? entry.startedAt : earliest, interruptions[0].startedAt)
+    : null;
+  const recovery = ongoing
+    ? { status: "ongoing", label: "Chua khoi phuc", observedAt: ongoing.startedAt }
+    : latest?.status === "recovered"
+      ? { status: "recovered", label: "Da khoi phuc", observedAt: latest.endedAt }
+      : item.riskState === "normal"
+        ? { status: "stable", label: "Khong co su co dang hoat dong", observedAt: item.lastSeen }
+        : { status: "unknown", label: "Chua du evidence", observedAt: item.lastSeen };
+
+  sendJson(res, 200, {
+    host: item,
+    loss: {
+      generatedEventCount: null,
+      generatedAvailability: "unavailable",
+      recordedDroppedEventCount: item.droppedEventCount,
+      pendingEventCount: item.pendingEventCount,
+      atRiskEventCount: item.atRiskEventCount,
+      collectedEventCount: item.collectedEventCount,
+      sentEventCount: item.sentEventCount,
+      lossRatioPercent: item.lossRatioPercent,
+      coverage: item.coverage,
+      message: item.coverage === "measured"
+        ? "So log da mat chi la event bi HostEyeShipper ghi nhan loai bo khi enforce quota; khong suy dien tong log Windows bi thieu."
+        : item.coverageMessage,
+    },
+    affectedPeriod: {
+      startedAt: firstStartedAt,
+      endedAt: ongoing ? null : latest?.endedAt || null,
+      interruptionCount: interruptions.length,
+      totalDurationSeconds: interruptions.reduce((sum, entry) => sum + Number(entry.durationSeconds || 0), 0),
+      thresholdMinutes,
+      basis: interruptionData.basis,
+    },
+    recovery,
+    sourceCoverage: item.coverage === "measured"
+      ? (Number(item.unattributedDroppedEventCount || 0) > 0 ? "partial" : "measured")
+      : "unavailable",
+    affectedSources: sourceBreakdown.filter((source) => source.droppedEventCount > 0),
+    sourceBreakdown,
+    interruptions,
+  });
+}
+
+function logLossSourceBreakdown(item) {
+  const keys = new Set([...Object.keys(item.collectedBySource || {}), ...Object.keys(item.droppedBySource || {})]);
+  return [...keys].map((key) => {
+    const separator = key.indexOf("\u001f");
+    const channel = separator >= 0 ? key.slice(0, separator) : key;
+    const eventId = separator >= 0 ? key.slice(separator + 1) : "";
+    const collectedEventCount = Number(item.collectedBySource?.[key] || 0);
+    const droppedEventCount = Number(item.droppedBySource?.[key] || 0);
+    return {
+      channel,
+      eventId,
+      collectedEventCount,
+      droppedEventCount,
+      lossRatioPercent: collectedEventCount > 0
+        ? Number((droppedEventCount * 100 / collectedEventCount).toFixed(4))
+        : (droppedEventCount === 0 ? 0 : null),
+    };
+  }).sort((left, right) => right.droppedEventCount - left.droppedEventCount
+    || right.collectedEventCount - left.collectedEventCount
+    || left.channel.localeCompare(right.channel));
+}
 async function logLossRetryBacklog(ctx, res) {
   const retryUrl = new URL(ctx.url);
   retryUrl.searchParams.delete("channel");
@@ -1014,25 +1111,29 @@ function operationalLossAlerts(rows, thresholdPercent) {
 }
 
 async function logLossInterruptions(ctx, res) {
-  const from = dateParam(ctx.url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
-  const to = dateParam(ctx.url, "to", new Date());
+  sendJson(res, 200, await logLossInterruptionData(ctx.url));
+}
+
+async function logLossInterruptionData(url) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
   if (from > to) badRequest("from must be earlier than or equal to to");
 
-  const thresholdMinutes = ctx.url.searchParams.has("thresholdMinutes")
-    ? uintParam(ctx.url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
+  const thresholdMinutes = url.searchParams.has("thresholdMinutes")
+    ? uintParam(url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
     : 15;
   if (thresholdMinutes < 5 || thresholdMinutes > 1440) {
     badRequest("thresholdMinutes must be between 5 and 1440");
   }
 
-  const status = (optionalString(ctx.url, "status", 32) || "").toLowerCase();
+  const status = (optionalString(url, "status", 32) || "").toLowerCase();
   if (status && !["ongoing", "recovered"].includes(status)) {
     badRequest("status must be one of: ongoing, recovered");
   }
 
-  const host = optionalString(ctx.url, "host", 255);
-  const agent = optionalString(ctx.url, "agent", 255);
-  const limit = limitParam(ctx.url, 500, 5000);
+  const host = optionalString(url, "host", 255);
+  const agent = optionalString(url, "agent", 255);
+  const limit = limitParam(url, 500, 5000);
   const signalLimit = 100000;
   const sourceFilter = (timestampColumn) => {
     const predicates = [`${timestampColumn} <= ${sqlDate(to)}`, "computer != ''"];
@@ -1125,7 +1226,7 @@ async function logLossInterruptions(ctx, res) {
     .sort((left, right) => dateValue(right.startedAt) - dateValue(left.startedAt));
   const affectedHosts = new Set(filtered.map((item) => item.computer.toLocaleLowerCase())).size;
 
-  sendJson(res, 200, {
+  return {
     thresholdMinutes,
     basis: "Khoang im lang duoc suy ra tu Shipper metrics, admission, gateway chunk va registration evidence da quan sat.",
     coverageTruncated: rows.length >= signalLimit,
@@ -1136,7 +1237,7 @@ async function logLossInterruptions(ctx, res) {
       affectedHosts,
     },
     items: filtered.slice(0, limit),
-  });
+  };
 }
 
 function interruptionRecord(previous, current, startedMs, endedMs, status, thresholdMinutes) {

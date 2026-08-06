@@ -364,6 +364,58 @@ test("UC-20 validates risk filters before querying and exposes search controls",
   assert.match(app, /riskFlags/);
 });
 
+test("UC-21 returns evidence-backed log-loss detail for one machine", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/log-loss/host-detail?machine=HOST-BACKLOG&agent=agent-backlog&thresholdMinutes=15");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.host.computer, "HOST-BACKLOG");
+    assert.equal(response.body.host.agentId, "agent-backlog");
+    assert.equal(response.body.loss.generatedEventCount, null);
+    assert.equal(response.body.loss.recordedDroppedEventCount, 30);
+    assert.equal(response.body.loss.pendingEventCount, 90);
+    assert.equal(response.body.sourceCoverage, "measured");
+    assert.deepEqual(response.body.affectedSources.map((source) => [source.channel, source.eventId, source.droppedEventCount]), [
+      ["Microsoft-Windows-Sysmon/Operational", "1", 20],
+      ["Security", "4625", 10],
+    ]);
+    assert.equal(response.body.recovery.status, "ongoing");
+    assert.equal(response.body.affectedPeriod.interruptionCount, 1);
+    assert.equal(response.body.interruptions[0].computer, "HOST-BACKLOG");
+    assert.equal(response.body.interruptions[0].status, "ongoing");
+
+    const missing = await getJson(api.url + "/api/dashboard/log-loss/host-detail?machine=HOST-MISSING");
+    assert.equal(missing.status, 404);
+    assert.equal(missing.body.message, "Host log-loss detail not found");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-21 validates detail input before querying and exposes an accessible dialog", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const missingMachine = await getJson(api.url + "/api/dashboard/log-loss/host-detail");
+    assert.equal(missingMachine.status, 400);
+    const invalidThreshold = await getJson(api.url + "/api/dashboard/log-loss/host-detail?machine=HOST-BACKLOG&thresholdMinutes=2");
+    assert.equal(invalidThreshold.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(app, /\/api\/dashboard\/log-loss\/host-detail/);
+  assert.match(app, /openLossDetail/);
+  assert.match(app, /affectedSources/);
+  assert.match(html, /id="lossDetailModal"/);
+  assert.match(html, /aria-labelledby="lossDetailTitle"/);
+});
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);

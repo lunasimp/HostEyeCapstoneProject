@@ -195,3 +195,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 58 tests passed and 3 optional integration skips; the UC-02 registered-agent regression check and both focused UC-20 tests passed.
 - Passed a live local ClickHouse/API flow with seven interrupted rows, no currently disconnected row, and two `bruh` search matches; no counters or states were fabricated for endpoints without versioned evidence.
 - Passed desktop and 390px mobile browser QA: combined `bruh` plus interrupted filtering returned two matching rows, disconnected filtering showed the deterministic empty state, the table remained contained, and no console errors occurred. The pre-existing one-pixel mobile page overflow remains unchanged.
+
+## UC-21 verified behavior
+
+- Opens a per-machine detail dialog from the Log Loss host table and keeps the selected hostname, Agent ID, and Host ID visible for evidence correlation.
+- Reports only measured HostEyeShipper counters for collected, ACKed, pending, at-risk, and quota-dropped events; Windows-generated or otherwise missing totals remain explicitly unavailable.
+- Breaks measured counters down by Windows Event Log channel and Event ID, marks a source as affected only when the Shipper reports dropped events for that source, and preserves partial/unavailable coverage labels.
+- Reuses the UC-17 operational-evidence timeline to show affected start/end times, total observed duration, individual interruptions, evidence sources, and ongoing/recovered state.
+- Validates required machine and interruption-threshold input before querying ClickHouse and returns a deterministic not-found response for an unknown machine.
+- Passed the full Dashboard API suite with 60 tests passed and 3 optional integration skips; focused UC-17/UC-21 regression tests passed after sharing the interruption data helper.
+- Passed a live local ClickHouse/API flow for `BRUH`: one ongoing interruption was returned while loss/source counters remained explicitly unavailable because the endpoint has not reported versioned counters. Live verification also caught and fixed an invalid host predicate against `agent_chunk_errors`, whose schema has no `computer` column.
+- Passed desktop and 390px mobile browser QA with a readable full-screen mobile dialog, contained evidence tables, working close behavior, no page-level overflow, and no console errors.

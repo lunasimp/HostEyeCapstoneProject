@@ -1653,6 +1653,17 @@ body.modal-open {
   }
 }
 
+.loss-detail-button {
+  white-space: nowrap;
+}
+
+.loss-detail-section {
+  min-width: 0;
+}
+
+.loss-detail-section h4 {
+  margin: 0 0 8px;
+}
 .dynamic-status-panel {
   grid-column: 1 / -1;
 }
