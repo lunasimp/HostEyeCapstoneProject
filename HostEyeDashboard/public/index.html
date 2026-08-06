@@ -338,6 +338,7 @@
               <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="Tat ca channel"></label>
               <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="Tat ca Event ID"></label>
               <label class="inline-control"><span>Nguong gian doan</span><select id="lossInterruptionThreshold"><option value="15">15 phut</option><option value="30">30 phut</option><option value="60">60 phut</option><option value="360">6 gio</option></select></label>
+              <label class="inline-control"><span>Nguong canh bao mat log</span><select id="lossAlertThreshold"><option value="1">1%</option><option value="2">2%</option><option value="5">5%</option><option value="10">10%</option></select></label>
               <button class="button secondary" type="submit">Ap dung</button>
               <button class="button ghost" id="lossFilterReset" type="button">Dat lai</button>
             </form>
@@ -358,6 +359,23 @@
               </div>
               <div id="lossCauseSummary" class="kpi-grid compact-kpis"></div>
             </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Canh bao mat mat log</h3>
+                  <span>Canh bao theo nguong mat log, mat ket noi upload va gian doan evidence tren endpoint.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossAlertCoverage">Dang tai canh bao...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>Tong canh bao</span><strong id="lossAlertTotal">-</strong></article>
+                <article class="kpi severity-card critical"><span>Critical</span><strong id="lossAlertCritical">-</strong></article>
+                <article class="kpi severity-card high"><span>High</span><strong id="lossAlertHigh">-</strong></article>
+                <article class="kpi"><span>May bi anh huong</span><strong id="lossAlertHosts">-</strong></article>
+              </div>
+              <div id="lossAlertTable" class="table-shell"></div>
+            </article>
+
             <article class="panel">
               <div class="panel-title">
                 <div>

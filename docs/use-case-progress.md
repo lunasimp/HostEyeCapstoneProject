@@ -174,3 +174,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 54 tests passed and 3 optional integration skips; both focused UC-18 API/UI tests passed.
 - Passed a live local ClickHouse/API flow against 3,493,714 all-time rows. No endpoint currently reported versioned pending counters in the selected range, so the API returned an explicit zero-backlog/zero-measured-host state without fabrication.
 - Passed desktop and 390px mobile browser QA with no console errors and the retry panel contained within the viewport/table shell. The pre-existing one-pixel page-level mobile overflow remains unchanged.
+
+## UC-19 verified behavior
+
+- Generates active operational alerts only from measured HostEyeShipper loss counters, observed upload transport failures, and endpoint evidence silence; older endpoints do not receive fabricated ratio alerts.
+- Emits `HE-LOSS-001` when the measured quota-loss ratio exceeds the selected threshold, `HE-CONN-001` when the Shipper cannot reach the upload path, and `HE-COLL-001` after more than 15 minutes without Agent, Shipper, gateway, or registration evidence.
+- Supports 1%, 2%, 5%, and 10% loss thresholds and validates direct API threshold input before querying ClickHouse.
+- Deduplicates host names case-insensitively per rule while retaining the newest observed alert evidence.
+- Shows total, critical, high, affected-host counts, and a responsive evidence table in the existing Log Loss workflow.
+- Passed both focused UC-19 tests and the full Dashboard API suite with 56 tests passed and 3 optional integration skips.
+- Passed a live local ClickHouse/API flow with six active evidence-interruption alerts on six silent endpoints and no fabricated loss-ratio alert where versioned counters were unavailable.
+- Passed desktop and 390px mobile browser QA with no console errors; the table stays in its scroll shell and the pre-existing one-pixel page overflow remains unchanged.

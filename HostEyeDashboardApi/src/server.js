@@ -59,6 +59,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
   ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
   ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
+  ["GET", /^\/api\/dashboard\/log-loss\/alerts$/, logLossAlerts],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -924,6 +925,79 @@ async function logLossRetryBacklog(ctx, res) {
     items,
     basis: "Pending event and spool counters reported directly by HostEyeShipper through upload admission.",
   });
+}
+
+async function logLossAlerts(ctx, res) {
+  const rawThreshold = ctx.url.searchParams.get("thresholdPercent");
+  const thresholdPercent = rawThreshold === null || rawThreshold === "" ? 1 : Number(rawThreshold);
+  if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0 || thresholdPercent > 100) {
+    badRequest("thresholdPercent must be a number between 0 and 100");
+  }
+
+  const items = operationalLossAlerts(await logLossData(ctx), thresholdPercent)
+    .sort((left, right) => dateValue(right.detectedAt) - dateValue(left.detectedAt));
+  const affectedHosts = new Set(items.map((item) => String(item.computer || "").toLowerCase()).filter(Boolean)).size;
+  sendJson(res, 200, {
+    summary: {
+      total: items.length,
+      critical: items.filter((item) => item.severity === "critical").length,
+      high: items.filter((item) => item.severity === "high").length,
+      affectedHosts,
+    },
+    thresholdPercent,
+    items,
+    basis: "Alerts are generated only from measured Shipper counters, transport failures, and observed endpoint silence.",
+  });
+}
+
+function operationalLossAlerts(rows, thresholdPercent) {
+  const alerts = [];
+  for (const row of rows) {
+    if (row.coverage === "measured" && row.lossRatioPercent !== null && Number(row.lossRatioPercent) >= thresholdPercent && Number(row.droppedEventCount || 0) > 0) {
+      const ratio = Number(row.lossRatioPercent);
+      alerts.push({
+        alertId: `loss:HE-LOSS-001:${row.computer}`,
+        detectedAt: row.metricLastSeen || row.lastSeen,
+        severity: ratio >= 5 ? "critical" : "high",
+        ruleId: "HE-LOSS-001",
+        title: "Log loss ratio exceeded threshold",
+        status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "loss_threshold", evidenceCount: 1,
+        message: `${row.droppedEventCount} event(s) were dropped; measured loss ratio ${ratio.toFixed(4)}% exceeds ${thresholdPercent.toFixed(4)}%.`,
+        observedAt: row.metricLastSeen || row.lastSeen,
+      });
+    }
+    if (Number(row.transportStatusCode || 0) === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen) {
+      alerts.push({
+        alertId: `loss:HE-CONN-001:${row.computer}`,
+        detectedAt: row.transportLastSeen, severity: "high", ruleId: "HE-CONN-001",
+        title: "Endpoint upload connection lost", status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "connection_lost", evidenceCount: 1,
+        message: row.transportMessage || "HostEyeShipper could not reach the upload path.",
+        observedAt: row.transportLastSeen,
+      });
+    }
+    if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000) {
+      alerts.push({
+        alertId: `loss:HE-COLL-001:${row.computer}`,
+        detectedAt: row.lastSeen, severity: "high", ruleId: "HE-COLL-001",
+        title: "Endpoint collection evidence interrupted", status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "collection_interruption", evidenceCount: 1,
+        message: "No Agent, Shipper, gateway, or registration evidence was observed for more than 15 minutes.",
+        observedAt: row.lastSeen,
+      });
+    }
+  }
+  const deduped = new Map();
+  for (const alert of alerts) {
+    const key = `${alert.ruleId}|${String(alert.computer || "").toLowerCase()}`;
+    const current = deduped.get(key);
+    if (!current || dateValue(alert.detectedAt) > dateValue(current.detectedAt)) deduped.set(key, alert);
+  }
+  return [...deduped.values()];
 }
 
 async function logLossInterruptions(ctx, res) {

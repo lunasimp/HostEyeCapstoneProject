@@ -791,11 +791,12 @@ async function loadLogLoss() {
     eventId: el("lossEventIdFilter")?.value?.trim() || "",
   };
   const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
-  const [summary, hosts, interruptions, retryBacklog] = await Promise.all([
+  const [summary, hosts, interruptions, retryBacklog, lossAlerts] = await Promise.all([
     api(`/api/dashboard/log-loss/summary${query(filters)}`),
     api(`/api/dashboard/log-loss/hosts${query({ ...filters, limit: 500 })}`),
     api(`/api/dashboard/log-loss/interruptions${query({ agent: filters.agent, thresholdMinutes, limit: 500 })}`),
     api(`/api/dashboard/log-loss/retry-backlog${query({ agent: filters.agent, limit: 500 })}`),
+    api(`/api/dashboard/log-loss/alerts${query({ agent: filters.agent, thresholdPercent: el("lossAlertThreshold")?.value || "1", limit: 500 })}`),
   ]);
 
   el("lossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
@@ -808,6 +809,7 @@ async function loadLogLoss() {
     ? `Do duoc ${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)} may. Log phat sinh tai Windows: chua co bo dem nguon dang tin cay.`
     : "Chua co endpoint gui bo dem UC-14 trong khoang thoi gian da chon.";
   renderLossCauseSummary(el("lossCauseSummary"), summary.causeCounts || []);
+  renderLossAlerts(lossAlerts);
   renderInterruptionHistory(interruptions);
   renderRetryBacklog(retryBacklog);
   renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
@@ -819,6 +821,37 @@ function renderLossCauseSummary(container, causes) {
   container.innerHTML = active.length
     ? active.map((item) => `<article class="kpi"><span>${escapeHtml(item.label)}</span><strong>${formatNumber(item.count)}</strong></article>`).join("")
     : '<div class="empty-state">Khong co nguyen nhan mat log trong pham vi da chon</div>';
+}
+
+function renderLossAlerts(result) {
+  const summary = result.summary || {};
+  el("lossAlertTotal").textContent = formatNumber(summary.total);
+  el("lossAlertCritical").textContent = formatNumber(summary.critical);
+  el("lossAlertHigh").textContent = formatNumber(summary.high);
+  el("lossAlertHosts").textContent = formatNumber(summary.affectedHosts);
+  el("lossAlertCoverage").textContent = `${result.basis || "Canh bao dua tren evidence van hanh."} Nguong mat log: ${Number(result.thresholdPercent || 0).toFixed(2)}%.`;
+  const container = el("lossAlertTable");
+  const rows = result.items || [];
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">Khong co canh bao mat log dang hoat dong trong pham vi da chon</div>';
+    return;
+  }
+  const body = rows.map((row) => `
+    <tr>
+      <td>${escapeHtml(formatDate(row.detectedAt))}</td>
+      <td><span class="severity-badge severity-${escapeAttr(row.severity)}">${escapeHtml(String(row.severity || "unknown").toUpperCase())}</span></td>
+      <td>${escapeHtml(row.ruleId || "-")}</td>
+      <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "-")}</td>
+      <td>${escapeHtml(row.title || "-")}</td>
+      <td title="${escapeAttr(row.message)}">${escapeHtml(row.message || "-")}</td>
+    </tr>
+  `).join("");
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>Phat hien</th><th>Muc do</th><th>Rule</th><th>May tram</th><th>Canh bao</th><th>Evidence</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
 }
 
 function renderInterruptionHistory(result) {

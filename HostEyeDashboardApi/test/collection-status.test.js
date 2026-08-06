@@ -276,6 +276,49 @@ test("UC-18 UI presents retry backlog totals and per-host evidence", async () =>
   assert.match(html, /id="lossRetryTable"/);
 });
 
+test("UC-19 reports measured loss, connection, and interruption alerts without fabricated evidence", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/log-loss/alerts?thresholdPercent=1&limit=100");
+    assert.equal(response.status, 200);
+    assert.deepEqual(response.body.summary, { total: 2, critical: 1, high: 1, affectedHosts: 1 });
+    assert.equal(response.body.thresholdPercent, 1);
+    const rules = new Map(response.body.items.map((item) => [item.ruleId, item]));
+    assert.equal(rules.get("HE-LOSS-001").computer, "HOST-BACKLOG");
+    assert.match(rules.get("HE-LOSS-001").message, /30 event/);
+    assert.equal(rules.get("HE-CONN-001").severity, "high");
+
+    const higherThreshold = await getJson(api.url + "/api/dashboard/log-loss/alerts?thresholdPercent=20&limit=100");
+    assert.equal(higherThreshold.status, 200);
+    assert.equal(higherThreshold.body.summary.total, 1);
+    assert.equal(higherThreshold.body.items[0].ruleId, "HE-CONN-001");
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-19 validates alert thresholds and exposes the Log Loss alert UI", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const invalid = await getJson(api.url + "/api/dashboard/log-loss/alerts?thresholdPercent=101");
+    assert.equal(invalid.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(app, /\/api\/dashboard\/log-loss\/alerts/);
+  assert.match(app, /renderLossAlerts/);
+  assert.match(html, /id="lossAlertThreshold"/);
+  assert.match(html, /id="lossAlertTable"/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
