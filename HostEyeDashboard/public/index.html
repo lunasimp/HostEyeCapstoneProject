@@ -335,6 +335,8 @@
           <div class="section-body">
             <form id="lossFilterForm" class="panel-actions loss-filter-form">
               <label class="inline-control"><span>Agent ID</span><input id="lossAgentFilter" type="text" placeholder="Tat ca Agent"></label>
+              <label class="inline-control"><span>Tim may</span><input id="lossMachineFilter" type="search" maxlength="255" placeholder="Hostname, Agent ID, Host ID"></label>
+              <label class="inline-control"><span>Trang thai rui ro</span><select id="lossRiskStateFilter"><option value="">Tat ca</option><option value="normal">Binh thuong</option><option value="interrupted">Gian doan</option><option value="backlog">Ton dong</option><option value="disconnected">Mat ket noi</option><option value="at_risk">Co nguy co mat log</option><option value="unknown">Chua du evidence</option></select></label>
               <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="Tat ca channel"></label>
               <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="Tat ca Event ID"></label>
               <label class="inline-control"><span>Nguong gian doan</span><select id="lossInterruptionThreshold"><option value="15">15 phut</option><option value="30">30 phut</option><option value="60">60 phut</option><option value="360">6 gio</option></select></label>

@@ -185,3 +185,13 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed both focused UC-19 tests and the full Dashboard API suite with 56 tests passed and 3 optional integration skips.
 - Passed a live local ClickHouse/API flow with six active evidence-interruption alerts on six silent endpoints and no fabricated loss-ratio alert where versioned counters were unavailable.
 - Passed desktop and 390px mobile browser QA with no console errors; the table stays in its scroll shell and the pre-existing one-pixel page overflow remains unchanged.
+
+## UC-20 verified behavior
+
+- Searches the log-loss host inventory by hostname, Agent ID, or Host ID and combines that search with the existing Agent, channel, Event ID, and time filters.
+- Classifies each host from observed evidence as normal, collection interrupted, retry backlog, disconnected, at risk of data loss, or insufficient evidence; flags can overlap while the primary state uses a deterministic severity priority.
+- Filters in the API before returning rows and validates unsupported risk-state values before querying ClickHouse.
+- Shows the evidence-backed risk state as a dedicated per-host column and provides responsive machine-search and risk-state controls in the existing Log Loss workflow.
+- Passed the full Dashboard API suite with 58 tests passed and 3 optional integration skips; the UC-02 registered-agent regression check and both focused UC-20 tests passed.
+- Passed a live local ClickHouse/API flow with seven interrupted rows, no currently disconnected row, and two `bruh` search matches; no counters or states were fabricated for endpoints without versioned evidence.
+- Passed desktop and 390px mobile browser QA: combined `bruh` plus interrupted filtering returned two matching rows, disconnected filtering showed the deterministic empty state, the table remained contained, and no console errors occurred. The pre-existing one-pixel mobile page overflow remains unchanged.

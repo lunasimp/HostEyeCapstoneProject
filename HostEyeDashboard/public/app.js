@@ -789,6 +789,8 @@ async function loadLogLoss() {
     agent: el("lossAgentFilter")?.value?.trim() || "",
     channel: el("lossChannelFilter")?.value?.trim() || "",
     eventId: el("lossEventIdFilter")?.value?.trim() || "",
+    machine: el("lossMachineFilter")?.value?.trim() || "",
+    riskState: el("lossRiskStateFilter")?.value || "",
   };
   const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
   const [summary, hosts, interruptions, retryBacklog, lossAlerts] = await Promise.all([
@@ -949,6 +951,7 @@ function renderLogLossTable(container, rows) {
       <tr>
         <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "(empty)")}</td>
         <td><span class="status-badge status-${escapeAttr(row.statusLevel)}">${escapeHtml(row.statusLabel)}</span></td>
+        <td><span class="status-badge status-${escapeAttr(row.riskState === "normal" ? "ok" : row.riskState === "unknown" ? "unknown" : row.riskState === "backlog" ? "bursty" : row.riskState === "at_risk" ? "delayed" : "failed")}" title="${escapeAttr((row.riskFlags || []).join(", "))}">${escapeHtml(row.riskStateLabel || "-")}</span></td>
         <td title="${escapeAttr(row.causeEvidence)}"><span class="status-badge status-${escapeAttr(row.causeLevel)}">${escapeHtml(row.causeLabel)}</span></td>
         <td title="${escapeAttr(row.causeEvidence)}">${escapeHtml(row.causeEvidence || "-")}</td>
         <td class="numeric" title="${escapeAttr(row.generatedMessage)}">-</td>
@@ -969,7 +972,7 @@ function renderLogLossTable(container, rows) {
   container.innerHTML = `
     <table>
       <thead><tr>
-        <th>May tram</th><th>Trang thai</th><th>Nguyen nhan</th><th>Evidence</th>
+        <th>May tram</th><th>Trang thai</th><th>Rui ro</th><th>Nguyen nhan</th><th>Evidence</th>
         <th class="numeric">Phat sinh</th><th class="numeric">Thu vao spool</th>
         <th class="numeric">Da ACK</th><th class="numeric">Cho gui</th>
         <th class="numeric">Co nguy co</th><th class="numeric">Da mat</th><th class="numeric">Ty le mat</th>

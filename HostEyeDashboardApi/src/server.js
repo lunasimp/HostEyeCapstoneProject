@@ -855,6 +855,7 @@ async function logLossData(ctx) {
       const lastSeen = latestDate(item.metricLastSeen, item.transportLastSeen, item.serverLastSeen, item.registeredLastSeen);
       const cause = logLossCause({ ...item, lastSeen });
       const status = logLossStatus(item);
+      const risk = logLossRiskState({ ...item, ...cause, lastSeen });
       return {
         ...item,
         ...ratio,
@@ -862,6 +863,9 @@ async function logLossData(ctx) {
         lastSeen,
         statusLevel: status.level,
         statusLabel: status.label,
+        riskState: risk.state,
+        riskStateLabel: risk.label,
+        riskFlags: risk.flags,
         generatedAvailability: "unavailable",
         generatedMessage: "Windows does not expose a trustworthy total generated-event counter to HostEye.",
       };
@@ -899,7 +903,16 @@ async function logLossSummary(ctx, res) {
 }
 
 async function logLossHosts(ctx, res) {
-  sendJson(res, 200, { items: await logLossData(ctx) });
+  const machine = optionalString(ctx.url, "machine", 255);
+  const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
+  let items = await logLossData(ctx);
+  if (machine) {
+    const needle = machine.toLowerCase();
+    items = items.filter((item) => [item.computer, item.agentId, item.hostId]
+      .some((value) => String(value || "").toLowerCase().includes(needle)));
+  }
+  if (riskState) items = items.filter((item) => (item.riskFlags || []).includes(riskState));
+  sendJson(res, 200, { items, filters: { machine: machine || "", riskState: riskState || "" } });
 }
 
 async function logLossRetryBacklog(ctx, res) {
@@ -2875,6 +2888,32 @@ function retryBacklogStatus(row) {
     retryEvidence: row.transportMessage || `${pending} event(s) remain in durable spool; retry count ${retryCount}.`,
     retryObservedAt: observedAt,
   };
+}
+
+function logLossRiskState(row) {
+  const flags = [];
+  const transportDisconnected = Number(row.transportStatusCode || 0) === 0
+    && Number(row.transportSuccess || 0) === 0 && Boolean(row.transportLastSeen);
+  const interrupted = Boolean(row.lastSeen) && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000;
+  const atRisk = Number(row.atRiskEventCount || 0) > 0 || Number(row.droppedEventCount || 0) > 0;
+  const backlog = Number(row.pendingEventCount || 0) > 0;
+  if (transportDisconnected) flags.push("disconnected");
+  if (interrupted) flags.push("interrupted");
+  if (atRisk) flags.push("at_risk");
+  if (backlog) flags.push("backlog");
+  if (!flags.length) flags.push(row.coverage === "measured" ? "normal" : "unknown");
+
+  const state = ["disconnected", "interrupted", "at_risk", "backlog", "normal", "unknown"]
+    .find((candidate) => flags.includes(candidate)) || "unknown";
+  const label = ({
+    disconnected: "Upload disconnected",
+    interrupted: "Collection interrupted",
+    at_risk: "At risk of loss",
+    backlog: "Retry backlog",
+    normal: "Normal",
+    unknown: "Insufficient evidence",
+  })[state];
+  return { state, label, flags };
 }
 
 function logLossStatus(row) {

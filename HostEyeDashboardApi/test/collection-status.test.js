@@ -319,6 +319,51 @@ test("UC-19 validates alert thresholds and exposes the Log Loss alert UI", async
   assert.match(html, /id="lossAlertTable"/);
 });
 
+test("UC-20 filters and searches hosts by evidence-backed log-loss risk state", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const backlog = await getJson(api.url + "/api/dashboard/log-loss/hosts?riskState=backlog&limit=100");
+    assert.equal(backlog.status, 200);
+    assert.deepEqual(backlog.body.items.map((item) => item.computer).sort(), ["HOST-BACKLOG", "HOST-ONLINE"]);
+    assert.ok(backlog.body.items.every((item) => item.riskFlags.includes("backlog")));
+
+    const disconnected = await getJson(api.url + "/api/dashboard/log-loss/hosts?riskState=disconnected&limit=100");
+    assert.equal(disconnected.body.items.length, 1);
+    assert.equal(disconnected.body.items[0].computer, "HOST-BACKLOG");
+    assert.equal(disconnected.body.items[0].riskState, "disconnected");
+    assert.ok(disconnected.body.items[0].riskFlags.includes("at_risk"));
+
+    const searched = await getJson(api.url + "/api/dashboard/log-loss/hosts?machine=agent-backlog&riskState=at_risk&limit=100");
+    assert.equal(searched.body.items.length, 1);
+    assert.equal(searched.body.items[0].computer, "HOST-BACKLOG");
+    assert.deepEqual(searched.body.filters, { machine: "agent-backlog", riskState: "at_risk" });
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-20 validates risk filters before querying and exposes search controls", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const invalid = await getJson(api.url + "/api/dashboard/log-loss/hosts?riskState=unsafe");
+    assert.equal(invalid.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(html, /id="lossMachineFilter"/);
+  assert.match(html, /id="lossRiskStateFilter"/);
+  assert.match(app, /riskStateLabel/);
+  assert.match(app, /riskFlags/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
