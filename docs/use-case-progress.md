@@ -206,3 +206,13 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 60 tests passed and 3 optional integration skips; focused UC-17/UC-21 regression tests passed after sharing the interruption data helper.
 - Passed a live local ClickHouse/API flow for `BRUH`: one ongoing interruption was returned while loss/source counters remained explicitly unavailable because the endpoint has not reported versioned counters. Live verification also caught and fixed an invalid host predicate against `agent_chunk_errors`, whose schema has no `computer` column.
 - Passed desktop and 390px mobile browser QA with a readable full-screen mobile dialog, contained evidence tables, working close behavior, no page-level overflow, and no console errors.
+
+## UC-22 verified behavior
+
+- Exports the current Log Loss view as a UTF-8 CSV report and applies the selected time range, global host, machine search, Agent ID, channel, Event ID, and risk-state filters.
+- Includes report/filter metadata, machine and identity fields, collection/risk/cause states, measured Shipper counters, filtered channel/Event-ID counts and ratios, gateway evidence, coverage, and evidence notes.
+- Limits one export to 5,000 rows, rejects unsupported formats before querying ClickHouse, protects dynamic cells from spreadsheet formula injection, and leaves unavailable counters blank instead of fabricating values.
+- Uses the same evidence-backed host classification as the dashboard and remains compatible with the real `agent_chunk_errors` schema, which has no computer column.
+- Passed the full Dashboard API suite with 62 tests passed and 3 optional integration skips; both focused UC-22 API/UI tests passed.
+- Passed a live local ClickHouse/API export for `ST10-IDEM-20260805060022` in the interrupted state: one CSV data row, UTF-8 BOM, CSV content type, attachment filename, and explicitly blank unavailable endpoint counters.
+- Passed desktop and 390px mobile browser QA: the CSV download completed, the UI reported the generated filename, the action re-enabled after completion, controls remained within the viewport, and no console errors occurred.

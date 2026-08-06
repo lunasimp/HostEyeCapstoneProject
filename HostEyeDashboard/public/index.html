@@ -343,6 +343,8 @@
               <label class="inline-control"><span>Nguong canh bao mat log</span><select id="lossAlertThreshold"><option value="1">1%</option><option value="2">2%</option><option value="5">5%</option><option value="10">10%</option></select></label>
               <button class="button secondary" type="submit">Ap dung</button>
               <button class="button ghost" id="lossFilterReset" type="button">Dat lai</button>
+              <button class="button ghost" id="lossExport" type="button">Xuat CSV</button>
+              <output id="lossExportStatus" class="metric-note" aria-live="polite"></output>
             </form>
             <p class="metric-note" id="logLossCoverage">Dang tai pham vi do...</p>
             <div class="kpi-grid compact-kpis">

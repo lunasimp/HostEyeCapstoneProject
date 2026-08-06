@@ -67,6 +67,9 @@ document.addEventListener("DOMContentLoaded", () => {
     el("lossFilterForm")?.reset();
     loadLogLoss().catch((error) => console.error(error));
   });
+  el("lossExport")?.addEventListener("click", () => {
+    exportLogLossReport().catch((error) => console.error(error));
+  });
   el("logSearchForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
     loadLogSearch({ reset: true }).catch((error) => console.error(error));
@@ -790,14 +793,18 @@ function openDetailForChunk(host, time) {
   window.location.href = url.toString();
 }
 
-async function loadLogLoss() {
-  const filters = {
+function currentLossFilters() {
+  return {
     agent: el("lossAgentFilter")?.value?.trim() || "",
     channel: el("lossChannelFilter")?.value?.trim() || "",
     eventId: el("lossEventIdFilter")?.value?.trim() || "",
     machine: el("lossMachineFilter")?.value?.trim() || "",
     riskState: el("lossRiskStateFilter")?.value || "",
   };
+}
+
+async function loadLogLoss() {
+  const filters = currentLossFilters();
   const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
   const [summary, hosts, interruptions, retryBacklog, lossAlerts] = await Promise.all([
     api(`/api/dashboard/log-loss/summary${query(filters)}`),
@@ -821,6 +828,42 @@ async function loadLogLoss() {
   renderInterruptionHistory(interruptions);
   renderRetryBacklog(retryBacklog);
   renderLogLossTable(el("logLossHostsTable"), hosts.items || []);
+}
+
+async function exportLogLossReport() {
+  const button = el("lossExport");
+  const status = el("lossExportStatus");
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  status.textContent = "Dang tao file CSV tu evidence da loc...";
+  try {
+    const response = await fetch(`${API_BASE}/api/dashboard/log-loss/export${query({
+      ...currentLossFilters(),
+      format: "csv",
+    })}`, { cache: "no-store" });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${message.slice(0, 160)}`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = match?.[1] || "hosteye-log-loss.csv";
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    status.textContent = `Da xuat ${filename}`;
+  } catch (error) {
+    status.textContent = error.message || "Khong the xuat bao cao";
+    throw error;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderLossCauseSummary(container, causes) {

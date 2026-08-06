@@ -888,6 +888,12 @@ th.numeric {
   outline: 0;
 }
 
+.loss-filter-form #lossExportStatus {
+  max-width: 360px;
+  margin: 0;
+  padding: 6px 10px;
+  text-transform: none;
+}
 .host-level-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

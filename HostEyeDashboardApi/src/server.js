@@ -58,6 +58,7 @@ const routes = [
   ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
   ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
   ["GET", /^\/api\/dashboard\/log-loss\/host-detail$/, logLossHostDetail],
+  ["GET", /^\/api\/dashboard\/log-loss\/export$/, logLossExport],
   ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
   ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
   ["GET", /^\/api\/dashboard\/log-loss\/alerts$/, logLossAlerts],
@@ -632,7 +633,9 @@ async function logLossData(ctx) {
   const admissionWhere = operationalTimeWhere(ctx.url, "decided_at", ["computer != ''"]);
   const chunkWhere = operationalTimeWhere(ctx.url, "last_seen", ["computer != ''", "chunk_id != ''"]);
   const transportWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
-  const errorWhere = operationalTimeWhere(ctx.url, "reported_at", ["agent_id != ''"]);
+  const errorUrl = new URL(ctx.url);
+  errorUrl.searchParams.delete("host");
+  const errorWhere = operationalTimeWhere(errorUrl, "reported_at", ["agent_id != ''"]);
   const host = ctx.url.searchParams.get("host");
   const agentWhere = host ? `WHERE computer = ${sqlString(host)}` : "";
 
@@ -916,6 +919,54 @@ async function logLossHosts(ctx, res) {
   sendJson(res, 200, { items, filters: { machine: machine || "", riskState: riskState || "" } });
 }
 
+async function logLossExport(ctx, res) {
+  optionalEnum(ctx.url, "format", ["csv"]);
+  const machine = optionalString(ctx.url, "machine", 255);
+  const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
+  const exportUrl = new URL(ctx.url);
+  exportUrl.searchParams.set("limit", "5000");
+  let items = await logLossData({ ...ctx, url: exportUrl });
+  if (machine) {
+    const needle = machine.toLowerCase();
+    items = items.filter((item) => [item.computer, item.agentId, item.hostId]
+      .some((value) => String(value || "").toLowerCase().includes(needle)));
+  }
+  if (riskState) items = items.filter((item) => (item.riskFlags || []).includes(riskState));
+
+  const from = dateParam(ctx.url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(ctx.url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const generatedAt = new Date();
+  const channel = optionalString(ctx.url, "channel", 255) || "";
+  const eventId = optionalString(ctx.url, "eventId", 64) || "";
+  const agent = optionalString(ctx.url, "agent", 255) || "";
+  const headers = [
+    "report_generated_at", "range_from", "range_to", "selected_machine", "selected_agent",
+    "selected_channel", "selected_event_id", "selected_risk_state", "computer", "agent_id", "host_id",
+    "evidence_status", "risk_state", "risk_label", "risk_flags", "collection_status", "cause_code", "cause_label",
+    "last_evidence_at", "collected_events", "acked_events", "pending_events", "at_risk_events", "quota_dropped_events",
+    "filtered_collected_events", "filtered_dropped_events", "loss_ratio_percent", "gateway_received_events",
+    "coverage", "ratio_coverage", "coverage_note", "cause_evidence",
+  ];
+  const rows = items.map((item) => {
+    const measured = item.coverage === "measured";
+    const evidenceStatus = item.riskState === "normal" ? "normal"
+      : item.riskState === "unknown" ? "insufficient_evidence" : "requires_attention";
+    return [
+      generatedAt.toISOString(), from.toISOString(), to.toISOString(), machine || "", agent, channel, eventId, riskState || "",
+      item.computer, item.agentId, item.hostId, evidenceStatus, item.riskState, item.riskStateLabel,
+      (item.riskFlags || []).join("|"), item.statusLabel, item.causeCode, item.causeLabel, item.lastSeen,
+      measured ? item.collectedEventCount : null, measured ? item.sentEventCount : null,
+      measured ? item.pendingEventCount : null, measured ? item.atRiskEventCount : null, measured ? item.droppedEventCount : null,
+      item.ratioCoverage === "unavailable" ? null : item.ratioCollectedEventCount,
+      item.ratioCoverage === "unavailable" ? null : item.ratioDroppedEventCount,
+      item.lossRatioPercent, item.serverReceivedEvents, item.coverage, item.ratioCoverage,
+      item.ratioMessage || item.coverageMessage, item.causeEvidence,
+    ];
+  });
+  const stamp = generatedAt.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  sendCsv(res, `hosteye-log-loss-${stamp}.csv`, headers, rows);
+}
 async function logLossHostDetail(ctx, res) {
   const machine = requiredString(ctx.url, "machine");
   if (machine.length > 255) badRequest("machine must be at most 255 characters");
@@ -3148,6 +3199,25 @@ async function readJsonBody(req) {
   } catch (_error) {
     badRequest("Request body must be valid JSON");
   }
+}
+function sendCsv(res, filename, headers, rows) {
+  const lines = [headers, ...rows].map((row) => row.map(csvCell).join(","));
+  const body = "\uFEFF" + lines.join("\r\n") + "\r\n";
+  res.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="${filename}"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(body);
+}
+
+function csvCell(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  let text = String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
 }
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, jsonReplacer);

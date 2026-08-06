@@ -416,6 +416,47 @@ test("UC-21 validates detail input before querying and exposes an accessible dia
   assert.match(html, /id="lossDetailModal"/);
   assert.match(html, /aria-labelledby="lossDetailTitle"/);
 });
+test("UC-22 exports filtered log-loss evidence as UTF-8 CSV", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getText(api.url + "/api/dashboard/log-loss/export?format=csv&machine=backlog&agent=agent-backlog&channel=Security&eventId=4625&riskState=at_risk");
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type"), /^text\/csv/);
+    assert.match(response.headers.get("content-disposition"), /^attachment; filename="hosteye-log-loss-/);
+    assert.equal(response.body.charCodeAt(0), 0xfeff);
+    assert.match(response.body, /"report_generated_at","range_from","range_to"/);
+    assert.match(response.body, /"HOST-BACKLOG"/);
+    assert.doesNotMatch(response.body, /"HOST-ONLINE"/);
+    assert.match(response.body, /"Security","4625"/);
+    assert.match(response.body, /,220,130,90,90,30,50,10,20,130,/);
+    assert.match(response.body, /"requires_attention","disconnected"/);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-22 validates export format before querying and exposes download controls", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const invalid = await getJson(api.url + "/api/dashboard/log-loss/export?format=xlsx");
+    assert.equal(invalid.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(app, /\/api\/dashboard\/log-loss\/export/);
+  assert.match(app, /exportLogLossReport/);
+  assert.match(app, /content-disposition/);
+  assert.match(html, /id="lossExport"/);
+  assert.match(html, /id="lossExportStatus"/);
+});
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -714,6 +755,11 @@ async function waitUntilReady(baseUrl, child, output) {
   throw new Error("Dashboard API did not start: " + output());
 }
 
+async function getText(url) {
+  const response = await fetch(url);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return { status: response.status, body: bytes.toString("utf8"), bytes, headers: response.headers };
+}
 async function getJson(url) {
   const response = await fetch(url);
   const body = await response.text();
