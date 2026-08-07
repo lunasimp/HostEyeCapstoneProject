@@ -239,3 +239,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 68 tests passed, 3 optional integration skips, and 0 failures; JavaScript syntax checks and `git diff --check` also passed.
 - Passed a live API and browser flow: policy version 3 saved with 3.5% loss, 40 pending events, 45-minute disconnection, and 90-minute interruption thresholds; six existing `HE-COLL-001` alerts remained evidence-backed, with no fabricated loss/backlog alerts where versioned endpoint counters were unavailable.
 - Passed desktop and 390px mobile browser QA with successful policy save/reload, synchronized User thresholds, no page overflow, and no console errors.
+
+## UC-36 verified behavior
+
+- Adds persistent Dashboard accounts with create, update, lock, and unlock lifecycle operations for Administrators.
+- Bootstraps the first Administrator from deployment environment variables and never stores a plaintext password; account secrets use PBKDF2-SHA256 with a unique salt and 210,000 iterations.
+- Issues expiring in-memory Bearer sessions, rejects locked accounts, and immediately revokes active sessions after an account lock or password reset.
+- Prevents duplicate usernames and prevents locking or demoting the final active Administrator.
+- Adds a responsive Dashboard sign-in flow and User Management page while keeping the wide account table inside its horizontal scroll shell.
+- Passed 3 focused UC-36 tests covering persistence across restart, login, role protection, update, lock/unlock, session revocation, validation, password redaction, and UI structure.
+- Passed the full Dashboard API suite with 71 tests passed, 3 optional integration skips, and 0 failures.
+- Passed a live local API/browser flow against ClickHouse: Administrator login, account creation, account lock, desktop layout, and 390x844 mobile layout completed with no page-level horizontal overflow; a fresh browser session reported no console errors.

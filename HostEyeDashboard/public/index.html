@@ -42,6 +42,7 @@
               <a href="#log-loss" class="nav-item">Log Loss</a>
               <a href="#agent-errors" class="nav-item">Agent Errors</a>
               <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
+              <a href="#users" class="nav-item">User Management</a>
             </div>
           </details>
         </nav>
@@ -76,11 +77,12 @@
           </div>
 
           <div class="user-chip">
-            <span>U</span>
+            <span id="currentUserAvatar">?</span>
             <div>
-              <strong>user1</strong>
-              <small>// analyst</small>
+              <strong id="currentUserName">Guest</strong>
+              <small id="currentUserRole">// not signed in</small>
             </div>
+            <button id="logoutBtn" class="chip-action" type="button" hidden>Logout</button>
           </div>
         </div>
       </header>
@@ -850,8 +852,54 @@
             </div>
           </div>
         </section>
+        <section id="users" class="dashboard-section section-card is-open page-view" data-page="users" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>User Management</strong>
+              <small>create, update, lock, and unlock Dashboard accounts</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Create account</h3><span>Passwords are hashed before persistent storage.</span></div>
+              </div>
+              <form id="userCreateForm" class="filter-grid user-form">
+                <label class="inline-control"><span>Username</span><input id="newUsername" minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" required></label>
+                <label class="inline-control"><span>Display name</span><input id="newDisplayName" maxlength="100" required></label>
+                <label class="inline-control"><span>Role</span><select id="newUserRole"><option value="user">User</option><option value="admin">Admin</option></select></label>
+                <label class="inline-control"><span>Temporary password</span><input id="newUserPassword" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label>
+                <button class="button secondary" type="submit">Create account</button>
+              </form>
+              <output id="userManagementStatus" class="metric-note" aria-live="polite"></output>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Dashboard accounts</h3><span>Account state is persisted and active sessions are revoked after lock or password reset.</span></div>
+                <button id="userReload" class="button ghost" type="button">Reload</button>
+              </div>
+              <div id="usersTable" class="table-shell users-table"></div>
+            </article>
+          </div>
+        </section>
       </main>
     </div>
-    <script src="./app.js?v=20260805-nav"></script>
+
+    <div id="loginModal" class="login-backdrop" hidden>
+      <section class="login-dialog" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+        <p class="detail-eyebrow">[ HOSTEYE ACCESS ]</p>
+        <h2 id="loginTitle">Sign in to Dashboard</h2>
+        <p>Use an active HostEye account. Locked accounts and expired sessions are rejected.</p>
+        <form id="loginForm" class="login-form">
+          <label><span>Username</span><input id="loginUsername" autocomplete="username" required></label>
+          <label><span>Password</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
+          <button id="loginSubmit" class="refresh-btn" type="submit">Sign in</button>
+        </form>
+        <output id="loginStatus" class="metric-note" aria-live="polite"></output>
+      </section>
+    </div>
+    <script src="./app.js?v=20260807-uc36"></script>
   </body>
 </html>

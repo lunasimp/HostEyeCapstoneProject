@@ -2,6 +2,7 @@ import http from "node:http";
 import { URL } from "node:url";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { AccountStore, bearerToken } from "./account-store.js";
 
 loadDotEnv();
 
@@ -17,7 +18,19 @@ const config = {
   dynamicConfigUrl: process.env.HOSTEYE_DYNAMIC_CONFIG_URL || "http://localhost:5063",
   dynamicConfigAdminToken: process.env.HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN || "hosteye-admin-demo",
   lossAlertThresholdsFile: resolve(process.env.HOSTEYE_ALERT_THRESHOLDS_FILE || "data/log-loss-alert-thresholds.json"),
+  dashboardUsersFile: resolve(process.env.HOSTEYE_DASHBOARD_USERS_FILE || "data/dashboard-users.json"),
+  dashboardAuthRequired: boolFromEnv("HOSTEYE_DASHBOARD_AUTH_REQUIRED", process.env.NODE_ENV !== "test"),
+  bootstrapAdminUsername: process.env.HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME || "admin",
+  bootstrapAdminPassword: process.env.HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD || "hosteye-admin-demo",
+  sessionTtlMinutes: intFromEnv("HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES", 480),
 };
+
+const accountStore = new AccountStore({
+  file: config.dashboardUsersFile,
+  bootstrapUsername: config.bootstrapAdminUsername,
+  bootstrapPassword: config.bootstrapAdminPassword,
+  sessionTtlMinutes: config.sessionTtlMinutes,
+});
 
 const DEFAULT_LOSS_ALERT_THRESHOLDS = Object.freeze({
   lossRatioPercent: 1,
@@ -51,6 +64,14 @@ const DYNAMIC_LOG_FIELDS = Object.freeze([
 
 const routes = [
   ["GET", /^\/api\/health$/, health],
+  ["GET", /^\/api\/dashboard\/auth\/status$/, authStatus],
+  ["POST", /^\/api\/dashboard\/auth\/login$/, authLogin],
+  ["POST", /^\/api\/dashboard\/auth\/logout$/, authLogout],
+  ["GET", /^\/api\/dashboard\/auth\/me$/, authMe],
+  ["GET", /^\/api\/dashboard\/admin\/users$/, adminUsersList],
+  ["POST", /^\/api\/dashboard\/admin\/users$/, adminUsersCreate],
+  ["PUT", /^\/api\/dashboard\/admin\/users\/([^/]+)$/, adminUsersUpdate],
+  ["POST", /^\/api\/dashboard\/admin\/users\/([^/]+)\/(lock|unlock)$/, adminUsersLockState],
   ["GET", /^\/api\/dashboard\/overview\/summary$/, overviewSummary],
   ["GET", /^\/api\/dashboard\/overview\/log-volume$/, overviewLogVolume],
   ["GET", /^\/api\/dashboard\/overview\/top-hosts$/, overviewTopHosts],
@@ -134,6 +155,58 @@ server.listen(config.port, () => {
   console.log(`HostEye Dashboard API listening on http://localhost:${config.port}`);
   console.log(`ClickHouse: ${config.clickhouseUrl} database=${config.database}`);
 });
+
+async function authStatus(_ctx, res) {
+  sendJson(res, 200, { required: config.dashboardAuthRequired, ...accountStore.status() });
+}
+
+async function authLogin(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const session = accountStore.login(body.username, body.password);
+  sendJson(res, 200, session);
+}
+
+async function authLogout(ctx, res) {
+  accountStore.logout(bearerToken(ctx.req));
+  sendJson(res, 200, { status: "logged_out" });
+}
+
+async function authMe(ctx, res) {
+  sendJson(res, 200, { user: accountStore.authenticate(bearerToken(ctx.req)) });
+}
+
+async function adminUsersList(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  sendJson(res, 200, { items: accountStore.list(), actor });
+}
+
+async function adminUsersCreate(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.create(await readJsonBody(ctx.req), actor);
+  sendJson(res, 201, { user });
+}
+
+async function adminUsersUpdate(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.update(ctx.params[0], await readJsonBody(ctx.req), actor);
+  sendJson(res, 200, { user });
+}
+
+async function adminUsersLockState(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.setLocked(ctx.params[0], ctx.params[1] === "lock", actor);
+  sendJson(res, 200, { user });
+}
+
+function requireAccountAdmin(ctx) {
+  const user = accountStore.authenticate(bearerToken(ctx.req));
+  if (user.role !== "admin") {
+    const error = new Error("Administrator role is required");
+    error.statusCode = 403;
+    throw error;
+  }
+  return user;
+}
 
 async function health(_ctx, res) {
   const result = await queryRows(`
@@ -3448,6 +3521,12 @@ function badRequest(message) {
   const error = new Error(message);
   error.statusCode = 400;
   throw error;
+}
+
+function boolFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(raw).toLowerCase());
 }
 
 function intFromEnv(name, fallback) {

@@ -18,6 +18,8 @@ const state = {
   dynamicPreviewRequestId: 0,
   dynamicAssignmentInFlight: false,
   dynamicAssignmentData: { policies: [], agents: [], groups: [] },
+  auth: { required: false, token: localStorage.getItem("hosteyeDashboardSession") || "", user: null },
+  users: [],
 };
 
 const el = (id) => document.getElementById(id);
@@ -34,6 +36,7 @@ const pages = {
   "fleet-loss": { title: "Giam sat mat log toan he thong", eyebrow: "[ ADMIN OPERATIONS ]" },
   "log-loss": { title: "Thong ke mat mat log", eyebrow: "[ DELIVERY ACCOUNTING ]" },
   "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
+  users: { title: "User Management", eyebrow: "[ ADMIN ACCESS ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
   "agent-errors": { title: "Agent Chunk Errors", eyebrow: "[ AGENT DIAGNOSTICS ]" },
   search: { title: "Log Search", eyebrow: "[ TELEMETRY SEARCH ]" },
@@ -130,6 +133,24 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("alertsPrev")?.addEventListener("click", () => changeAlertPage(-1));
   el("alertsNext")?.addEventListener("click", () => changeAlertPage(1));
+  el("loginForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loginDashboard().catch(() => {});
+  });
+  el("logoutBtn")?.addEventListener("click", () => {
+    logoutDashboard().catch((error) => console.error(error));
+  });
+  el("userCreateForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    createDashboardUser().catch(() => {});
+  });
+  el("userReload")?.addEventListener("click", () => {
+    loadDashboardUsers().catch((error) => console.error(error));
+  });
+  el("usersTable")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-user-action]");
+    if (button) updateDashboardUser(button).catch(() => {});
+  });
   el("alertDetailClose")?.addEventListener("click", closeAlertDetail);
   el("alertDetailModal")?.addEventListener("click", (event) => {
     if (event.target === el("alertDetailModal")) closeAlertDetail();
@@ -149,8 +170,10 @@ document.addEventListener("DOMContentLoaded", () => {
       button.setAttribute("aria-expanded", String(isOpen));
     });
   });
-  showPage(pageFromHash(window.location.hash));
-  loadDashboard();
+  initializeDashboard().catch((error) => {
+    console.error(error);
+    showLogin(error.message || "Unable to initialize Dashboard authentication");
+  });
 });
 
 function pageFromHash(hash) {
@@ -181,6 +204,171 @@ function showPage(page) {
   if (selectedPage === "alerts" && !state.alertLoaded) {
     loadAlerts({ reset: true }).catch((error) => console.error(error));
   }
+  if (selectedPage === "users") {
+    loadDashboardUsers().catch((error) => console.error(error));
+  }
+}
+
+async function initializeDashboard() {
+  const status = await api("/api/dashboard/auth/status", { auth: false });
+  state.auth.required = Boolean(status.required);
+  if (state.auth.token) {
+    try {
+      const result = await api("/api/dashboard/auth/me");
+      state.auth.user = result.user;
+    } catch {
+      state.auth.token = "";
+      localStorage.removeItem("hosteyeDashboardSession");
+    }
+  }
+  if (state.auth.required && !state.auth.user) {
+    showLogin();
+    return;
+  }
+  if (!state.auth.user) {
+    state.auth.user = { username: "local-system", displayName: "Local mode", role: "admin" };
+  }
+  renderCurrentUser();
+  showPage(pageFromHash(window.location.hash));
+  await loadDashboard();
+}
+
+function showLogin(message = "") {
+  el("loginModal").hidden = false;
+  document.body.classList.add("modal-open");
+  el("loginStatus").textContent = message;
+  setTimeout(() => el("loginUsername")?.focus(), 0);
+}
+
+function hideLogin() {
+  el("loginModal").hidden = true;
+  document.body.classList.remove("modal-open");
+  el("loginStatus").textContent = "";
+}
+
+async function loginDashboard() {
+  const button = el("loginSubmit");
+  button.disabled = true;
+  el("loginStatus").textContent = "Signing in...";
+  try {
+    const result = await api("/api/dashboard/auth/login", {
+      auth: false,
+      method: "POST",
+      body: { username: el("loginUsername").value, password: el("loginPassword").value },
+    });
+    state.auth.token = result.token;
+    state.auth.user = result.user;
+    localStorage.setItem("hosteyeDashboardSession", result.token);
+    el("loginPassword").value = "";
+    hideLogin();
+    renderCurrentUser();
+    showPage(pageFromHash(window.location.hash));
+    await loadDashboard();
+  } catch (error) {
+    el("loginStatus").textContent = "Sign-in failed. Check the account state and credentials.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function logoutDashboard() {
+  try {
+    if (state.auth.token) await api("/api/dashboard/auth/logout", { method: "POST" });
+  } finally {
+    state.auth.token = "";
+    state.auth.user = null;
+    localStorage.removeItem("hosteyeDashboardSession");
+    renderCurrentUser();
+    showLogin("Signed out.");
+  }
+}
+
+function renderCurrentUser() {
+  const user = state.auth.user;
+  el("currentUserAvatar").textContent = user?.displayName?.charAt(0)?.toUpperCase() || "?";
+  el("currentUserName").textContent = user?.displayName || user?.username || "Guest";
+  el("currentUserRole").textContent = `// ${user?.role || "not signed in"}`;
+  el("logoutBtn").hidden = !state.auth.token;
+  document.querySelector('a[href="#users"]')?.toggleAttribute("hidden", user?.role !== "admin");
+}
+
+async function loadDashboardUsers() {
+  const container = el("usersTable");
+  if (!container) return;
+  if (!state.auth.token || state.auth.user?.role !== "admin") {
+    container.innerHTML = '<div class="empty-state">Sign in with an Administrator account to manage users.</div>';
+    return;
+  }
+  const result = await api("/api/dashboard/admin/users");
+  state.users = result.items || [];
+  container.innerHTML = state.users.length ? `
+    <table><thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>State</th><th>Last login</th><th>Actions</th></tr></thead><tbody>
+      ${state.users.map((user) => `<tr data-user-id="${escapeHtml(user.id)}">
+        <td><input data-field="username" value="${escapeHtml(user.username)}"></td>
+        <td><input data-field="displayName" value="${escapeHtml(user.displayName)}"></td>
+        <td><select data-field="role"><option value="user"${user.role === "user" ? " selected" : ""}>User</option><option value="admin"${user.role === "admin" ? " selected" : ""}>Admin</option></select></td>
+        <td><span class="status-pill ${user.locked ? "failed" : "ok"}">${user.locked ? "Locked" : "Active"}</span></td>
+        <td>${user.lastLoginAt ? formatDate(user.lastLoginAt) : "Never"}</td>
+        <td class="user-actions"><input data-field="password" type="password" minlength="10" placeholder="New password"><button class="button ghost" data-user-action="save" type="button">Save</button><button class="button ${user.locked ? "secondary" : "ghost"}" data-user-action="${user.locked ? "unlock" : "lock"}" type="button">${user.locked ? "Unlock" : "Lock"}</button></td>
+      </tr>`).join("")}
+    </tbody></table>` : '<div class="empty-state">No Dashboard accounts found.</div>';
+}
+
+async function createDashboardUser() {
+  const status = el("userManagementStatus");
+  status.textContent = "Creating account...";
+  try {
+    const result = await api("/api/dashboard/admin/users", {
+      method: "POST",
+      body: {
+        username: el("newUsername").value,
+        displayName: el("newDisplayName").value,
+        role: el("newUserRole").value,
+        password: el("newUserPassword").value,
+      },
+    });
+    el("userCreateForm").reset();
+    status.textContent = `Created ${result.user.username}.`;
+    await loadDashboardUsers();
+  } catch (error) {
+    status.textContent = accountErrorMessage(error);
+  }
+}
+
+async function updateDashboardUser(button) {
+  const row = button.closest("tr[data-user-id]");
+  const id = row.dataset.userId;
+  const action = button.dataset.userAction;
+  button.disabled = true;
+  try {
+    if (action === "save") {
+      const password = row.querySelector('[data-field="password"]').value;
+      await api(`/api/dashboard/admin/users/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        body: {
+          username: row.querySelector('[data-field="username"]').value,
+          displayName: row.querySelector('[data-field="displayName"]').value,
+          role: row.querySelector('[data-field="role"]').value,
+          ...(password ? { password } : {}),
+        },
+      });
+      el("userManagementStatus").textContent = "Account updated.";
+    } else {
+      await api(`/api/dashboard/admin/users/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+      el("userManagementStatus").textContent = `Account ${action === "lock" ? "locked" : "unlocked"}.`;
+    }
+    await loadDashboardUsers();
+  } catch (error) {
+    el("userManagementStatus").textContent = accountErrorMessage(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function accountErrorMessage(error) {
+  const text = String(error?.message || "Account operation failed");
+  const match = text.match(/\{"message":"([^"]+)"/);
+  return match?.[1] || text;
 }
 
 async function loadDashboard() {
@@ -1844,11 +2032,19 @@ function renderHeatmap(container, hosts, cells, bucket = selectedHeatmapBucket()
 
 async function api(path, options = {}) {
   const request = { cache: "no-store", method: options.method || "GET", headers: {} };
+  if (options.auth !== false && state.auth.token) request.headers.authorization = `Bearer ${state.auth.token}`;
   if (options.body !== undefined) {
     request.headers["content-type"] = "application/json";
     request.body = JSON.stringify(options.body);
   }
   const response = await fetch(`${API_BASE}${path}`, request);
+  if (response.status === 401 && options.auth !== false && state.auth.required) {
+    state.auth.token = "";
+    state.auth.user = null;
+    localStorage.removeItem("hosteyeDashboardSession");
+    renderCurrentUser();
+    showLogin("Your session expired. Sign in again.");
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 160)}`);
