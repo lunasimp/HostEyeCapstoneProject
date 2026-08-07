@@ -1,0 +1,37 @@
+﻿[
+    {
+        "name":  "clickhouse",
+        "url":  "http://127.0.0.1:8123/ping",
+        "status":  200,
+        "body":  "Ok.\n",
+        "ok":  true
+    },
+    {
+        "name":  "control_plane",
+        "url":  "http://127.0.0.1:8080/health",
+        "status":  200,
+        "body":  "{\"ok\":true,\"service\":\"hosteye-control-plane\"}",
+        "ok":  true
+    },
+    {
+        "name":  "collector_a",
+        "url":  "http://127.0.0.1:8088/health",
+        "status":  200,
+        "body":  "{\"ok\":true,\"service\":\"hosteye-data-plane\",\"collector_id\":\"collector-a\",\"active_leases\":0,\"active_uploads\":0,\"ready\":true,\"next_available_at\":\"2026-08-07T04:52:05.683Z\",\"upload_slot_ms\":1000}",
+        "ok":  true
+    },
+    {
+        "name":  "dynamic_config",
+        "url":  "http://127.0.0.1:5063/healthz",
+        "status":  200,
+        "body":  "{\"service\":\"hosteye-dynamic-config\",\"status\":\"ok\"}",
+        "ok":  true
+    },
+    {
+        "name":  "dashboard_existing",
+        "url":  "http://127.0.0.1:5055/api/health",
+        "status":  200,
+        "body":  "{\"status\":\"ok\",\"clickhouse\":\"http://clickhouse:8123\",\"database\":\"default\",\"rows\":4778445}",
+        "ok":  true
+    }
+]

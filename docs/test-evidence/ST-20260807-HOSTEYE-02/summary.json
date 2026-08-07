@@ -1,0 +1,139 @@
+{
+    "run_id":  "ST-20260807-HOSTEYE-02",
+    "executed_at":  "2026-08-07",
+    "branch":  "uc/UC-37-user-authorization",
+    "commit":  "4d932f12db0de0304ef5ba5f24aba326afb2b070",
+    "scope":  "All HostEye use cases UC-01 through UC-40, testing implemented boundaries of partial use cases",
+    "formal_unit_tests_included":  false,
+    "total":  12,
+    "passed":  7,
+    "passed_with_observation":  3,
+    "failed":  1,
+    "blocked":  1,
+    "overall":  "NOT_READY_FOR_ACCEPTANCE",
+    "cases":  [
+                  {
+                      "id":  "ST-01",
+                      "name":  "Core service health",
+                      "mapped_use_cases":  "UC-01, UC-02, UC-09-UC-17, UC-23-UC-34",
+                      "status":  "PASSED",
+                      "evidence":  "st01-health.json",
+                      "actual":  "5/5 directly reachable services returned HTTP 200."
+                  },
+                  {
+                      "id":  "ST-02",
+                      "name":  "Enrollment, admission, upload lease and durable ingest",
+                      "mapped_use_cases":  "UC-02, UC-24, UC-29-UC-32",
+                      "status":  "FAILED",
+                      "evidence":  "st02-bootstrap-failure.json",
+                      "actual":  "Bootstrap returned HTTP 500 because the running Control Plane could not create /var/lib/hosteye/leases (EIO). No new upload/ACK/index claim was made."
+                  },
+                  {
+                      "id":  "ST-03",
+                      "name":  "Dashboard, search, raw detail, alerts and domain APIs",
+                      "mapped_use_cases":  "UC-01, UC-03-UC-08, UC-23",
+                      "status":  "PASSED",
+                      "evidence":  "st03-dashboard-system.json",
+                      "actual":  "30/30 authenticated API checks passed against 4,778,445 ClickHouse rows; search returned 2,096,014 matches and alerts returned 16 detections."
+                  },
+                  {
+                      "id":  "ST-04",
+                      "name":  "Endpoint spool, quota and recovery evidence",
+                      "mapped_use_cases":  "UC-14-UC-22, UC-29-UC-32, UC-35",
+                      "status":  "PASSED_WITH_OBSERVATION",
+                      "evidence":  "st04-shipper-spool-tests.txt, st08-endpoint-spool.json",
+                      "actual":  "Quota tests passed 2/2 and both Windows Services run, but the spool holds 213,460 chunks / 10,547,107,368 bytes and last authoritative success is 2026-07-29."
+                  },
+                  {
+                      "id":  "ST-05",
+                      "name":  "Dynamic Config validation and observed signed apply state",
+                      "mapped_use_cases":  "UC-09-UC-13, UC-25-UC-28, UC-39-UC-40",
+                      "status":  "PASSED_WITH_OBSERVATION",
+                      "evidence":  "st05-dynamic-config-tests.txt, st03-dashboard-system.json",
+                      "actual":  "Selected-field validation passed 2/2; live API exposed policy, endpoint state and prior applied ACK. A new signed apply/rollback was not executed in this run."
+                  },
+                  {
+                      "id":  "ST-06",
+                      "name":  "ClickHouse outage handling",
+                      "mapped_use_cases":  "UC-01-UC-08, UC-14-UC-23, UC-33",
+                      "status":  "PASSED",
+                      "evidence":  "st06-clickhouse-outage.json",
+                      "actual":  "Isolated Dashboard API returned HTTP 503 with an explicit ClickHouse unavailable message and no fallback data."
+                  },
+                  {
+                      "id":  "ST-07",
+                      "name":  "Desktop and mobile Dashboard navigation",
+                      "mapped_use_cases":  "UC-01-UC-23, UC-33-UC-40",
+                      "status":  "PASSED_WITH_OBSERVATION",
+                      "evidence":  "st07-browser-qa.json",
+                      "actual":  "Nine routes rendered at desktop and 390x844 with no page overflow or console warnings/errors. Agent Errors displayed a 404 route error; several Vietnamese headings lack accents."
+                  },
+                  {
+                      "id":  "ST-08",
+                      "name":  "User account lifecycle",
+                      "mapped_use_cases":  "UC-36",
+                      "status":  "PASSED",
+                      "evidence":  "st03-dashboard-system.json, st00-dashboard-regression.txt",
+                      "actual":  "Create, login, lock, session revocation and unlock passed; password material is not returned."
+                  },
+                  {
+                      "id":  "ST-09",
+                      "name":  "Role and data-scope authorization",
+                      "mapped_use_cases":  "UC-37",
+                      "status":  "PASSED",
+                      "evidence":  "st03-dashboard-system.json, st00-dashboard-regression.txt",
+                      "actual":  "Scoped Viewer allowed bruh host access; outside-host, Alerts and User Management requests returned HTTP 403."
+                  },
+                  {
+                      "id":  "ST-10",
+                      "name":  "Log-loss, fleet monitoring, thresholds and CSV export",
+                      "mapped_use_cases":  "UC-14-UC-22, UC-33-UC-34",
+                      "status":  "PASSED",
+                      "evidence":  "st03-dashboard-system.json, st00-dashboard-regression.txt",
+                      "actual":  "Loss summary/hosts/interruptions/alerts/fleet/threshold APIs and authenticated CSV export returned successfully; no generated-event count was fabricated."
+                  },
+                  {
+                      "id":  "ST-11",
+                      "name":  "Full automated regression support",
+                      "mapped_use_cases":  "UC-01-UC-03, UC-06-UC-22, UC-33-UC-34, UC-36-UC-37",
+                      "status":  "PASSED",
+                      "evidence":  "st00-dashboard-regression.txt",
+                      "actual":  "73 tests passed, 3 optional Docker integration tests skipped, 0 failed."
+                  },
+                  {
+                      "id":  "ST-12",
+                      "name":  "Current-run duplicate chunk idempotency",
+                      "mapped_use_cases":  "UC-02, UC-31-UC-32",
+                      "status":  "BLOCKED",
+                      "evidence":  "st02-bootstrap-failure.json",
+                      "actual":  "Could not obtain a new lease because ST-02 failed. Prior evidence remains valid historically but was not counted as a current-run result."
+                  }
+              ],
+    "observations":  [
+                         {
+                             "id":  "OBS-01",
+                             "severity":  "High",
+                             "description":  "Running Control Plane bootstrap fails with EIO while creating /var/lib/hosteye/leases; new enrollment/upload/idempotency flows are blocked."
+                         },
+                         {
+                             "id":  "OBS-02",
+                             "severity":  "High",
+                             "description":  "HostEyeShipper backlog is 213,460 compressed chunks / 10,547,107,368 bytes; last authoritative upload success remains 2026-07-29."
+                         },
+                         {
+                             "id":  "OBS-03",
+                             "severity":  "Medium",
+                             "description":  "Agent Chunk Errors UI calls a missing Dashboard API route and displays HTTP 404 Route not found."
+                         },
+                         {
+                             "id":  "OBS-04",
+                             "severity":  "Low",
+                             "description":  "Some Vietnamese Dashboard headings remain without diacritics."
+                         },
+                         {
+                             "id":  "OBS-05",
+                             "severity":  "Info",
+                             "description":  "Docker CLI enumeration was not used because docker ps/logs did not return reliably; readiness was verified through direct endpoints."
+                         }
+                     ]
+}

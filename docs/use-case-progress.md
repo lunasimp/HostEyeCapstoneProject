@@ -260,3 +260,13 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed 2 focused UC-37 tests for positive/negative authorization, SQL scope injection, invalid permissions, scoped Dynamic Config assignment, and UI contracts.
 - Passed the full Dashboard API suite with 73 tests passed, 3 optional Docker integration skips, and 0 failures; JavaScript syntax checks and `git diff --check` also passed.
 - Passed a live local ClickHouse/browser flow: Administrator created a scoped Viewer, the Viewer saw only authorized navigation, direct `#users` access redirected to Overview, desktop/mobile layouts had no page-level overflow in a fresh session, and the fresh Viewer browser tab reported no console warnings or errors. Live health observed 4,778,445 rows with the latest retained event at 2026-08-05 15:26:53; no performance result was inferred.
+
+## Full system test ST-20260807-HOSTEYE-02
+
+- Covered UC-01 through UC-40 at their implemented boundaries with 12 grouped system scenarios; no per-function unit-test results are included in Report 5.
+- Result: 7 Passed, 3 Passed with Observation, 1 Failed, and 1 Blocked; overall status is `NOT_READY_FOR_ACCEPTANCE`.
+- Dashboard regression passed 73 tests with 3 optional Docker integration skips and 0 failures; the latest authenticated Dashboard system flow passed 30/30 checks against 4,778,445 ClickHouse rows.
+- UC-36 account lifecycle and UC-37 RBAC/data-scope flows passed on the completed implementation.
+- Control Plane bootstrap failed with HTTP 500 because the running container could not create `/var/lib/hosteye/leases` (`EIO`); current-run durable upload and duplicate-chunk idempotency could therefore not be completed.
+- HostEyeShipper remained operational but retained 213,460 compressed chunks / 10,547,107,368 bytes, with the last authoritative upload success on 2026-07-29.
+- Evidence is stored in `docs/test-evidence/ST-20260807-HOSTEYE-02`; the formal system-test report is stored under `docs/reports`.

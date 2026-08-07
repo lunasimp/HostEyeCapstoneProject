@@ -1,0 +1,20 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-02",
+    "captured_at_utc":  "2026-08-07T05:24:01.8884434Z",
+    "request":  {
+                    "next_chunk_size_mb":  0.001,
+                    "host_id":  "st02-failed-host-20260807052401",
+                    "rank":  0,
+                    "computer":  "ST02-FAILED-20260807052401",
+                    "retry_count":  0,
+                    "agent_id":  "st02-failed-agent-20260807052401",
+                    "queue_used_mb":  0
+                },
+    "http_status":  500,
+    "response":  {
+                     "status":  "error",
+                     "message":  "EIO: i/o error, mkdir \u0027/var/lib/hosteye/leases\u0027"
+                 },
+    "passed":  false,
+    "classification":  "Docker filesystem I/O failure in running Control Plane lease store"
+}
