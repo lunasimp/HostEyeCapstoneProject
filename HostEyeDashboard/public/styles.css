@@ -888,6 +888,10 @@ th.numeric {
   outline: 0;
 }
 
+#fleetLossTopHosts table {
+  min-width: 1120px;
+}
+
 .loss-filter-form #lossExportStatus {
   max-width: 360px;
   margin: 0;

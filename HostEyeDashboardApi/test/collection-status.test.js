@@ -457,6 +457,87 @@ test("UC-22 validates export format before querying and exposes download control
   assert.match(html, /id="lossExport"/);
   assert.match(html, /id="lossExportStatus"/);
 });
+
+test("UC-33 aggregates evidence-backed fleet log-loss monitoring for Admin", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/admin/log-loss/fleet?top=10");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.summary.hosts, 3);
+    assert.equal(response.body.summary.sourceRows, 3);
+    assert.equal(response.body.summary.duplicateRowsCollapsed, 0);
+    assert.equal(response.body.summary.measuredHosts, 2);
+    assert.equal(response.body.summary.unavailableHosts, 1);
+    assert.equal(response.body.summary.measurementCoveragePercent, 66.67);
+    assert.equal(response.body.summary.affectedHosts, 2);
+    assert.equal(response.body.summary.disconnectedHosts, 1);
+    assert.equal(response.body.summary.atRiskHosts, 1);
+    assert.equal(response.body.summary.backlogHosts, 2);
+    assert.equal(response.body.summary.droppedEvents, 30);
+    assert.equal(response.body.summary.atRiskEvents, 90);
+    assert.equal(response.body.summary.pendingEvents, 110);
+    assert.equal(response.body.summary.lossRatioPercent, 2.1127);
+    assert.equal(response.body.summary.generatedEvents, null);
+    assert.equal(response.body.topHosts[0].computer, "HOST-BACKLOG");
+    assert.deepEqual(response.body.topHosts.map((item) => item.computer), ["HOST-BACKLOG", "HOST-ONLINE"]);
+    const distribution = new Map(response.body.riskDistribution.map((item) => [item.state, item.hosts]));
+    assert.equal(distribution.get("disconnected"), 1);
+    assert.equal(distribution.get("backlog"), 1);
+    assert.equal(distribution.get("unknown"), 1);
+
+    const filtered = await getJson(api.url + "/api/dashboard/admin/log-loss/fleet?riskState=at_risk&top=25");
+    assert.equal(filtered.status, 200);
+    assert.equal(filtered.body.focusTotal, 1);
+    assert.deepEqual(filtered.body.topHosts.map((item) => item.computer), ["HOST-BACKLOG"]);
+    assert.equal(filtered.body.summary.hosts, 3);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-33 returns a deterministic empty fleet without fabricated counters", async () => {
+  const clickhouse = await startMockClickHouse({ mode: "empty" });
+  const api = await startApi(clickhouse.url);
+  try {
+    const response = await getJson(api.url + "/api/dashboard/admin/log-loss/fleet");
+    assert.equal(response.status, 200);
+    assert.equal(response.body.summary.hosts, 0);
+    assert.equal(response.body.summary.measuredHosts, 0);
+    assert.equal(response.body.summary.lossRatioPercent, null);
+    assert.equal(response.body.summary.generatedEvents, null);
+    assert.deepEqual(response.body.topHosts, []);
+    assert.equal(response.body.focusTotal, 0);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+});
+
+test("UC-33 validates Admin fleet filters and exposes a dedicated responsive view", async () => {
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url);
+  try {
+    const before = clickhouse.queries.length;
+    const invalidRisk = await getJson(api.url + "/api/dashboard/admin/log-loss/fleet?riskState=unsafe");
+    const invalidTop = await getJson(api.url + "/api/dashboard/admin/log-loss/fleet?top=zero");
+    assert.equal(invalidRisk.status, 400);
+    assert.equal(invalidTop.status, 400);
+    assert.equal(clickhouse.queries.length, before);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+  }
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  assert.match(app, /\/api\/dashboard\/admin\/log-loss\/fleet/);
+  assert.match(app, /loadFleetLogLoss/);
+  assert.match(html, /id="fleet-loss"/);
+  assert.match(html, /id="fleetLossRiskDistribution"/);
+  assert.match(html, /id="fleetLossTopHosts"/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);

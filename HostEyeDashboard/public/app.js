@@ -31,6 +31,7 @@ const pages = {
   powershell: { title: "PowerShell Monitoring", eyebrow: "[ SCRIPT ACTIVITY ]" },
   jitter: { title: "Shipper Jitter", eyebrow: "[ AGENT QUEUE ]" },
   chunks: { title: "Chunk Monitor", eyebrow: "[ SHIPPER BATCHES ]" },
+  "fleet-loss": { title: "Giam sat mat log toan he thong", eyebrow: "[ ADMIN OPERATIONS ]" },
   "log-loss": { title: "Thong ke mat mat log", eyebrow: "[ DELIVERY ACCOUNTING ]" },
   "dynamic-config": { title: "Cau hinh dong", eyebrow: "[ CONTROL PLANE ]" },
   heatmap: { title: "Host Activity Heatmap", eyebrow: "[ TIME SERIES ]" },
@@ -69,6 +70,14 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("lossExport")?.addEventListener("click", () => {
     exportLogLossReport().catch((error) => console.error(error));
+  });
+  el("fleetLossFilterForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadFleetLogLoss().catch((error) => console.error(error));
+  });
+  el("fleetLossReset")?.addEventListener("click", () => {
+    el("fleetLossFilterForm")?.reset();
+    loadFleetLogLoss().catch((error) => console.error(error));
   });
   el("logSearchForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -185,6 +194,7 @@ async function loadDashboard() {
       loadPowerShell(),
       loadJitter(),
       loadChunks(),
+      loadFleetLogLoss(),
       loadLogLoss(),
       loadDynamicConfig(),
       loadHeatmap(),
@@ -791,6 +801,82 @@ function openDetailForChunk(host, time) {
   url.searchParams.set("bucket", "minute");
   url.searchParams.set("view", "both");
   window.location.href = url.toString();
+}
+
+async function loadFleetLogLoss() {
+  const result = await api(`/api/dashboard/admin/log-loss/fleet${query({
+    riskState: el("fleetLossRiskState")?.value || "",
+    top: el("fleetLossTop")?.value || "10",
+  })}`);
+  const summary = result.summary || {};
+  el("fleetLossHosts").textContent = formatNumber(summary.hosts);
+  el("fleetLossAffectedHosts").textContent = formatNumber(summary.affectedHosts);
+  el("fleetLossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
+    ? "-" : `${Number(summary.lossRatioPercent).toFixed(4)}%`;
+  el("fleetLossDropped").textContent = formatNumber(summary.droppedEvents);
+  el("fleetLossAtRisk").textContent = formatNumber(summary.atRiskEvents);
+  el("fleetLossMeasured").textContent = `${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)}`;
+  el("fleetLossPending").textContent = formatNumber(summary.pendingEvents);
+  el("fleetLossDisconnected").textContent = formatNumber(summary.disconnectedHosts);
+  el("fleetLossInterrupted").textContent = formatNumber(summary.interruptedHosts);
+  el("fleetLossBacklog").textContent = formatNumber(summary.backlogHosts);
+  el("fleetLossCoverage").textContent = summary.hosts
+    ? `Pham vi do ${formatNumber(summary.measuredHosts)}/${formatNumber(summary.hosts)} may (${Number(summary.measurementCoveragePercent || 0).toFixed(2)}%). ${result.basis}`
+    : "Khong co Agent hoac may tram trong pham vi da chon.";
+  renderFleetRiskDistribution(result.riskDistribution || []);
+  el("fleetLossFocusMeta").textContent = `${formatNumber(result.focusTotal)} may khop trang thai uu tien; hien thi toi da ${formatNumber(el("fleetLossTop")?.value || 10)} may.`;
+  renderFleetLossTopHosts(result.topHosts || []);
+}
+
+function renderFleetRiskDistribution(rows) {
+  const container = el("fleetLossRiskDistribution");
+  if (!container) return;
+  container.innerHTML = rows.map((row) => `
+    <article class="host-level-card">
+      <span>${escapeHtml(row.label || row.state || "-")}</span>
+      <strong>${formatNumber(row.hosts)}</strong>
+    </article>
+  `).join("");
+}
+
+function fleetLossStatusClass(state) {
+  if (state === "normal") return "ok";
+  if (state === "unknown") return "unknown";
+  if (state === "backlog") return "bursty";
+  if (state === "at_risk") return "delayed";
+  return "failed";
+}
+
+function renderFleetLossTopHosts(rows) {
+  const container = el("fleetLossTopHosts");
+  if (!rows.length) {
+    container.innerHTML = '<div class="empty-state">Khong co may khop trang thai Admin dang theo doi</div>';
+    return;
+  }
+  const measured = (value, available) => available ? formatNumber(value) : "-";
+  const body = rows.map((row) => {
+    const available = row.coverage === "measured";
+    const ratio = row.lossRatioPercent === null || row.lossRatioPercent === undefined
+      ? "-" : `${Number(row.lossRatioPercent).toFixed(4)}%`;
+    return `<tr>
+      <td title="${escapeAttr(row.computer)}">${escapeHtml(row.computer || "-")}</td>
+      <td title="${escapeAttr(row.agentId)}">${escapeHtml(row.agentId || "-")}</td>
+      <td><span class="status-badge status-${escapeAttr(fleetLossStatusClass(row.riskState))}" title="${escapeAttr((row.riskFlags || []).join(", "))}">${escapeHtml(row.riskStateLabel || "-")}</span></td>
+      <td>${escapeHtml(row.causeLabel || "-")}</td>
+      <td class="numeric">${measured(row.droppedEventCount, available)}</td>
+      <td class="numeric">${measured(row.atRiskEventCount, available)}</td>
+      <td class="numeric">${measured(row.pendingEventCount, available)}</td>
+      <td class="numeric">${ratio}</td>
+      <td>${escapeHtml(available ? "Do truc tiep" : "Chua co counter")}</td>
+      <td title="${escapeAttr(row.lastSeen)}">${escapeHtml(formatDate(row.lastSeen))}</td>
+    </tr>`;
+  }).join("");
+  container.innerHTML = `
+    <table>
+      <thead><tr><th>May tram</th><th>Agent ID</th><th>Rui ro chinh</th><th>Nguyen nhan</th><th class="numeric">Da mat</th><th class="numeric">Co nguy co</th><th class="numeric">Cho gui</th><th class="numeric">Ty le mat</th><th>Pham vi do</th><th>Evidence cuoi</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
 }
 
 function currentLossFilters() {

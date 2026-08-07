@@ -216,3 +216,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed the full Dashboard API suite with 62 tests passed and 3 optional integration skips; both focused UC-22 API/UI tests passed.
 - Passed a live local ClickHouse/API export for `ST10-IDEM-20260805060022` in the interrupted state: one CSV data row, UTF-8 BOM, CSV content type, attachment filename, and explicitly blank unavailable endpoint counters.
 - Passed desktop and 390px mobile browser QA: the CSV download completed, the UI reported the generated filename, the action re-enabled after completion, controls remained within the viewport, and no console errors occurred.
+
+## UC-33 verified behavior
+
+- Adds a dedicated Admin fleet-loss view and API while preserving the existing per-machine Log Loss workflow for User/analyst operations.
+- Aggregates unique endpoints by stable Host/Agent identity and reports fleet host coverage, affected hosts, measured loss ratio, quota-dropped events, at-risk events, pending events, and overlapping operational risk flags.
+- Separates the primary risk distribution from overlapping flags and ranks the Admin priority list by disconnected upload, collection interruption, measured loss risk, retry backlog, event counters, and latest evidence.
+- Applies the global time/host scope plus Admin risk-state and top-10/25/50 focus filters; invalid filters are rejected before querying ClickHouse.
+- Leaves Windows-generated events and every unavailable endpoint counter explicitly unavailable instead of estimating loss or converting missing evidence to zero.
+- Passed 3 focused UC-33 tests and the full Dashboard API suite with 65 tests passed and 3 optional integration skips.
+- Passed a live local ClickHouse flow: seven source rows were consolidated to six unique endpoints, all six were classified as interrupted from stale evidence, no endpoint exposed versioned loss counters, and the measured ratio remained unavailable rather than fabricated.
+- Passed desktop and 390px mobile browser QA with working risk filtering, no page-level horizontal overflow or console errors, and a contained horizontally scrollable priority table on mobile.

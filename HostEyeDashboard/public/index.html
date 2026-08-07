@@ -38,6 +38,7 @@
             <div class="nav-menu nav-menu-right">
               <a href="#jitter" class="nav-item">Jitter</a>
               <a href="#chunks" class="nav-item">Chunks</a>
+              <a href="#fleet-loss" class="nav-item">Fleet Loss Admin</a>
               <a href="#log-loss" class="nav-item">Log Loss</a>
               <a href="#agent-errors" class="nav-item">Agent Errors</a>
               <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
@@ -323,6 +324,51 @@
           </div>
         </section>
 
+        <section id="fleet-loss" class="dashboard-section section-card is-open page-view" data-page="fleet-loss" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
+            <span>
+              <strong>Giam sat mat log toan he thong</strong>
+              <small>goc nhin Admin tren toan bo Agent va may tram, chi dung evidence da do duoc</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <form id="fleetLossFilterForm" class="panel-actions fleet-loss-filter-form">
+              <label class="inline-control"><span>Trang thai can theo doi</span><select id="fleetLossRiskState"><option value="">Tat ca may co rui ro</option><option value="disconnected">Mat ket noi upload</option><option value="interrupted">Gian doan thu thap</option><option value="at_risk">Co nguy co mat log</option><option value="backlog">Ton dong gui lai</option><option value="normal">Binh thuong</option><option value="unknown">Chua du evidence</option></select></label>
+              <label class="inline-control"><span>So may uu tien</span><select id="fleetLossTop"><option value="10">Top 10</option><option value="25">Top 25</option><option value="50">Top 50</option></select></label>
+              <button class="button secondary" type="submit">Ap dung</button>
+              <button class="button ghost" id="fleetLossReset" type="button">Dat lai</button>
+            </form>
+            <p class="metric-note" id="fleetLossCoverage">Dang tai pham vi evidence toan he thong...</p>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Tong may trong pham vi</span><strong id="fleetLossHosts">-</strong></article>
+              <article class="kpi"><span>May bi anh huong</span><strong id="fleetLossAffectedHosts">-</strong></article>
+              <article class="kpi"><span>Ty le mat do duoc</span><strong id="fleetLossRatio">-</strong></article>
+              <article class="kpi"><span>Log da mat do quota</span><strong id="fleetLossDropped">-</strong></article>
+              <article class="kpi"><span>Log co nguy co</span><strong id="fleetLossAtRisk">-</strong></article>
+            </div>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>May do duoc</span><strong id="fleetLossMeasured">-</strong></article>
+              <article class="kpi"><span>Log dang cho gui</span><strong id="fleetLossPending">-</strong></article>
+              <article class="kpi"><span>Mat ket noi</span><strong id="fleetLossDisconnected">-</strong></article>
+              <article class="kpi"><span>Gian doan</span><strong id="fleetLossInterrupted">-</strong></article>
+              <article class="kpi"><span>Ton dong</span><strong id="fleetLossBacklog">-</strong></article>
+            </div>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Phan bo trang thai chinh</h3><span>Moi may chi thuoc mot trang thai chinh theo muc do uu tien; cac co rui ro co the chong lap.</span></div>
+              </div>
+              <div id="fleetLossRiskDistribution" class="host-level-grid"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>May can uu tien xu ly</h3><span id="fleetLossFocusMeta">Sap xep theo mat ket noi, gian doan, mat log, ton dong va evidence moi nhat.</span></div>
+              </div>
+              <div id="fleetLossTopHosts" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
         <section id="log-loss" class="dashboard-section section-card is-open page-view" data-page="log-loss" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">08</span>
