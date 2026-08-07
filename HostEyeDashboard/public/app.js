@@ -66,7 +66,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   el("lossFilterReset")?.addEventListener("click", () => {
     el("lossFilterForm")?.reset();
-    loadLogLoss().catch((error) => console.error(error));
+    el("lossAlertThreshold").dataset.override = "false";
+    el("lossInterruptionThreshold").dataset.override = "false";
+    loadLossAlertThresholds()
+      .then(() => loadLogLoss())
+      .catch((error) => console.error(error));
   });
   el("lossExport")?.addEventListener("click", () => {
     exportLogLossReport().catch((error) => console.error(error));
@@ -78,6 +82,18 @@ document.addEventListener("DOMContentLoaded", () => {
   el("fleetLossReset")?.addEventListener("click", () => {
     el("fleetLossFilterForm")?.reset();
     loadFleetLogLoss().catch((error) => console.error(error));
+  });
+  el("lossThresholdForm")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveLossAlertThresholds().catch((error) => console.error(error));
+  });
+  el("lossThresholdReload")?.addEventListener("click", () => {
+    loadLossAlertThresholds().catch((error) => console.error(error));
+  });
+  ["lossAlertThreshold", "lossInterruptionThreshold"].forEach((id) => {
+    el(id)?.addEventListener("change", (event) => {
+      event.currentTarget.dataset.override = "true";
+    });
   });
   el("logSearchForm")?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -194,6 +210,7 @@ async function loadDashboard() {
       loadPowerShell(),
       loadJitter(),
       loadChunks(),
+      loadLossAlertThresholds(),
       loadFleetLogLoss(),
       loadLogLoss(),
       loadDynamicConfig(),
@@ -803,6 +820,52 @@ function openDetailForChunk(host, time) {
   window.location.href = url.toString();
 }
 
+async function loadLossAlertThresholds() {
+  const result = await api("/api/dashboard/admin/log-loss/thresholds");
+  const policy = result.policy || {};
+  el("thresholdLossRatio").value = policy.lossRatioPercent;
+  el("thresholdBacklogEvents").value = policy.backlogEvents;
+  el("thresholdDisconnectMinutes").value = policy.disconnectMinutes;
+  el("thresholdInterruptionMinutes").value = policy.interruptionMinutes;
+  if (el("lossAlertThreshold")?.dataset.override !== "true") {
+    el("lossAlertThreshold").value = policy.lossRatioPercent;
+  }
+  if (el("lossInterruptionThreshold")?.dataset.override !== "true") {
+    el("lossInterruptionThreshold").value = policy.interruptionMinutes;
+  }
+  const updated = policy.updatedAt ? formatDate(policy.updatedAt) : "mac dinh he thong";
+  el("lossThresholdStatus").textContent = `Policy v${formatNumber(policy.version)} | nguon ${result.source} | cap nhat ${updated} | ${policy.updatedBy || "-"}`;
+  return policy;
+}
+
+async function saveLossAlertThresholds() {
+  const button = el("lossThresholdSave");
+  button.disabled = true;
+  el("lossThresholdStatus").textContent = "Dang kiem tra va luu policy nguong...";
+  try {
+    const result = await api("/api/dashboard/admin/log-loss/thresholds", {
+      method: "PUT",
+      body: {
+        lossRatioPercent: Number(el("thresholdLossRatio").value),
+        backlogEvents: Number(el("thresholdBacklogEvents").value),
+        disconnectMinutes: Number(el("thresholdDisconnectMinutes").value),
+        interruptionMinutes: Number(el("thresholdInterruptionMinutes").value),
+        updatedBy: "dashboard-admin",
+      },
+    });
+    el("lossAlertThreshold").dataset.override = "false";
+    el("lossInterruptionThreshold").dataset.override = "false";
+    await loadLossAlertThresholds();
+    el("lossThresholdStatus").textContent = `Da luu policy v${formatNumber(result.policy.version)} luc ${formatDate(result.policy.updatedAt)}.`;
+    await Promise.all([loadLogLoss(), loadFleetLogLoss()]);
+  } catch (error) {
+    el("lossThresholdStatus").textContent = error.message || "Khong luu duoc policy nguong";
+    throw error;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function loadFleetLogLoss() {
   const result = await api(`/api/dashboard/admin/log-loss/fleet${query({
     riskState: el("fleetLossRiskState")?.value || "",
@@ -891,13 +954,16 @@ function currentLossFilters() {
 
 async function loadLogLoss() {
   const filters = currentLossFilters();
-  const thresholdMinutes = el("lossInterruptionThreshold")?.value || "15";
+  const thresholdMinutes = el("lossInterruptionThreshold")?.dataset.override === "true"
+    ? el("lossInterruptionThreshold").value : "";
+  const thresholdPercent = el("lossAlertThreshold")?.dataset.override === "true"
+    ? el("lossAlertThreshold").value : "";
   const [summary, hosts, interruptions, retryBacklog, lossAlerts] = await Promise.all([
     api(`/api/dashboard/log-loss/summary${query(filters)}`),
     api(`/api/dashboard/log-loss/hosts${query({ ...filters, limit: 500 })}`),
     api(`/api/dashboard/log-loss/interruptions${query({ agent: filters.agent, thresholdMinutes, limit: 500 })}`),
     api(`/api/dashboard/log-loss/retry-backlog${query({ agent: filters.agent, limit: 500 })}`),
-    api(`/api/dashboard/log-loss/alerts${query({ agent: filters.agent, thresholdPercent: el("lossAlertThreshold")?.value || "1", limit: 500 })}`),
+    api(`/api/dashboard/log-loss/alerts${query({ agent: filters.agent, thresholdPercent, limit: 500 })}`),
   ]);
 
   el("lossRatio").textContent = summary.lossRatioPercent === null || summary.lossRatioPercent === undefined
@@ -966,7 +1032,8 @@ function renderLossAlerts(result) {
   el("lossAlertCritical").textContent = formatNumber(summary.critical);
   el("lossAlertHigh").textContent = formatNumber(summary.high);
   el("lossAlertHosts").textContent = formatNumber(summary.affectedHosts);
-  el("lossAlertCoverage").textContent = `${result.basis || "Canh bao dua tren evidence van hanh."} Nguong mat log: ${Number(result.thresholdPercent || 0).toFixed(2)}%.`;
+  const thresholds = result.thresholds || {};
+  el("lossAlertCoverage").textContent = `${result.basis || "Canh bao dua tren evidence van hanh."} Mat log: ${Number(result.thresholdPercent || 0).toFixed(2)}%; ton dong: ${formatNumber(thresholds.backlogEvents)}; mat ket noi: ${formatNumber(thresholds.disconnectMinutes)} phut; gian doan: ${formatNumber(thresholds.interruptionMinutes)} phut.`;
   const container = el("lossAlertTable");
   const rows = result.items || [];
   if (!rows.length) {
@@ -1134,7 +1201,7 @@ async function openLossDetail(machine, agent) {
     const data = await api(`/api/dashboard/log-loss/host-detail${query({
       machine,
       agent,
-      thresholdMinutes: el("lossInterruptionThreshold")?.value || "15",
+      thresholdMinutes: el("lossInterruptionThreshold")?.dataset.override === "true" ? el("lossInterruptionThreshold").value : "",
     })}`);
     if (requestId !== state.lossDetailRequestId) return;
     renderLossDetail(data);

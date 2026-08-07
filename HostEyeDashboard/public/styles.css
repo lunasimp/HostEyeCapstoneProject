@@ -888,6 +888,21 @@ th.numeric {
   outline: 0;
 }
 
+.loss-threshold-panel .filter-grid {
+  margin-bottom: 8px;
+}
+
+.threshold-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.loss-threshold-panel #lossThresholdStatus {
+  display: block;
+  margin: 0 14px 14px;
+}
 #fleetLossTopHosts table {
   min-width: 1120px;
 }

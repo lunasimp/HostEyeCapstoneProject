@@ -2,8 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -538,6 +539,103 @@ test("UC-33 validates Admin fleet filters and exposes a dedicated responsive vie
   assert.match(html, /id="fleetLossTopHosts"/);
 });
 
+test("UC-34 persists Admin loss thresholds and applies them to operational alerts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hosteye-uc34-"));
+  const thresholdFile = join(directory, "thresholds.json");
+  const clickhouse = await startMockClickHouse();
+  let api = await startApi(clickhouse.url, { env: { HOSTEYE_ALERT_THRESHOLDS_FILE: thresholdFile } });
+  try {
+    const defaults = await getJson(api.url + "/api/dashboard/admin/log-loss/thresholds");
+    assert.equal(defaults.status, 200);
+    assert.equal(defaults.body.source, "default");
+    assert.deepEqual(defaults.body.policy, {
+      lossRatioPercent: 1,
+      backlogEvents: 100,
+      disconnectMinutes: 0,
+      interruptionMinutes: 15,
+      version: 1,
+      updatedAt: null,
+      updatedBy: "system-default",
+    });
+
+    const saved = await putJson(api.url + "/api/dashboard/admin/log-loss/thresholds", {
+      lossRatioPercent: 30,
+      backlogEvents: 50,
+      disconnectMinutes: 5,
+      interruptionMinutes: 60,
+      updatedBy: "uc34-test-admin",
+    });
+    assert.equal(saved.status, 200);
+    assert.equal(saved.body.policy.version, 2);
+    assert.equal(saved.body.policy.updatedBy, "uc34-test-admin");
+
+    const alerts = await getJson(api.url + "/api/dashboard/log-loss/alerts?limit=100");
+    assert.equal(alerts.status, 200);
+    assert.equal(alerts.body.thresholdSource, "file");
+    assert.equal(alerts.body.thresholds.lossRatioPercent, 30);
+    assert.equal(alerts.body.thresholds.backlogEvents, 50);
+    assert.deepEqual(alerts.body.items.map((item) => item.ruleId), ["HE-BACKLOG-001"]);
+
+    const from = new Date(now - 3 * 60 * minute).toISOString();
+    const to = new Date(now).toISOString();
+    const interruptions = await getJson(`${api.url}/api/dashboard/log-loss/interruptions?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
+    assert.equal(interruptions.status, 200);
+    assert.equal(interruptions.body.thresholdMinutes, 60);
+
+    await api.close();
+    api = await startApi(clickhouse.url, { env: { HOSTEYE_ALERT_THRESHOLDS_FILE: thresholdFile } });
+    const reloaded = await getJson(api.url + "/api/dashboard/admin/log-loss/thresholds");
+    assert.equal(reloaded.body.source, "file");
+    assert.equal(reloaded.body.policy.version, 2);
+    assert.equal(reloaded.body.policy.backlogEvents, 50);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("UC-34 rejects unsafe threshold policies before changing persistent state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "hosteye-uc34-invalid-"));
+  const thresholdFile = join(directory, "thresholds.json");
+  const clickhouse = await startMockClickHouse();
+  const api = await startApi(clickhouse.url, { env: { HOSTEYE_ALERT_THRESHOLDS_FILE: thresholdFile } });
+  try {
+    const invalidPolicies = [
+      { lossRatioPercent: 101, backlogEvents: 100, disconnectMinutes: 0, interruptionMinutes: 15 },
+      { lossRatioPercent: 1, backlogEvents: 0, disconnectMinutes: 0, interruptionMinutes: 15 },
+      { lossRatioPercent: 1, backlogEvents: 100, disconnectMinutes: -1, interruptionMinutes: 15 },
+      { lossRatioPercent: 1, backlogEvents: 100, disconnectMinutes: 0, interruptionMinutes: 2 },
+    ];
+    for (const policy of invalidPolicies) {
+      const response = await putJson(api.url + "/api/dashboard/admin/log-loss/thresholds", policy);
+      assert.equal(response.status, 400);
+    }
+    const current = await getJson(api.url + "/api/dashboard/admin/log-loss/thresholds");
+    assert.equal(current.body.source, "default");
+    assert.equal(current.body.policy.version, 1);
+  } finally {
+    await api.close();
+    await clickhouse.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("UC-34 exposes responsive Admin threshold controls and configured defaults", async () => {
+  const app = await readFile(resolve(ROOT, "../HostEyeDashboard/public/app.js"), "utf8");
+  const html = await readFile(resolve(ROOT, "../HostEyeDashboard/public/index.html"), "utf8");
+  const css = await readFile(resolve(ROOT, "../HostEyeDashboard/public/styles.css"), "utf8");
+  assert.match(app, /\/api\/dashboard\/admin\/log-loss\/thresholds/);
+  assert.match(app, /method: "PUT"/);
+  assert.match(app, /saveLossAlertThresholds/);
+  assert.match(html, /id="lossThresholdForm"/);
+  assert.match(html, /id="thresholdLossRatio"/);
+  assert.match(html, /id="thresholdBacklogEvents"/);
+  assert.match(html, /id="thresholdDisconnectMinutes"/);
+  assert.match(html, /id="thresholdInterruptionMinutes"/);
+  assert.match(css, /\.threshold-actions/);
+});
+
 test("UC-14 empty responses and validation remain deterministic", async () => {
   const emptyClickHouse = await startMockClickHouse({ mode: "empty" });
   const emptyApi = await startApi(emptyClickHouse.url);
@@ -796,11 +894,11 @@ function rowsForQuery(sql) {
   return [];
 }
 
-async function startApi(clickhouseUrl) {
+async function startApi(clickhouseUrl, options = {}) {
   const port = await freePort();
   const child = spawn(process.execPath, ["src/server.js"], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), CLICKHOUSE_URL: clickhouseUrl, NODE_ENV: "test" },
+    env: { ...process.env, PORT: String(port), CLICKHOUSE_URL: clickhouseUrl, NODE_ENV: "test", ...(options.env || {}) },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -834,6 +932,16 @@ async function waitUntilReady(baseUrl, child, output) {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
   }
   throw new Error("Dashboard API did not start: " + output());
+}
+
+async function putJson(url, body) {
+  const response = await fetch(url, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  return { status: response.status, body: text ? JSON.parse(text) : null };
 }
 
 async function getText(url) {

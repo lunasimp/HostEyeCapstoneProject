@@ -65,3 +65,4 @@ VectorBuild/Sysmon/*-output.*
 HostEyeAgent/shipper/shipper-config.local.json
 HostEyeAgent/vector/vector-full-local.toml
 .runtime/
+HostEyeDashboardApi/data/*.json

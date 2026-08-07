@@ -227,3 +227,15 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed 3 focused UC-33 tests and the full Dashboard API suite with 65 tests passed and 3 optional integration skips.
 - Passed a live local ClickHouse flow: seven source rows were consolidated to six unique endpoints, all six were classified as interrupted from stale evidence, no endpoint exposed versioned loss counters, and the measured ratio remained unavailable rather than fabricated.
 - Passed desktop and 390px mobile browser QA with working risk filtering, no page-level horizontal overflow or console errors, and a contained horizontally scrollable priority table on mobile.
+
+## UC-34 verified behavior
+
+- Adds persistent Admin-managed thresholds for measured loss ratio, durable-spool backlog, upload disconnection, and collection interruption, with explicit policy version, updater, and update timestamp.
+- Loads a safe default policy when no file exists, validates every update before changing state, and persists accepted policies with a temporary file plus atomic rename.
+- Applies the saved policy by default to operational loss alerts, interruption history, and host detail while retaining explicit query parameters as temporary User/analyst overrides.
+- Emits `HE-BACKLOG-001` only when HostEyeShipper reports measured pending-event counters above the configured threshold; endpoints without versioned counters do not receive fabricated backlog or loss alerts.
+- Provides responsive Admin save/reload controls in Fleet Log Loss and synchronizes the User Log Loss threshold inputs after an Admin policy update.
+- Passed 3 focused UC-34 tests covering persistence/restart reload, validation without state mutation, alert behavior, and responsive UI structure.
+- Passed the full Dashboard API suite with 68 tests passed, 3 optional integration skips, and 0 failures; JavaScript syntax checks and `git diff --check` also passed.
+- Passed a live API and browser flow: policy version 3 saved with 3.5% loss, 40 pending events, 45-minute disconnection, and 90-minute interruption thresholds; six existing `HE-COLL-001` alerts remained evidence-backed, with no fabricated loss/backlog alerts where versioned endpoint counters were unavailable.
+- Passed desktop and 390px mobile browser QA with successful policy save/reload, synchronized User thresholds, no page overflow, and no console errors.

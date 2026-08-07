@@ -355,6 +355,25 @@
               <article class="kpi"><span>Gian doan</span><strong id="fleetLossInterrupted">-</strong></article>
               <article class="kpi"><span>Ton dong</span><strong id="fleetLossBacklog">-</strong></article>
             </div>
+            <article class="panel loss-threshold-panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Cau hinh nguong canh bao mat log</h3>
+                  <span>Policy Admin duoc luu ben vung va dung lam mac dinh cho canh bao, lich su gian doan va chi tiet theo may.</span>
+                </div>
+              </div>
+              <form id="lossThresholdForm" class="filter-grid">
+                <label class="inline-control"><span>Ty le mat log (%)</span><input id="thresholdLossRatio" type="number" min="0" max="100" step="0.01" required></label>
+                <label class="inline-control"><span>Log ton dong</span><input id="thresholdBacklogEvents" type="number" min="1" max="1000000000" step="1" required></label>
+                <label class="inline-control"><span>Mat ket noi (phut)</span><input id="thresholdDisconnectMinutes" type="number" min="0" max="1440" step="1" required></label>
+                <label class="inline-control"><span>Gian doan (phut)</span><input id="thresholdInterruptionMinutes" type="number" min="5" max="1440" step="1" required></label>
+                <div class="threshold-actions">
+                  <button class="button secondary" id="lossThresholdSave" type="submit">Luu policy</button>
+                  <button class="button ghost" id="lossThresholdReload" type="button">Nap lai</button>
+                </div>
+              </form>
+              <output id="lossThresholdStatus" class="metric-note" aria-live="polite">Dang tai policy nguong...</output>
+            </article>
             <article class="panel">
               <div class="panel-title">
                 <div><h3>Phan bo trang thai chinh</h3><span>Moi may chi thuoc mot trang thai chinh theo muc do uu tien; cac co rui ro co the chong lap.</span></div>
@@ -385,8 +404,8 @@
               <label class="inline-control"><span>Trang thai rui ro</span><select id="lossRiskStateFilter"><option value="">Tat ca</option><option value="normal">Binh thuong</option><option value="interrupted">Gian doan</option><option value="backlog">Ton dong</option><option value="disconnected">Mat ket noi</option><option value="at_risk">Co nguy co mat log</option><option value="unknown">Chua du evidence</option></select></label>
               <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="Tat ca channel"></label>
               <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="Tat ca Event ID"></label>
-              <label class="inline-control"><span>Nguong gian doan</span><select id="lossInterruptionThreshold"><option value="15">15 phut</option><option value="30">30 phut</option><option value="60">60 phut</option><option value="360">6 gio</option></select></label>
-              <label class="inline-control"><span>Nguong canh bao mat log</span><select id="lossAlertThreshold"><option value="1">1%</option><option value="2">2%</option><option value="5">5%</option><option value="10">10%</option></select></label>
+              <label class="inline-control"><span>Nguong gian doan</span><input id="lossInterruptionThreshold" type="number" min="5" max="1440" step="1" value="15"></label>
+              <label class="inline-control"><span>Nguong canh bao mat log (%)</span><input id="lossAlertThreshold" type="number" min="0" max="100" step="0.01" value="1"></label>
               <button class="button secondary" type="submit">Ap dung</button>
               <button class="button ghost" id="lossFilterReset" type="button">Dat lai</button>
               <button class="button ghost" id="lossExport" type="button">Xuat CSV</button>

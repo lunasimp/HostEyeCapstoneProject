@@ -1,7 +1,7 @@
 import http from "node:http";
 import { URL } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 loadDotEnv();
 
@@ -16,8 +16,15 @@ const config = {
   registrationAdminToken: process.env.HOSTEYE_REGISTRATION_ADMIN_TOKEN || "hosteye-admin-demo",
   dynamicConfigUrl: process.env.HOSTEYE_DYNAMIC_CONFIG_URL || "http://localhost:5063",
   dynamicConfigAdminToken: process.env.HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN || "hosteye-admin-demo",
+  lossAlertThresholdsFile: resolve(process.env.HOSTEYE_ALERT_THRESHOLDS_FILE || "data/log-loss-alert-thresholds.json"),
 };
 
+const DEFAULT_LOSS_ALERT_THRESHOLDS = Object.freeze({
+  lossRatioPercent: 1,
+  backlogEvents: 100,
+  disconnectMinutes: 0,
+  interruptionMinutes: 15,
+});
 const DYNAMIC_LOG_TYPES = Object.freeze([
   { id: "windows-application", name: "Windows Application", description: "Application events emitted by Windows services and applications.", channels: ["Application"] },
   { id: "windows-system", name: "Windows System", description: "Operating system, driver, service, and startup events.", channels: ["System"] },
@@ -63,6 +70,8 @@ const routes = [
   ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
   ["GET", /^\/api\/dashboard\/log-loss\/alerts$/, logLossAlerts],
   ["GET", /^\/api\/dashboard\/admin\/log-loss\/fleet$/, adminFleetLogLoss],
+  ["GET", /^\/api\/dashboard\/admin\/log-loss\/thresholds$/, adminLossAlertThresholdsGet],
+  ["PUT", /^\/api\/dashboard\/admin\/log-loss\/thresholds$/, adminLossAlertThresholdsPut],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -907,6 +916,27 @@ async function logLossSummary(ctx, res) {
   });
 }
 
+async function adminLossAlertThresholdsGet(_ctx, res) {
+  const result = readLossAlertThresholds();
+  sendJson(res, 200, result);
+}
+
+async function adminLossAlertThresholdsPut(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const values = normalizeLossAlertThresholdValues(body, 400);
+  const current = readLossAlertThresholds().policy;
+  const updatedBy = String(body.updatedBy || "dashboard-admin").trim();
+  if (!updatedBy || updatedBy.length > 100) badRequest("updatedBy must be between 1 and 100 characters");
+  const policy = {
+    ...values,
+    version: Number(current.version || 0) + 1,
+    updatedAt: new Date().toISOString(),
+    updatedBy,
+  };
+  persistLossAlertThresholds(policy);
+  sendJson(res, 200, { policy, source: "file" });
+}
+
 async function adminFleetLogLoss(ctx, res) {
   const top = limitParam(ctx.url, 10, 50, "top");
   const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
@@ -1066,7 +1096,7 @@ async function logLossHostDetail(ctx, res) {
   const agent = optionalString(ctx.url, "agent", 255);
   const thresholdMinutes = ctx.url.searchParams.has("thresholdMinutes")
     ? uintParam(ctx.url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
-    : 15;
+    : readLossAlertThresholds().policy.interruptionMinutes;
   if (thresholdMinutes < 5 || thresholdMinutes > 1440) badRequest("thresholdMinutes must be between 5 and 1440");
 
   const dataUrl = new URL(ctx.url);
@@ -1182,13 +1212,17 @@ async function logLossRetryBacklog(ctx, res) {
 }
 
 async function logLossAlerts(ctx, res) {
+  const configured = readLossAlertThresholds();
   const rawThreshold = ctx.url.searchParams.get("thresholdPercent");
-  const thresholdPercent = rawThreshold === null || rawThreshold === "" ? 1 : Number(rawThreshold);
+  const thresholdPercent = rawThreshold === null || rawThreshold === ""
+    ? configured.policy.lossRatioPercent
+    : Number(rawThreshold);
   if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0 || thresholdPercent > 100) {
     badRequest("thresholdPercent must be a number between 0 and 100");
   }
+  const thresholds = { ...configured.policy, lossRatioPercent: thresholdPercent };
 
-  const items = operationalLossAlerts(await logLossData(ctx), thresholdPercent)
+  const items = operationalLossAlerts(await logLossData(ctx), thresholds)
     .sort((left, right) => dateValue(right.detectedAt) - dateValue(left.detectedAt));
   const affectedHosts = new Set(items.map((item) => String(item.computer || "").toLowerCase()).filter(Boolean)).size;
   sendJson(res, 200, {
@@ -1199,15 +1233,17 @@ async function logLossAlerts(ctx, res) {
       affectedHosts,
     },
     thresholdPercent,
+    thresholds,
+    thresholdSource: rawThreshold === null || rawThreshold === "" ? configured.source : "query_override",
     items,
-    basis: "Alerts are generated only from measured Shipper counters, transport failures, and observed endpoint silence.",
+    basis: "Alerts use the saved Admin thresholds and only measured Shipper counters, transport failures, backlog, and observed endpoint silence.",
   });
 }
 
-function operationalLossAlerts(rows, thresholdPercent) {
+function operationalLossAlerts(rows, thresholds) {
   const alerts = [];
   for (const row of rows) {
-    if (row.coverage === "measured" && row.lossRatioPercent !== null && Number(row.lossRatioPercent) >= thresholdPercent && Number(row.droppedEventCount || 0) > 0) {
+    if (row.coverage === "measured" && row.lossRatioPercent !== null && Number(row.lossRatioPercent) >= thresholds.lossRatioPercent && Number(row.droppedEventCount || 0) > 0) {
       const ratio = Number(row.lossRatioPercent);
       alerts.push({
         alertId: `loss:HE-LOSS-001:${row.computer}`,
@@ -1218,29 +1254,48 @@ function operationalLossAlerts(rows, thresholdPercent) {
         status: "new",
         computer: row.computer, agentId: row.agentId, hostId: row.hostId,
         category: "loss_threshold", evidenceCount: 1,
-        message: `${row.droppedEventCount} event(s) were dropped; measured loss ratio ${ratio.toFixed(4)}% exceeds ${thresholdPercent.toFixed(4)}%.`,
+        message: `${row.droppedEventCount} event(s) were dropped; measured loss ratio ${ratio.toFixed(4)}% exceeds ${thresholds.lossRatioPercent.toFixed(4)}%.`,
         observedAt: row.metricLastSeen || row.lastSeen,
       });
     }
-    if (Number(row.transportStatusCode || 0) === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen) {
+    if (row.coverage === "measured" && Number(row.pendingEventCount || 0) >= thresholds.backlogEvents) {
+      const pending = Number(row.pendingEventCount || 0);
+      alerts.push({
+        alertId: `loss:HE-BACKLOG-001:${row.computer}`,
+        detectedAt: row.metricLastSeen || row.lastSeen,
+        severity: pending >= thresholds.backlogEvents * 5 ? "critical" : "high",
+        ruleId: "HE-BACKLOG-001",
+        title: "Retry backlog exceeded threshold",
+        status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "retry_backlog_threshold", evidenceCount: 1,
+        message: `${pending} event(s) are waiting in durable spool; configured threshold is ${thresholds.backlogEvents}.`,
+        observedAt: row.metricLastSeen || row.lastSeen,
+      });
+    }
+    const disconnectedMinutes = row.transportLastSeen
+      ? Math.max(0, (Date.now() - dateValue(row.transportLastSeen)) / 60000)
+      : null;
+    if (Number(row.transportStatusCode || 0) === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen
+      && disconnectedMinutes >= thresholds.disconnectMinutes) {
       alerts.push({
         alertId: `loss:HE-CONN-001:${row.computer}`,
         detectedAt: row.transportLastSeen, severity: "high", ruleId: "HE-CONN-001",
         title: "Endpoint upload connection lost", status: "new",
         computer: row.computer, agentId: row.agentId, hostId: row.hostId,
         category: "connection_lost", evidenceCount: 1,
-        message: row.transportMessage || "HostEyeShipper could not reach the upload path.",
+        message: `${row.transportMessage || "HostEyeShipper could not reach the upload path."} Disconnection threshold: ${thresholds.disconnectMinutes} minute(s).`,
         observedAt: row.transportLastSeen,
       });
     }
-    if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000) {
+    if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > thresholds.interruptionMinutes * 60 * 1000) {
       alerts.push({
         alertId: `loss:HE-COLL-001:${row.computer}`,
         detectedAt: row.lastSeen, severity: "high", ruleId: "HE-COLL-001",
         title: "Endpoint collection evidence interrupted", status: "new",
         computer: row.computer, agentId: row.agentId, hostId: row.hostId,
         category: "collection_interruption", evidenceCount: 1,
-        message: "No Agent, Shipper, gateway, or registration evidence was observed for more than 15 minutes.",
+        message: `No Agent, Shipper, gateway, or registration evidence was observed for more than ${thresholds.interruptionMinutes} minutes.`,
         observedAt: row.lastSeen,
       });
     }
@@ -1265,7 +1320,7 @@ async function logLossInterruptionData(url) {
 
   const thresholdMinutes = url.searchParams.has("thresholdMinutes")
     ? uintParam(url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
-    : 15;
+    : readLossAlertThresholds().policy.interruptionMinutes;
   if (thresholdMinutes < 5 || thresholdMinutes > 1440) {
     badRequest("thresholdMinutes must be between 5 and 1440");
   }
@@ -3135,6 +3190,63 @@ function retryBacklogStatus(row) {
   };
 }
 
+function readLossAlertThresholds() {
+  const defaults = {
+    ...DEFAULT_LOSS_ALERT_THRESHOLDS,
+    version: 1,
+    updatedAt: null,
+    updatedBy: "system-default",
+  };
+  if (!existsSync(config.lossAlertThresholdsFile)) return { policy: defaults, source: "default" };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(config.lossAlertThresholdsFile, "utf8"));
+  } catch (error) {
+    const failure = new Error("Stored log-loss alert thresholds are not valid JSON");
+    failure.detail = error.message;
+    throw failure;
+  }
+  const values = normalizeLossAlertThresholdValues(parsed, 500);
+  return {
+    policy: {
+      ...values,
+      version: Number.isSafeInteger(Number(parsed.version)) && Number(parsed.version) > 0 ? Number(parsed.version) : 1,
+      updatedAt: parsed.updatedAt || null,
+      updatedBy: parsed.updatedBy || "unknown",
+    },
+    source: "file",
+  };
+}
+
+function normalizeLossAlertThresholdValues(input, statusCode) {
+  const fail = (message) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    throw error;
+  };
+  if (!input || typeof input !== "object" || Array.isArray(input)) fail("Threshold policy must be a JSON object");
+  const numberValue = (name, min, max, integer = false) => {
+    const value = Number(input[name]);
+    if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+      fail(`${name} must be ${integer ? "an integer " : "a number "}between ${min} and ${max}`);
+    }
+    return value;
+  };
+  return {
+    lossRatioPercent: numberValue("lossRatioPercent", 0, 100),
+    backlogEvents: numberValue("backlogEvents", 1, 1000000000, true),
+    disconnectMinutes: numberValue("disconnectMinutes", 0, 1440, true),
+    interruptionMinutes: numberValue("interruptionMinutes", 5, 1440, true),
+  };
+}
+
+function persistLossAlertThresholds(policy) {
+  mkdirSync(dirname(config.lossAlertThresholdsFile), { recursive: true });
+  const temporary = `${config.lossAlertThresholdsFile}.tmp-${process.pid}`;
+  writeFileSync(temporary, `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  renameSync(temporary, config.lossAlertThresholdsFile);
+}
+
 function logLossRiskStateLabel(state) {
   return ({
     disconnected: "Upload disconnected",
@@ -3328,7 +3440,7 @@ function jsonReplacer(_key, value) {
 
 function setCors(res) {
   res.setHeader("access-control-allow-origin", config.corsOrigin);
-  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET,POST,PUT,OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type,authorization");
 }
 
