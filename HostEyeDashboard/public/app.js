@@ -182,7 +182,8 @@ function pageFromHash(hash) {
 }
 
 function showPage(page) {
-  const selectedPage = pages[page] ? page : "overview";
+  let selectedPage = pages[page] ? page : "overview";
+  if (state.auth.user && !hasPermission(pagePermission(selectedPage))) selectedPage = firstAuthorizedPage();
   document.querySelectorAll(".page-view").forEach((view) => {
     view.hidden = view.dataset.page !== selectedPage;
   });
@@ -289,24 +290,61 @@ function renderCurrentUser() {
   el("currentUserName").textContent = user?.displayName || user?.username || "Guest";
   el("currentUserRole").textContent = `// ${user?.role || "not signed in"}`;
   el("logoutBtn").hidden = !state.auth.token;
-  document.querySelector('a[href="#users"]')?.toggleAttribute("hidden", user?.role !== "admin");
+  applyNavigationPermissions(user);
+}
+
+function hasPermission(permission, user = state.auth.user) {
+  if (user?.role === "admin") return true;
+  const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
+  return permissions.includes("*") || permissions.includes(permission);
+}
+
+function pagePermission(page) {
+  const requirements = {
+    overview: "dashboard:view", hosts: "dashboard:view", heatmap: "dashboard:view",
+    alerts: "alerts:read", search: "telemetry:read", process: "telemetry:read",
+    network: "telemetry:read", registry: "telemetry:read", powershell: "telemetry:read",
+    jitter: "dashboard:view", chunks: "dashboard:view", "fleet-loss": "operations:admin",
+    "log-loss": "loss:read", "agent-errors": "dashboard:view", "dynamic-config": "config:read",
+    users: "users:manage",
+  };
+  return requirements[page] || "dashboard:view";
+}
+
+function firstAuthorizedPage(user = state.auth.user) {
+  return Object.keys(pages).find((page) => hasPermission(pagePermission(page), user)) || "overview";
+}
+
+function applyNavigationPermissions(user) {
+  document.querySelectorAll("a.nav-item[href^='#']").forEach((link) => {
+    const page = link.getAttribute("href").slice(1);
+    link.hidden = !hasPermission(pagePermission(page), user);
+  });
+}
+
+function parseAccountList(value) {
+  return [...new Set(String(value || "").split(/[\n,]/).map((item) => item.trim()).filter(Boolean))];
 }
 
 async function loadDashboardUsers() {
   const container = el("usersTable");
   if (!container) return;
-  if (!state.auth.token || state.auth.user?.role !== "admin") {
-    container.innerHTML = '<div class="empty-state">Sign in with an Administrator account to manage users.</div>';
+  if (!state.auth.token || !hasPermission("users:manage")) {
+    container.innerHTML = '<div class="empty-state">An account with users:manage permission is required.</div>';
     return;
   }
   const result = await api("/api/dashboard/admin/users");
   state.users = result.items || [];
   container.innerHTML = state.users.length ? `
-    <table><thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>State</th><th>Last login</th><th>Actions</th></tr></thead><tbody>
+    <table><thead><tr><th>Username</th><th>Display name</th><th>Role</th><th>Permissions</th><th>Host scope</th><th>Agent scope</th><th>Group scope</th><th>State</th><th>Last login</th><th>Actions</th></tr></thead><tbody>
       ${state.users.map((user) => `<tr data-user-id="${escapeHtml(user.id)}">
         <td><input data-field="username" value="${escapeHtml(user.username)}"></td>
         <td><input data-field="displayName" value="${escapeHtml(user.displayName)}"></td>
-        <td><select data-field="role"><option value="user"${user.role === "user" ? " selected" : ""}>User</option><option value="admin"${user.role === "admin" ? " selected" : ""}>Admin</option></select></td>
+        <td><select data-field="role"><option value="user"${user.role === "user" ? " selected" : ""}>User</option><option value="viewer"${user.role === "viewer" ? " selected" : ""}>Viewer</option><option value="admin"${user.role === "admin" ? " selected" : ""}>Admin</option></select></td>
+        <td><input data-field="permissions" value="${escapeHtml((user.permissions || []).join(", "))}" ${user.role === "admin" ? "disabled" : ""}></td>
+        <td><input data-field="scopeHosts" value="${escapeHtml((user.scopes?.hosts || []).join(", "))}"></td>
+        <td><input data-field="scopeAgents" value="${escapeHtml((user.scopes?.agents || []).join(", "))}"></td>
+        <td><input data-field="scopeGroups" value="${escapeHtml((user.scopes?.groups || []).join(", "))}"></td>
         <td><span class="status-pill ${user.locked ? "failed" : "ok"}">${user.locked ? "Locked" : "Active"}</span></td>
         <td>${user.lastLoginAt ? formatDate(user.lastLoginAt) : "Never"}</td>
         <td class="user-actions"><input data-field="password" type="password" minlength="10" placeholder="New password"><button class="button ghost" data-user-action="save" type="button">Save</button><button class="button ${user.locked ? "secondary" : "ghost"}" data-user-action="${user.locked ? "unlock" : "lock"}" type="button">${user.locked ? "Unlock" : "Lock"}</button></td>
@@ -318,6 +356,7 @@ async function createDashboardUser() {
   const status = el("userManagementStatus");
   status.textContent = "Creating account...";
   try {
+    const permissions = parseAccountList(el("newUserPermissions").value);
     const result = await api("/api/dashboard/admin/users", {
       method: "POST",
       body: {
@@ -325,6 +364,12 @@ async function createDashboardUser() {
         displayName: el("newDisplayName").value,
         role: el("newUserRole").value,
         password: el("newUserPassword").value,
+        ...(permissions.length ? { permissions } : {}),
+        scopes: {
+          hosts: parseAccountList(el("newUserScopeHosts").value),
+          agents: parseAccountList(el("newUserScopeAgents").value),
+          groups: parseAccountList(el("newUserScopeGroups").value),
+        },
       },
     });
     el("userCreateForm").reset();
@@ -343,12 +388,20 @@ async function updateDashboardUser(button) {
   try {
     if (action === "save") {
       const password = row.querySelector('[data-field="password"]').value;
+      const role = row.querySelector('[data-field="role"]').value;
+      const permissions = parseAccountList(row.querySelector('[data-field="permissions"]').value);
       await api(`/api/dashboard/admin/users/${encodeURIComponent(id)}`, {
         method: "PUT",
         body: {
           username: row.querySelector('[data-field="username"]').value,
           displayName: row.querySelector('[data-field="displayName"]').value,
-          role: row.querySelector('[data-field="role"]').value,
+          role,
+          ...(!permissions.includes("*") ? { permissions } : {}),
+          scopes: {
+            hosts: parseAccountList(row.querySelector('[data-field="scopeHosts"]').value),
+            agents: parseAccountList(row.querySelector('[data-field="scopeAgents"]').value),
+            groups: parseAccountList(row.querySelector('[data-field="scopeGroups"]').value),
+          },
           ...(password ? { password } : {}),
         },
       });
@@ -364,7 +417,6 @@ async function updateDashboardUser(button) {
     button.disabled = false;
   }
 }
-
 function accountErrorMessage(error) {
   const text = String(error?.message || "Account operation failed");
   const match = text.match(/\{"message":"([^"]+)"/);
@@ -388,23 +440,22 @@ async function loadDashboard() {
       `${formatNumber(health.rows)} rows all-time | ${latest}${age}`,
     );
 
-    await loadSummaryAndHosts();
-    await Promise.all([
-      loadHostsScreen(),
-      loadOverview(),
-      loadProcess(),
-      loadNetworkDns(),
-      loadRegistryFileAccess(),
-      loadPowerShell(),
-      loadJitter(),
-      loadChunks(),
-      loadLossAlertThresholds(),
-      loadFleetLogLoss(),
-      loadLogLoss(),
-      loadDynamicConfig(),
-      loadHeatmap(),
-      loadAgentErrors(),
-    ]);
+    const tasks = [];
+    if (hasPermission("dashboard:view")) {
+      await loadSummaryAndHosts();
+      tasks.push(loadHostsScreen(), loadOverview(), loadJitter(), loadChunks(), loadHeatmap(), loadAgentErrors());
+    } else {
+      resetKpis();
+    }
+    if (hasPermission("telemetry:read")) {
+      tasks.push(loadProcess(), loadNetworkDns(), loadRegistryFileAccess(), loadPowerShell());
+    }
+    if (hasPermission("operations:admin")) {
+      tasks.push(loadLossAlertThresholds(), loadFleetLogLoss());
+    }
+    if (hasPermission("loss:read")) tasks.push(loadLogLoss());
+    if (hasPermission("config:read")) tasks.push(loadDynamicConfig());
+    await Promise.all(tasks);
   } catch (error) {
     console.error(error);
     setStatus("API offline", false, "Check dashboard API");
@@ -414,7 +465,6 @@ async function loadDashboard() {
     state.loading = false;
   }
 }
-
 function resetKpis() {
   [
     "kpiEvents",
@@ -1180,7 +1230,7 @@ async function exportLogLossReport() {
     const response = await fetch(`${API_BASE}/api/dashboard/log-loss/export${query({
       ...currentLossFilters(),
       format: "csv",
-    })}`, { cache: "no-store" });
+    })}`, { cache: "no-store", headers: state.auth.token ? { authorization: `Bearer ${state.auth.token}` } : {} });
     if (!response.ok) {
       const message = await response.text();
       throw new Error(`${response.status} ${response.statusText}: ${message.slice(0, 160)}`);

@@ -1,4 +1,4 @@
-﻿import {
+import {
   pbkdf2Sync,
   randomBytes,
   randomUUID,
@@ -17,6 +17,21 @@ const PASSWORD_ITERATIONS = 210000;
 const PASSWORD_KEY_LENGTH = 32;
 const PASSWORD_DIGEST = "sha256";
 const USERNAME_PATTERN = /^[a-zA-Z0-9._-]{3,64}$/;
+export const PERMISSION_CATALOG = Object.freeze([
+  "dashboard:view",
+  "telemetry:read",
+  "alerts:read",
+  "loss:read",
+  "config:read",
+  "config:write",
+  "operations:admin",
+  "users:manage",
+]);
+const ROLE_DEFAULTS = Object.freeze({
+  admin: ["*"],
+  user: ["dashboard:view", "telemetry:read", "alerts:read", "loss:read", "config:read"],
+  viewer: ["dashboard:view", "telemetry:read"],
+});
 
 export class AccountStore {
   constructor(options) {
@@ -90,6 +105,8 @@ export class AccountStore {
       username,
       displayName: normalizeDisplayName(input.displayName, username),
       role: normalizeRole(input.role),
+      permissions: normalizePermissions(input.permissions, normalizeRole(input.role)),
+      scopes: normalizeScopes(input.scopes),
       locked: Boolean(input.locked),
       password: hashPassword(password),
       createdAt: now,
@@ -120,7 +137,10 @@ export class AccountStore {
       const role = normalizeRole(input.role);
       this.ensureAdminRemains(state, user, { role, locked: user.locked });
       user.role = role;
+      if (input.permissions === undefined) user.permissions = normalizePermissions(undefined, role);
     }
+    if (input.permissions !== undefined) user.permissions = normalizePermissions(input.permissions, user.role);
+    if (input.scopes !== undefined) user.scopes = normalizeScopes(input.scopes);
     if (input.password !== undefined && String(input.password).length > 0) {
       user.password = hashPassword(normalizePassword(input.password));
       this.revokeUserSessions(user.id);
@@ -156,6 +176,8 @@ export class AccountStore {
           username: normalizeUsername(this.bootstrapUsername),
           displayName: "HostEye Administrator",
           role: "admin",
+          permissions: ["*"],
+          scopes: { hosts: [], agents: [], groups: [] },
           locked: false,
           password: hashPassword(normalizePassword(this.bootstrapPassword)),
           createdAt: now,
@@ -177,7 +199,13 @@ export class AccountStore {
       throw failure;
     }
     if (!parsed || !Array.isArray(parsed.users)) throw new Error("Stored Dashboard user accounts are invalid");
-    return { version: Number(parsed.version || 1), users: parsed.users };
+    const users = parsed.users.map((user) => ({
+      ...user,
+      role: normalizeRole(user.role),
+      permissions: normalizePermissions(user.permissions, normalizeRole(user.role)),
+      scopes: normalizeScopes(user.scopes),
+    }));
+    return { version: Number(parsed.version || 1), users };
   }
 
   persist(state) {
@@ -192,6 +220,16 @@ export class AccountStore {
     if (next.role === "admin" && !next.locked) return;
     const otherActiveAdmins = state.users.filter((item) => item.id !== target.id && item.role === "admin" && !item.locked);
     if (!otherActiveAdmins.length) conflict("At least one active administrator account is required");
+  }
+
+  authorize(user, permission) {
+    if (!permission) return;
+    const permissions = Array.isArray(user?.permissions) ? user.permissions : [];
+    if (!permissions.includes("*") && !permissions.includes(permission)) {
+      const error = new Error(`Permission required: ${permission}`);
+      error.statusCode = 403;
+      throw error;
+    }
   }
 
   revokeUserSessions(userId) {
@@ -213,6 +251,8 @@ function publicUser(user) {
     username: user.username,
     displayName: user.displayName,
     role: user.role,
+    permissions: normalizePermissions(user.permissions, user.role),
+    scopes: normalizeScopes(user.scopes),
     locked: Boolean(user.locked),
     createdAt: user.createdAt,
     createdBy: user.createdBy,
@@ -236,8 +276,36 @@ function normalizeDisplayName(value, fallback) {
 
 function normalizeRole(value) {
   const role = String(value || "user").trim().toLowerCase();
-  if (!['admin', 'user'].includes(role)) badRequest("role must be one of: admin, user");
+  if (!["admin", "user", "viewer"].includes(role)) badRequest("role must be one of: admin, user, viewer");
   return role;
+}
+
+function normalizePermissions(value, role) {
+  if (role === "admin") return ["*"];
+  const permissions = value === undefined || value === null ? ROLE_DEFAULTS[role] : value;
+  if (!Array.isArray(permissions)) badRequest("permissions must be an array");
+  const normalized = [...new Set(permissions.map((item) => String(item || "").trim()).filter(Boolean))];
+  const invalid = normalized.filter((item) => !PERMISSION_CATALOG.includes(item));
+  if (invalid.length) badRequest(`unsupported permissions: ${invalid.join(", ")}`);
+  return normalized;
+}
+
+function normalizeScopes(value) {
+  if (value === undefined || value === null) return { hosts: [], agents: [], groups: [] };
+  if (typeof value !== "object" || Array.isArray(value)) badRequest("scopes must be an object");
+  return {
+    hosts: normalizeScopeList(value.hosts, "scopes.hosts"),
+    agents: normalizeScopeList(value.agents, "scopes.agents"),
+    groups: normalizeScopeList(value.groups, "scopes.groups"),
+  };
+}
+
+function normalizeScopeList(value, name) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) badRequest(`${name} must be an array`);
+  const items = [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+  if (items.length > 500 || items.some((item) => item.length > 255)) badRequest(`${name} contains too many or invalid identifiers`);
+  return items;
 }
 
 function normalizePassword(value) {

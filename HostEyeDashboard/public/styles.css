@@ -28,6 +28,7 @@ html {
 
 body {
   margin: 0;
+  overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
   font-family: var(--sans);
@@ -1823,3 +1824,8 @@ body.modal-open {
 .page-view[hidden] {
   display: none !important;
 }
+
+.user-span-two { grid-column: span 2; }
+.users-table { max-width: 100%; overflow-x: auto; }
+.users-table table { min-width: 1500px; }
+@media (max-width: 760px) { .user-span-two { grid-column: auto; } }

@@ -250,3 +250,13 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Passed 3 focused UC-36 tests covering persistence across restart, login, role protection, update, lock/unlock, session revocation, validation, password redaction, and UI structure.
 - Passed the full Dashboard API suite with 71 tests passed, 3 optional integration skips, and 0 failures.
 - Passed a live local API/browser flow against ClickHouse: Administrator login, account creation, account lock, desktop layout, and 390x844 mobile layout completed with no page-level horizontal overflow; a fresh browser session reported no console errors.
+## UC-37 verified behavior
+
+- Adds API-enforced function permissions for Dashboard, telemetry, alerts, loss monitoring, Dynamic Config read/write, fleet operations, and user management; unauthorized requests return HTTP 403 before the protected handler runs.
+- Adds independent host, Agent, and group scopes. Explicit out-of-scope filters are rejected, ClickHouse reads carry scope predicates, direct raw-log and alert lookups remain scoped, and registration/Dynamic Config responses are filtered conservatively.
+- Prevents scoped operators from assigning a Dynamic Config draft to the default fleet or to an Agent/group outside their authorized scope.
+- Extends account administration with Viewer role, permission selection, and host/Agent/group scope fields; navigation hides unavailable functions and redirects a direct restricted page to the first authorized view.
+- Keeps the log-loss CSV export authenticated and avoids calling protected APIs that the current account cannot use.
+- Passed 2 focused UC-37 tests for positive/negative authorization, SQL scope injection, invalid permissions, scoped Dynamic Config assignment, and UI contracts.
+- Passed the full Dashboard API suite with 73 tests passed, 3 optional Docker integration skips, and 0 failures; JavaScript syntax checks and `git diff --check` also passed.
+- Passed a live local ClickHouse/browser flow: Administrator created a scoped Viewer, the Viewer saw only authorized navigation, direct `#users` access redirected to Overview, desktop/mobile layouts had no page-level overflow in a fresh session, and the fresh Viewer browser tab reported no console warnings or errors. Live health observed 4,778,445 rows with the latest retained event at 2026-08-05 15:26:53; no performance result was inferred.

@@ -58,3 +58,9 @@ HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES=480
 ```
 
 Use `POST /api/dashboard/auth/login` to obtain a Bearer session. Administrator sessions can create, update, lock, and unlock accounts through `/api/dashboard/admin/users`. The service prevents locking or demoting the final active Administrator.
+
+## Dashboard authorization
+
+When authentication is required, every Dashboard route except health, authentication status, and login is authorized in the API before its handler runs. Accounts may receive these function permissions: `dashboard:view`, `telemetry:read`, `alerts:read`, `loss:read`, `config:read`, `config:write`, `operations:admin`, and `users:manage`. Administrators receive the wildcard permission.
+
+Optional `hosts`, `agents`, and `groups` scope lists restrict the records an account can read or change. An empty list means unrestricted for that dimension. Explicit out-of-scope filters return HTTP 403, ClickHouse queries include host/Agent predicates, and Dynamic Config assignment rejects out-of-scope or scoped default-fleet changes.

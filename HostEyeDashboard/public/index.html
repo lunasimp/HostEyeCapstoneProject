@@ -869,8 +869,12 @@
               <form id="userCreateForm" class="filter-grid user-form">
                 <label class="inline-control"><span>Username</span><input id="newUsername" minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" required></label>
                 <label class="inline-control"><span>Display name</span><input id="newDisplayName" maxlength="100" required></label>
-                <label class="inline-control"><span>Role</span><select id="newUserRole"><option value="user">User</option><option value="admin">Admin</option></select></label>
+                <label class="inline-control"><span>Role</span><select id="newUserRole"><option value="user">User</option><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label>
                 <label class="inline-control"><span>Temporary password</span><input id="newUserPassword" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label>
+                <label class="inline-control user-span-two"><span>Permissions (comma separated; blank uses role defaults)</span><input id="newUserPermissions" placeholder="dashboard:view, telemetry:read"></label>
+                <label class="inline-control"><span>Host scope</span><input id="newUserScopeHosts" placeholder="HOST-A, HOST-B"></label>
+                <label class="inline-control"><span>Agent scope</span><input id="newUserScopeAgents" placeholder="agent-001"></label>
+                <label class="inline-control"><span>Group scope</span><input id="newUserScopeGroups" placeholder="workstations"></label>
                 <button class="button secondary" type="submit">Create account</button>
               </form>
               <output id="userManagementStatus" class="metric-note" aria-live="polite"></output>
@@ -900,6 +904,6 @@
         <output id="loginStatus" class="metric-note" aria-live="polite"></output>
       </section>
     </div>
-    <script src="./app.js?v=20260807-uc36"></script>
+    <script src="./app.js?v=20260807-uc37"></script>
   </body>
 </html>

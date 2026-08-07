@@ -1,8 +1,9 @@
 import http from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { URL } from "node:url";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { AccountStore, bearerToken } from "./account-store.js";
+import { AccountStore, PERMISSION_CATALOG, bearerToken } from "./account-store.js";
 
 loadDotEnv();
 
@@ -31,6 +32,8 @@ const accountStore = new AccountStore({
   bootstrapPassword: config.bootstrapAdminPassword,
   sessionTtlMinutes: config.sessionTtlMinutes,
 });
+
+const requestContext = new AsyncLocalStorage();
 
 const DEFAULT_LOSS_ALERT_THRESHOLDS = Object.freeze({
   lossRatioPercent: 1,
@@ -141,7 +144,13 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const match = url.pathname.match(route[1]);
-    await route[2]({ req, url, params: match?.slice(1) || [] }, res);
+    const ctx = { req, url, params: match?.slice(1) || [], user: null };
+    if (config.dashboardAuthRequired && !isPublicRoute(req.method, url.pathname)) {
+      ctx.user = accountStore.authenticate(bearerToken(req));
+      accountStore.authorize(ctx.user, routePermission(req.method, url.pathname));
+      validateExplicitScopes(ctx.user, url);
+    }
+    await requestContext.run({ user: ctx.user }, () => route[2](ctx, res));
   } catch (error) {
     const status = error.statusCode || 500;
     sendJson(res, status, {
@@ -157,7 +166,7 @@ server.listen(config.port, () => {
 });
 
 async function authStatus(_ctx, res) {
-  sendJson(res, 200, { required: config.dashboardAuthRequired, ...accountStore.status() });
+  sendJson(res, 200, { required: config.dashboardAuthRequired, permissions: PERMISSION_CATALOG, ...accountStore.status() });
 }
 
 async function authLogin(ctx, res) {
@@ -199,13 +208,48 @@ async function adminUsersLockState(ctx, res) {
 }
 
 function requireAccountAdmin(ctx) {
-  const user = accountStore.authenticate(bearerToken(ctx.req));
-  if (user.role !== "admin") {
-    const error = new Error("Administrator role is required");
+  const user = ctx.user || accountStore.authenticate(bearerToken(ctx.req));
+  accountStore.authorize(user, "users:manage");
+  return user;
+}
+
+function isPublicRoute(method, pathname) {
+  return method === "GET" && (pathname === "/api/health" || pathname === "/api/dashboard/auth/status")
+    || method === "POST" && pathname === "/api/dashboard/auth/login";
+}
+
+function routePermission(method, pathname) {
+  if (pathname.startsWith("/api/dashboard/auth/")) return null;
+  if (pathname.startsWith("/api/dashboard/admin/users")) return "users:manage";
+  if (pathname.startsWith("/api/dashboard/admin/")) return "operations:admin";
+  if (pathname.startsWith("/api/dashboard/dynamic-config/")) {
+    return method === "GET" || pathname.endsWith("/preview") ? "config:read" : "config:write";
+  }
+  if (pathname.startsWith("/api/alerts")) return "alerts:read";
+  if (pathname.startsWith("/api/dashboard/log-loss/")) return "loss:read";
+  if (pathname.startsWith("/api/logs/") || pathname.startsWith("/api/dashboard/process/")
+    || pathname.startsWith("/api/dashboard/network/") || pathname.startsWith("/api/dashboard/dns/")
+    || pathname.startsWith("/api/dashboard/registry/") || pathname.startsWith("/api/dashboard/file/")
+    || pathname.startsWith("/api/dashboard/process-access/") || pathname.startsWith("/api/dashboard/powershell/")) {
+    return "telemetry:read";
+  }
+  return "dashboard:view";
+}
+
+function validateExplicitScopes(user, url) {
+  assertScopedValue(user, "hosts", url.searchParams.get("host") || url.searchParams.get("machine"));
+  assertScopedValue(user, "agents", url.searchParams.get("agent") || url.searchParams.get("agentId") || url.searchParams.get("agent_id"));
+  assertScopedValue(user, "groups", url.searchParams.get("group") || url.searchParams.get("groupId") || url.searchParams.get("group_id"));
+}
+
+function assertScopedValue(user, dimension, value) {
+  if (!value) return;
+  const allowed = user?.scopes?.[dimension] || [];
+  if (allowed.length && !allowed.includes(value)) {
+    const error = new Error(`${dimension.slice(0, -1)} is outside the authorized scope`);
     error.statusCode = 403;
     throw error;
   }
-  return user;
 }
 
 async function health(_ctx, res) {
@@ -328,7 +372,9 @@ async function hostsSummary(ctx, res) {
   const logsWhere = timeWhere(ctx.url, ["computer != ''"]);
   const metricsWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
   const host = ctx.url.searchParams.get("host");
-  const agentPredicates = host ? `WHERE computer = ${sqlString(host)}` : "";
+  const hostAgentPredicates = [...scopePredicates()];
+  if (host) hostAgentPredicates.push(`computer = ${sqlString(host)}`);
+  const agentPredicates = hostAgentPredicates.length ? `WHERE ${hostAgentPredicates.join(" AND ")}` : "";
 
   const [logRows, agentRows, metricRows] = await Promise.all([
     queryRows(`
@@ -526,6 +572,7 @@ async function registeredAgents(ctx, res) {
       argMax(max_events, last_seen) AS maxEvents,
       argMax(max_bytes, last_seen) AS maxBytes
     FROM default.registered_agents
+    ${scopedWhere()}
     GROUP BY agent_id, host_id, computer
     ORDER BY lastSeen DESC
     LIMIT ${limit}
@@ -718,9 +765,11 @@ async function logLossData(ctx) {
   const transportWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
   const errorUrl = new URL(ctx.url);
   errorUrl.searchParams.delete("host");
-  const errorWhere = operationalTimeWhere(errorUrl, "reported_at", ["agent_id != ''"]);
+  const errorWhere = operationalTimeWhere(errorUrl, "reported_at", ["agent_id != ''"], { hostColumn: null, agentColumn: "agent_id" });
   const host = ctx.url.searchParams.get("host");
-  const agentWhere = host ? `WHERE computer = ${sqlString(host)}` : "";
+  const registeredPredicates = [...scopePredicates()];
+  if (host) registeredPredicates.push(`computer = ${sqlString(host)}`);
+  const agentWhere = registeredPredicates.length ? `WHERE ${registeredPredicates.join(" AND ")}` : "";
 
   const [agentRows, metricRows, chunkRows, transportRows, errorRows] = await Promise.all([
     queryRows(`
@@ -1408,7 +1457,7 @@ async function logLossInterruptionData(url) {
   const limit = limitParam(url, 500, 5000);
   const signalLimit = 100000;
   const sourceFilter = (timestampColumn) => {
-    const predicates = [`${timestampColumn} <= ${sqlDate(to)}`, "computer != ''"];
+    const predicates = [`${timestampColumn} <= ${sqlDate(to)}`, "computer != ''", ...scopePredicates()];
     if (host) predicates.push(`computer = ${sqlString(host)}`);
     if (agent) predicates.push(`agent_id = ${sqlString(agent)}`);
     return `WHERE ${predicates.join(" AND ")}`;
@@ -1742,11 +1791,11 @@ async function powershellRecent(ctx, res) {
   sendJson(res, 200, { items: rows });
 }
 
-async function registrationsSummary(_ctx, res) {
+async function registrationsSummary(ctx, res) {
   const started = Date.now();
   try {
     const devices = await registrationRequest("/api/v1/admin/devices");
-    const rows = Array.isArray(devices) ? devices : [];
+    const rows = filterRegistrationDevices(Array.isArray(devices) ? devices : [], ctx.user);
     const byStatus = new Map();
     for (const device of rows) {
       const status = String(device.status || "Unknown");
@@ -1783,6 +1832,15 @@ async function registrationsSummary(_ctx, res) {
   }
 }
 
+function filterRegistrationDevices(devices, user) {
+  if (!user) return devices;
+  const hosts = user.scopes?.hosts || [];
+  const agents = user.scopes?.agents || [];
+  const groups = user.scopes?.groups || [];
+  return devices.filter((device) => (!hosts.length || hosts.includes(device.hostId) || hosts.includes(device.actualHostname) || hosts.includes(device.expectedHostname))
+    && (!agents.length || agents.includes(device.agentId))
+    && (!groups.length || groups.includes(device.groupId)));
+}
 function mapRegistrationDevice(device) {
   return {
     deviceRecordId: device.deviceRecordId || "",
@@ -1805,15 +1863,15 @@ function mapRegistrationDevice(device) {
   };
 }
 
-async function dynamicConfigSummary(_ctx, res) {
+async function dynamicConfigSummary(ctx, res) {
   const started = Date.now();
   try {
     const [policies, agents] = await Promise.all([
       dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
       dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
     ]);
-    const policyRows = Array.isArray(policies) ? policies : [];
-    const agentRows = Array.isArray(agents) ? agents : [];
+    const policyRows = filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user);
+    const agentRows = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user);
     const activePolicies = policyRows.filter((policy) => policy.enabled !== false).length;
     const groups = countBy(agentRows, (agent) => agent.group_id || "unknown");
     sendJson(res, 200, {
@@ -1841,23 +1899,23 @@ async function dynamicConfigSummary(_ctx, res) {
   }
 }
 
-async function dynamicConfigPolicies(_ctx, res) {
+async function dynamicConfigPolicies(ctx, res) {
   const policies = await dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(policies) ? policies : [] });
+  sendJson(res, 200, { items: filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user) });
 }
 
-async function dynamicConfigAgents(_ctx, res) {
+async function dynamicConfigAgents(ctx, res) {
   const agents = await dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(agents) ? agents : [] });
+  sendJson(res, 200, { items: filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user) });
 }
 
-async function dynamicConfigStatus(_ctx, res) {
+async function dynamicConfigStatus(ctx, res) {
   const [policies, agents] = await Promise.all([
     dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
     dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
   ]);
-  const policyRows = Array.isArray(policies) ? policies : [];
-  const items = (Array.isArray(agents) ? agents : []).map((agent) => mapDynamicConfigStatus(agent, policyRows));
+  const policyRows = filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user);
+  const items = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user).map((agent) => mapDynamicConfigStatus(agent, policyRows));
   const states = countBy(items, (item) => item.state);
   sendJson(res, 200, {
     totals: {
@@ -1869,6 +1927,54 @@ async function dynamicConfigStatus(_ctx, res) {
     states,
     items,
   });
+}
+
+function filterDynamicAgents(agents, user) {
+  if (!user) return agents;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  return agents.filter((agent) => (!hostScope.length || hostScope.includes(agent.host_id) || hostScope.includes(agent.computer))
+    && (!agentScope.length || agentScope.includes(agent.agent_id))
+    && (!groupScope.length || groupScope.includes(agent.group_id)));
+}
+
+function filterDynamicPolicies(policies, user) {
+  if (!user) return policies;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  const restricted = hostScope.length || agentScope.length || groupScope.length;
+  return policies.filter((policy) => {
+    const target = policy.target || { type: "default" };
+    if (target.type === "agent") return !hostScope.length && !groupScope.length && (!agentScope.length || agentScope.includes(target.agent_id));
+    if (target.type === "group") return !hostScope.length && !agentScope.length && (!groupScope.length || groupScope.includes(target.group_id));
+    return !restricted;
+  });
+}
+
+function filterDynamicAudit(items, user) {
+  if (!user) return items;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  return items.filter((item) => (!hostScope.length || hostScope.includes(item.host_id) || hostScope.includes(item.computer))
+    && (!agentScope.length || agentScope.includes(item.agent_id))
+    && (!groupScope.length || groupScope.includes(item.group_id)));
+}
+
+function assertDynamicTargetScope(user, targetType, targetValue) {
+  if (!user) return;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  if (targetType === "default" && (hostScope.length || agentScope.length || groupScope.length)) {
+    const error = new Error("Default-fleet assignment requires unrestricted host, agent, and group scope");
+    error.statusCode = 403;
+    throw error;
+  }
+  if (targetType === "agent") assertScopedValue(user, "agents", targetValue);
+  if (targetType === "group") assertScopedValue(user, "groups", targetValue);
 }
 
 function mapDynamicConfigStatus(agent, policies) {
@@ -1943,9 +2049,9 @@ function stateCount(states, state) {
   return Number(states.find((item) => item.key === state)?.count || 0);
 }
 
-async function dynamicConfigAudit(_ctx, res) {
+async function dynamicConfigAudit(ctx, res) {
   const audit = await dynamicConfigRequest("/api/v1/dynamic-config/audit", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(audit) ? audit : [] });
+  sendJson(res, 200, { items: filterDynamicAudit(Array.isArray(audit) ? audit : [], ctx.user) });
 }
 
 async function dynamicConfigCatalog(_ctx, res) {
@@ -1997,6 +2103,7 @@ async function dynamicConfigPreview(ctx, res) {
 async function dynamicConfigUpsertPolicy(ctx, res) {
   const body = await readJsonBody(ctx.req);
   const policy = buildDynamicPolicy(body);
+  assertDynamicTargetScope(ctx.user, policy.target?.type || "default", policy.target?.agent_id || policy.target?.group_id || "");
   const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
     method: "POST",
     admin: true,
@@ -2021,6 +2128,7 @@ async function dynamicConfigAssignPolicy(ctx, res) {
   if ((targetType === "group" || targetType === "agent") && !targetValue) {
     badRequest("targetValue is required for group/agent assignment");
   }
+  assertDynamicTargetScope(ctx.user, targetType, targetValue);
   const [policies, agents] = await Promise.all([
     dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
     dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
@@ -2031,7 +2139,7 @@ async function dynamicConfigAssignPolicy(ctx, res) {
     badRequest("only a disabled Dynamic Logs draft can be assigned");
   }
 
-  const agentRows = Array.isArray(agents) ? agents : [];
+  const agentRows = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user);
   if (targetType === "agent" && !agentRows.some((agent) => agent.agent_id === targetValue)) {
     badRequest("selected target agent does not exist");
   }
@@ -2350,6 +2458,7 @@ async function hostsHeatmapCell(ctx, res) {
     `computer = ${sqlString(host)}`,
     `kafka_timestamp >= ${startExpr}`,
     `kafka_timestamp < ${endExpr}`,
+    ...scopePredicates(),
   ];
   const where = `WHERE ${predicates.join(" AND ")}`;
   const limit = limitParam(ctx.url, 200, 500);
@@ -2577,6 +2686,7 @@ async function alertDetail(ctx, res) {
         idempotency_key AS idempotencyKey
       FROM default.windows_system_logs
       WHERE idempotency_key = ${sqlString(key)} AND (${eventAlertPredicate()})
+        ${scopePredicates().map((predicate) => `AND ${predicate}`).join("\n        ")}
       ORDER BY kafka_timestamp DESC LIMIT 1
     `);
     if (!rows.length) return sendJson(res, 404, { message: "Alert not found" });
@@ -2824,6 +2934,7 @@ async function logsRaw(ctx, res) {
     SELECT *
     FROM default.windows_system_logs
     WHERE idempotency_key = ${sqlString(key)}
+      ${scopePredicates().map((predicate) => `AND ${predicate}`).join("\n      ")}
     ORDER BY kafka_timestamp DESC
     LIMIT 1
   `);
@@ -2895,6 +3006,7 @@ function timeWhere(url, extraPredicates = []) {
     `kafka_timestamp >= ${sqlDate(from)}`,
     `kafka_timestamp <= ${sqlDate(to)}`,
     ...extraPredicates,
+    ...scopePredicates(),
   ];
 
   if (host) predicates.push(`computer = ${sqlString(host)}`);
@@ -2903,7 +3015,6 @@ function timeWhere(url, extraPredicates = []) {
 
   return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
 }
-
 function eventTypeExpression() {
   return `
     multiIf(
@@ -2984,24 +3095,45 @@ function alertTimeWhere(url, extraPredicates = []) {
     `kafka_timestamp >= ${sqlDate(from)}`,
     `kafka_timestamp <= ${sqlDate(to)}`,
     ...extraPredicates,
+    ...scopePredicates(),
   ];
   const host = optionalString(url, "host", 255);
   if (host) predicates.push(`computer = ${sqlString(host)}`);
   return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
 }
-
-function operationalTimeWhere(url, timestampColumn, extraPredicates = []) {
+function operationalTimeWhere(url, timestampColumn, extraPredicates = [], columns = {}) {
   const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const to = dateParam(url, "to", new Date());
   if (from > to) badRequest("from must be earlier than or equal to to");
+  const hostColumn = columns.hostColumn === undefined ? "computer" : columns.hostColumn;
+  const agentColumn = columns.agentColumn === undefined ? "agent_id" : columns.agentColumn;
   const predicates = [
     `${timestampColumn} >= ${sqlDate(from)}`,
     `${timestampColumn} <= ${sqlDate(to)}`,
     ...extraPredicates,
+    ...scopePredicates({ hostColumn, agentColumn }),
   ];
   const host = url.searchParams.get("host");
-  if (host) predicates.push(`computer = ${sqlString(host)}`);
+  if (host && hostColumn) predicates.push(`${hostColumn} = ${sqlString(host)}`);
   return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
+}
+
+function scopePredicates(columns = {}) {
+  const user = requestContext.getStore()?.user;
+  if (!user) return [];
+  const hostColumn = columns.hostColumn === undefined ? "computer" : columns.hostColumn;
+  const agentColumn = columns.agentColumn === undefined ? "agent_id" : columns.agentColumn;
+  const predicates = [];
+  const hosts = user.scopes?.hosts || [];
+  const agents = user.scopes?.agents || [];
+  if (hostColumn && hosts.length) predicates.push(`${hostColumn} IN (${hosts.map(sqlString).join(", ")})`);
+  if (agentColumn && agents.length) predicates.push(`${agentColumn} IN (${agents.map(sqlString).join(", ")})`);
+  return predicates;
+}
+
+function scopedWhere(columns = {}) {
+  const predicates = scopePredicates(columns);
+  return predicates.length ? `WHERE ${predicates.join(" AND ")}` : "";
 }
 
 function dateValue(value) {
@@ -3553,10 +3685,3 @@ function loadDotEnv() {
     }
   }
 }
-
-
-
-
-
-
-
