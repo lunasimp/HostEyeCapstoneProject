@@ -1,0 +1,35 @@
+{
+  "run_id": "ST-20260807-HOSTEYE-03",
+  "captured_at_local": "2026-08-07T14:10:00+07:00",
+  "branch": "uc/UC-37-user-authorization",
+  "commit": "68ae494d7d3c77357eb7cd44a1b31e8dd7156477",
+  "os": {
+    "Caption": "Microsoft Windows 11 Home Single Language",
+    "Version": "10.0.26200",
+    "BuildNumber": "26200"
+  },
+  "node": "v24.15.0",
+  "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+  "docker": {
+    "desktop": "4.76.0",
+    "engine": "29.5.2",
+    "status": "healthy after clean Docker/WSL restart",
+    "running_containers": [
+      "hosteye-local-mirror-vector",
+      "hosteye-dynamic-config",
+      "hosteye-simulation-app",
+      "local-clickhouse"
+    ]
+  },
+  "services": [
+    "ClickHouse http://127.0.0.1:8123",
+    "Current-source Control Plane http://127.0.0.1:8080",
+    "Current-source Collector A expected at http://127.0.0.1:8088 (unavailable)",
+    "Dynamic Config http://127.0.0.1:5063",
+    "Current-source Dashboard API http://127.0.0.1:5065",
+    "Current-source Dashboard Web http://127.0.0.1:5185"
+  ],
+  "core_health": "5/6",
+  "clickhouse_rows": 4778445,
+  "latest_retained_event": "2026-08-05 15:26:53"
+}

@@ -1,0 +1,202 @@
+{
+  "run_id": "ST-20260807-HOSTEYE-03",
+  "captured_at": "2026-08-07T06:57:35.429Z",
+  "dashboard": "http://127.0.0.1:5185/",
+  "desktop": [
+    {
+      "route": "overview",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#overview",
+      "heading": "Overview",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "hosts",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#hosts",
+      "heading": "Host Inventory",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "alerts",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#alerts",
+      "heading": "Security Alerts",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "search",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#search",
+      "heading": "Log Search",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "fleet-loss",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#fleet-loss",
+      "heading": "Giam sat mat log toan he thong",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "log-loss",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#log-loss",
+      "heading": "Thong ke mat mat log",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "agent-errors",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#agent-errors",
+      "heading": "Agent Chunk Errors",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "dynamic-config",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#dynamic-config",
+      "heading": "Cau hinh dong",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    },
+    {
+      "route": "users",
+      "bodyScrollWidth": 1265,
+      "clientWidth": 1265,
+      "hash": "#users",
+      "heading": "User Management",
+      "scrollWidth": 1265,
+      "visible404": false,
+      "overflow": false
+    }
+  ],
+  "mobile_requested": {
+    "width": 390,
+    "height": 844
+  },
+  "mobile": [
+    {
+      "route": "overview",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#overview",
+      "heading": "Overview",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "hosts",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#hosts",
+      "heading": "Host Inventory",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "alerts",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#alerts",
+      "heading": "Security Alerts",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "search",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#search",
+      "heading": "Log Search",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "fleet-loss",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#fleet-loss",
+      "heading": "Giam sat mat log toan he thong",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "log-loss",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#log-loss",
+      "heading": "Thong ke mat mat log",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "agent-errors",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#agent-errors",
+      "heading": "Agent Chunk Errors",
+      "scrollWidth": 376,
+      "visible404": true,
+      "agentErrorText": "Lỗi tải dữ liệu: 404 Not Found: {\"message\":\"Route not found\"}",
+      "overflow": true
+    },
+    {
+      "route": "dynamic-config",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#dynamic-config",
+      "heading": "Cau hinh dong",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    },
+    {
+      "route": "users",
+      "bodyScrollWidth": 376,
+      "clientWidth": 375,
+      "hash": "#users",
+      "heading": "User Management",
+      "scrollWidth": 376,
+      "visible404": false,
+      "overflow": true
+    }
+  ],
+  "console_warnings_errors": [],
+  "result": "PASSED_WITH_OBSERVATION",
+  "observations": [
+    "All nine routes render on desktop without horizontal overflow.",
+    "At the 390x844 override the document client width is 375 px and all routes show a repeatable 1 px horizontal overflow (376 vs 375).",
+    "Agent Chunk Errors still displays 404 Not Found: Route not found.",
+    "Several Vietnamese headings remain without diacritics."
+  ]
+}

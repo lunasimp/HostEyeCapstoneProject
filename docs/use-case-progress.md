@@ -270,3 +270,14 @@ This tracker records implementation-level verification. Report 5 is reserved for
 - Control Plane bootstrap failed with HTTP 500 because the running container could not create `/var/lib/hosteye/leases` (`EIO`); current-run durable upload and duplicate-chunk idempotency could therefore not be completed.
 - HostEyeShipper remained operational but retained 213,460 compressed chunks / 10,547,107,368 bytes, with the last authoritative upload success on 2026-07-29.
 - Evidence is stored in `docs/test-evidence/ST-20260807-HOSTEYE-02`; the formal system-test report is stored under `docs/reports`.
+
+## Full system test rerun ST-20260807-HOSTEYE-03
+
+- Repeated the 12 grouped system scenarios after Docker Desktop/WSL recovery, covering UC-01 through UC-40 at their implemented boundaries.
+- Result: 6 Passed, 3 Passed with Observation, 2 Failed, and 1 Blocked; overall status remains `NOT_READY_FOR_ACCEPTANCE`.
+- The previous lease-store `EIO` did not reproduce: the current-source Control Plane heartbeat/bootstrap returned HTTP 200 and granted an upload lease.
+- The current-source data plane became the active blocker: `data_server` and `worker_server` failed to compile because several ClickHouse row types do not implement `Row` and the idempotency status helper has a lifetime error. Collector A, durable ingest, ACK, and current-run duplicate-chunk idempotency could not complete.
+- Dashboard regression remained 73 passed, 3 optional Docker integration skips, and 0 failures; the authenticated Dashboard flow remained 30/30 against 4,778,445 ClickHouse rows, with the latest retained event at 2026-08-05 15:26:53 and explicitly stale.
+- Endpoint quota tests remained 2/2 and both Windows Services remained running, but the spool still contained 213,460 chunks / 10,547,107,368 bytes and the last authoritative upload success remained 2026-07-29.
+- Browser QA found no desktop overflow or console errors, but measured repeatable 1 px horizontal overflow at the requested mobile viewport, the Agent Errors route still returned 404, and some Vietnamese UI strings still lacked correct diacritics/encoding.
+- Evidence is stored in `docs/test-evidence/ST-20260807-HOSTEYE-03`; the rerun Report 5 is stored under `docs/reports`.

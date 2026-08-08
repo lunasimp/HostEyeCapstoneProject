@@ -1,0 +1,53 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-03",
+    "captured_at":  "2026-08-07T13:43:07.9395857+07:00",
+    "control_source":  "HostEyeBackend Rust control_server at commit 68ae494",
+    "heartbeat":  {
+                      "capacity_score":  63999,
+                      "collector_id":  "collector-a",
+                      "last_seen":  "2026-08-07T06:43:05.758Z",
+                      "next_available_at":  "2026-08-07T06:43:05.758Z",
+                      "ok":  true,
+                      "ready":  true,
+                      "upload_slot_ms":  1000
+                  },
+    "bootstrap_status":  200,
+    "bootstrap":  {
+                      "admission":  "ok",
+                      "agent_config":  {
+                                           "global":  {
+                                                          "data_dir":  "C:\\ProgramData\\HostEye\\data"
+                                                      },
+                                           "version":  "1.0"
+                                       },
+                      "collector_id":  "collector-a",
+                      "collector_ready_at":  "2026-08-07T06:43:05.758Z",
+                      "collector_reserved_until":  "2026-08-07T06:43:06.800Z",
+                      "collector_upload_slot_ms":  1000,
+                      "collector_url":  "http://127.0.0.1:8088/api/v1/telemetry",
+                      "config_etag":  "\"mock-etag\"",
+                      "config_status":  "changed",
+                      "lease_expires_at":  "2026-08-07T06:43:35.800Z",
+                      "lease_id":  "6456b0e4-ff28-4825-871c-43fd84b3c425",
+                      "lease_ttl_seconds":  30,
+                      "max_batch_mb":  5,
+                      "max_upload_rate_kbps":  1024,
+                      "message":  "upload lease granted",
+                      "retry_after_seconds":  0,
+                      "routing":  {
+                                      "admission_url":  "http://127.0.0.1:8080/api/v1/control/bootstrap",
+                                      "config_url":  "http://127.0.0.1:8080/api/v1/agent/config",
+                                      "control_url":  "http://127.0.0.1:8080/api/v1/control/bootstrap",
+                                      "telemetry_url":  "http://127.0.0.1:8088/api/v1/telemetry"
+                                  },
+                      "schedule_reason":  "collector_ready_now",
+                      "send_after":  "2026-08-07T06:43:05.800Z",
+                      "send_delay_ms":  0,
+                      "send_not_before":  "2026-08-07T06:43:05.800Z",
+                      "server_time":  "2026-08-07T06:43:05.800Z"
+                  },
+    "lease_granted":  true,
+    "data_plane_health_status":  0,
+    "data_plane_error":  "Unable to connect to the remote server",
+    "conclusion":  "Control-plane heartbeat/bootstrap succeeded and returned a lease. Durable ingest could not proceed because current data_server does not compile and no service listened on 8088."
+}
