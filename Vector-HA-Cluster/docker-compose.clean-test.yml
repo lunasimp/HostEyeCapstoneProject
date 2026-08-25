@@ -1,0 +1,14 @@
+services:
+  redpanda-broker:
+    volumes:
+      - hosteye_redpanda_clean:/var/lib/redpanda/data
+
+  clickhouse:
+    volumes:
+      - hosteye_clickhouse_clean:/var/lib/clickhouse
+      - ./clickhouse-init:/docker-entrypoint-initdb.d:ro
+      - ./clickhouse-config/users.d/default-user.xml:/etc/clickhouse-server/users.d/default-user.xml:ro
+
+volumes:
+  hosteye_redpanda_clean:
+  hosteye_clickhouse_clean:

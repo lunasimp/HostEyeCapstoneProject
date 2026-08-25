@@ -1,0 +1,27 @@
+name: hosteye-dashboard-quick-tunnel
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared@sha256:d9ff527dc19799e24d3689058161fb01e752a24be1823577bae54c9c2489275f
+    container_name: hosteye-dashboard-quick-tunnel
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://host.docker.internal:5174
+      - --http-host-header
+      - hosteye.csp.vn
+      - --loglevel
+      - info
+    restart: unless-stopped
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+

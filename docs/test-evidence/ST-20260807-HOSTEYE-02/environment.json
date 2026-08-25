@@ -1,0 +1,24 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-02",
+    "captured_at_utc":  "2026-08-07T05:25:12.4199076Z",
+    "branch":  "uc/UC-37-user-authorization",
+    "commit":  "4d932f12db0de0304ef5ba5f24aba326afb2b070",
+    "os":  {
+               "Caption":  "Microsoft Windows 11 Home Single Language",
+               "Version":  "10.0.26200",
+               "BuildNumber":  "26200"
+           },
+    "node":  "v24.14.0",
+    "cargo":  "cargo 1.97.0 (c980f4866 2026-06-30)",
+    "services":  [
+                     "ClickHouse http://127.0.0.1:8123",
+                     "Control Plane http://127.0.0.1:8080",
+                     "Collector A http://127.0.0.1:8088",
+                     "Dynamic Config http://127.0.0.1:5063",
+                     "Latest Dashboard API http://127.0.0.1:5065",
+                     "Latest Dashboard Web http://127.0.0.1:5185"
+                 ],
+    "clickhouse_rows":  4778445,
+    "latest_retained_event":  "2026-08-05 15:26:53",
+    "docker_cli":  "Unresponsive during docker ps/logs; not counted as a passed enumeration check."
+}

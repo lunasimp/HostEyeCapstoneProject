@@ -1,0 +1,9 @@
+services:
+  control-plane:
+    environment:
+      PUBLIC_BASE_URL: "http://127.0.0.1:8080"
+      DEFAULT_COLLECTOR_URL: "http://127.0.0.1:8088/api/v1/telemetry/collector-a"
+
+  collector-a:
+    environment:
+      COLLECTOR_PUBLIC_URL: "http://127.0.0.1:8088/api/v1/telemetry/collector-a"

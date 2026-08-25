@@ -1,0 +1,14 @@
+HostEye source snapshot
+Created: 2026-08-15 (Asia/Saigon)
+Source workspace: HostEye-uc14-final
+Git branch: uc/UC-37-user-authorization
+Base commit: b96e2d8
+
+This snapshot includes the current working-tree implementation, including
+uncommitted enrollment, installer, gateway, worker checkpoint, dashboard,
+authentication, Dynamic Config, deployment, and system-test script changes.
+
+Generated binaries, dependency caches, runtime data, raw telemetry, secrets,
+certificates/private keys, Docker data, logs, and test-result payloads were
+excluded. See the separate Installer and Test folders in HostEyeCapstoneProject.
+

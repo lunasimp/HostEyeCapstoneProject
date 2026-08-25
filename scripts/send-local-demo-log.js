@@ -11,6 +11,14 @@ function sha256(value) {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 async function main() {
   const events = [
     {
@@ -50,7 +58,7 @@ async function main() {
     }
   ];
 
-  const eventsJson = JSON.stringify(events);
+  const eventsJson = canonicalJson(events);
   const checksum = sha256(eventsJson);
   const chunkId = sha256(`${agentId}|${now}|${checksum}`);
   const batchBytes = Buffer.byteLength(eventsJson, "utf8");

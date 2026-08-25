@@ -1,0 +1,287 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-02",
+    "coverage_count":  40,
+    "note":  "Partial use cases were tested only at their implemented boundaries; no unimplemented behavior is claimed.",
+    "use_cases":  [
+                      {
+                          "id":  "UC-01",
+                          "name":  "Xem Dashboard tổng quan",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-07, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-02",
+                          "name":  "Theo dõi trạng thái thu thập log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-01, ST-02, ST-03, ST-04, ST-12",
+                          "outcome":  "FAILED_CURRENT_INGEST"
+                      },
+                      {
+                          "id":  "UC-03",
+                          "name":  "Tìm kiếm và lọc log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-07, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-04",
+                          "name":  "Xem chi tiết log",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-03",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-05",
+                          "name":  "Xem raw log",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-03",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-06",
+                          "name":  "Xem cảnh báo",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-07, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-07",
+                          "name":  "Xem chi tiết cảnh báo",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-08",
+                          "name":  "Tìm kiếm và lọc cảnh báo",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-07, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-09",
+                          "name":  "Cấu hình Dynamic Logs",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-05, ST-07, ST-11",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-10",
+                          "name":  "Chọn trường dữ liệu log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-05, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-11",
+                          "name":  "Xem trước cấu hình thu thập log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-05, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-12",
+                          "name":  "Áp dụng cấu hình thu thập log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-05, ST-11",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-13",
+                          "name":  "Xem trạng thái cấu hình Dynamic Logs",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-05, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-14",
+                          "name":  "Xem thống kê mất mát log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-04, ST-10, ST-11",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-15",
+                          "name":  "Xem tỷ lệ mất mát log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-16",
+                          "name":  "Xem nguyên nhân mất mát log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-17",
+                          "name":  "Xem lịch sử gián đoạn thu thập log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-18",
+                          "name":  "Xem trạng thái log chờ gửi lại",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-04, ST-10, ST-11",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-19",
+                          "name":  "Nhận cảnh báo mất mát log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-20",
+                          "name":  "Lọc máy có nguy cơ mất log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-21",
+                          "name":  "Xem chi tiết mất mát log theo máy",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-22",
+                          "name":  "Xuất báo cáo mất mát log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-23",
+                          "name":  "Xem Dashboard vận hành",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-03, ST-07, ST-10",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-24",
+                          "name":  "Quản lý Agent",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-02, ST-03",
+                          "outcome":  "PARTIAL_BLOCKED_BY_ST02"
+                      },
+                      {
+                          "id":  "UC-25",
+                          "name":  "Quản lý cấu hình Agent",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-05",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-26",
+                          "name":  "Quản lý cấu hình Dynamic Logs",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-05",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-27",
+                          "name":  "Quản lý cấu hình có chữ ký",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-05",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-28",
+                          "name":  "Theo dõi trạng thái triển khai cấu hình",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-03, ST-05",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-29",
+                          "name":  "Giám sát quá trình truyền log",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-02, ST-04",
+                          "outcome":  "FAILED_CURRENT_UPLOAD"
+                      },
+                      {
+                          "id":  "UC-30",
+                          "name":  "Kiểm tra dữ liệu lưu tạm",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-04",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-31",
+                          "name":  "Kiểm tra quá trình gửi lại log",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-02, ST-04, ST-12",
+                          "outcome":  "BLOCKED_CURRENT_RUN"
+                      },
+                      {
+                          "id":  "UC-32",
+                          "name":  "Quản lý xác nhận ACK",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-02, ST-12",
+                          "outcome":  "BLOCKED_CURRENT_RUN"
+                      },
+                      {
+                          "id":  "UC-33",
+                          "name":  "Giám sát mất mát log toàn hệ thống",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-34",
+                          "name":  "Cấu hình ngưỡng cảnh báo mất log",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-03, ST-10, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-35",
+                          "name":  "Xem lịch sử hoạt động Agent",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-04, ST-07",
+                          "outcome":  "PASSED_IMPLEMENTED_BOUNDARY"
+                      },
+                      {
+                          "id":  "UC-36",
+                          "name":  "Quản lý người dùng",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-08, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-37",
+                          "name":  "Phân quyền người dùng",
+                          "implementation":  "Implemented",
+                          "system_tests":  "ST-09, ST-11",
+                          "outcome":  "PASSED"
+                      },
+                      {
+                          "id":  "UC-38",
+                          "name":  "Xem nhật ký vận hành hệ thống",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-07",
+                          "outcome":  "FAILED_AGENT_ERROR_ROUTE"
+                      },
+                      {
+                          "id":  "UC-39",
+                          "name":  "Xem lịch sử thay đổi cấu hình",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-03, ST-05",
+                          "outcome":  "PASSED_WITH_OBSERVATION"
+                      },
+                      {
+                          "id":  "UC-40",
+                          "name":  "Khôi phục cấu hình",
+                          "implementation":  "Partial",
+                          "system_tests":  "ST-05",
+                          "outcome":  "NOT_EXECUTED_NEW_ROLLBACK"
+                      }
+                  ]
+}

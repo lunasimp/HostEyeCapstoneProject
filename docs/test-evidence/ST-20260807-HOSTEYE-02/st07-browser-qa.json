@@ -1,0 +1,160 @@
+{
+  "runId": "ST-20260807-HOSTEYE-02",
+  "capturedAt": "2026-08-07T05:14:36.375Z",
+  "dashboard": "http://127.0.0.1:5185/",
+  "desktop": [
+    {
+      "errorText": "",
+      "h1": "Overview",
+      "overflow": -15,
+      "route": "overview",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "",
+      "h1": "Host Inventory",
+      "overflow": -15,
+      "route": "hosts",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "ErrorActionPreference = \"Stop\" $TargetDir = \"C:\\Program Files\\HostEye\" $ProgramDataDir = \"C:\\ProgramData\\HostEye\" $BackupDir = Join-Path $ProgramDataDir \"config-backups\" $PublicKeyPath = Join-Path $TargetDir \"certs\\updater_public.pem\" $UpdateUrl = \"https://hosteye\tView",
+      "h1": "Security Alerts",
+      "overflow": -15,
+      "route": "alerts",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "ErrorAction\"; value=\"SilentlyContinue\" Context: Severity = Informational Host Name = ConsoleHost Host Version = 5.1.26100.8875 Host ID = a89f3b6f-ef5b-41d4-aca2-3897488627bb Ho",
+      "h1": "Log Search",
+      "overflow": -15,
+      "route": "search",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "error da quan sat; khong suy dien khi thieu evidence.",
+      "h1": "Thong ke mat mat log",
+      "overflow": -15,
+      "route": "log-loss",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "",
+      "h1": "Giam sat mat log toan he thong",
+      "overflow": -15,
+      "route": "fleet-loss",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "",
+      "h1": "Cau hinh dong",
+      "overflow": -15,
+      "route": "dynamic-config",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "",
+      "h1": "User Management",
+      "overflow": -15,
+      "route": "users",
+      "viewportWidth": 1280,
+      "visible": true
+    },
+    {
+      "errorText": "ERRORS",
+      "h1": "Agent Chunk Errors",
+      "overflow": -15,
+      "route": "agent-errors",
+      "viewportWidth": 1280,
+      "visible": true
+    }
+  ],
+  "mobile": [
+    {
+      "h1": "Overview",
+      "loadError": "",
+      "overflow": -14,
+      "route": "overview",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Host Inventory",
+      "loadError": "",
+      "overflow": -14,
+      "route": "hosts",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Security Alerts",
+      "loadError": "",
+      "overflow": -14,
+      "route": "alerts",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Log Search",
+      "loadError": "",
+      "overflow": -14,
+      "route": "search",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Thong ke mat mat log",
+      "loadError": "",
+      "overflow": -14,
+      "route": "log-loss",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Giam sat mat log toan he thong",
+      "loadError": "",
+      "overflow": -14,
+      "route": "fleet-loss",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Cau hinh dong",
+      "loadError": "",
+      "overflow": -14,
+      "route": "dynamic-config",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "User Management",
+      "loadError": "",
+      "overflow": -14,
+      "route": "users",
+      "viewportWidth": 390,
+      "visible": true
+    },
+    {
+      "h1": "Agent Chunk Errors",
+      "loadError": "Lỗi tải dữ liệu: 404 Not Found: {\"message\":\"Route not found\"}",
+      "overflow": -14,
+      "route": "agent-errors",
+      "viewportWidth": 390,
+      "visible": true
+    }
+  ],
+  "consoleWarningsOrErrors": [],
+  "observations": [
+    "Desktop and 390x844 mobile routes remain within the document viewport.",
+    "Telemetry is connected but stale; latest retained event shown by the UI is 2026-08-05 15:26:53.",
+    "Agent Errors displays a 404 Route not found load error.",
+    "Several Vietnamese headings remain unaccented."
+  ]
+}

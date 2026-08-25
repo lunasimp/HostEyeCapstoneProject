@@ -1,0 +1,21 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "captured_at_utc":  "2026-08-05T05:44:00.7707003Z",
+    "branch":  "uc/UC-17-collection-interruption-history",
+    "commit":  "52eab3c1cab9fff8a117bdb5baa8d67d2f99b317",
+    "containers":  [
+                       "hosteye-local-mirror-vector|Up 2 hours|127.0.0.1:8687-\u003e8686/tcp",
+                       "hosteye-uc16-dashboard-api|Up About an hour|0.0.0.0:5056-\u003e5055/tcp, [::]:5056-\u003e5055/tcp",
+                       "hosteye-uc16-dashboard-web|Up 2 hours|0.0.0.0:5175-\u003e5174/tcp, [::]:5175-\u003e5174/tcp",
+                       "hosteye-dynamic-config|Up 3 hours|127.0.0.1:5063-\u003e5063/tcp",
+                       "hosteye-dashboard-api|Up 3 hours|0.0.0.0:5055-\u003e5055/tcp, [::]:5055-\u003e5055/tcp",
+                       "hosteye-dashboard-web|Up 3 hours|0.0.0.0:5174-\u003e5174/tcp, [::]:5174-\u003e5174/tcp",
+                       "hosteye-control-plane|Up 2 hours|127.0.0.1:8080-\u003e8080/tcp",
+                       "hosteye-collector-a|Up 2 hours|127.0.0.1:8088-\u003e8088/tcp",
+                       "vector-gateway-1|Up 2 hours|",
+                       "vector-gateway-2|Up 2 hours|",
+                       "redpanda-broker|Up 2 hours|0.0.0.0:19092-\u003e19092/tcp, [::]:19092-\u003e19092/tcp",
+                       "hosteye-simulation-app|Up 3 hours|0.0.0.0:5088-\u003e5088/tcp, [::]:5088-\u003e5088/tcp",
+                       "local-clickhouse|Up 3 hours|0.0.0.0:8123-\u003e8123/tcp, [::]:8123-\u003e8123/tcp, 0.0.0.0:9000-\u003e9000/tcp, [::]:9000-\u003e9000/tcp"
+                   ]
+}

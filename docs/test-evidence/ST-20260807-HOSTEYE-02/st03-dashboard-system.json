@@ -1,0 +1,191 @@
+{
+  "runId": "ST-20260807-HOSTEYE-02",
+  "capturedAt": "2026-08-07T05:23:32.471Z",
+  "api": "http://127.0.0.1:5065",
+  "checks": [
+    {
+      "id": "auth.admin.login",
+      "status": 200,
+      "passed": true,
+      "role": "admin"
+    },
+    {
+      "id": "infrastructure.dashboard-api",
+      "status": 200,
+      "passed": true,
+      "rows": 4778445,
+      "stale": true
+    },
+    {
+      "id": "dashboard.overview",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "id": "dashboard.hosts",
+      "status": 200,
+      "passed": true,
+      "items": 6
+    },
+    {
+      "id": "dashboard.search",
+      "status": 200,
+      "passed": true,
+      "items": 5,
+      "total": 2096014
+    },
+    {
+      "id": "dashboard.alerts",
+      "status": 200,
+      "passed": true,
+      "items": 5,
+      "total": 16
+    },
+    {
+      "id": "loss.summary",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "id": "loss.hosts",
+      "status": 200,
+      "passed": true,
+      "items": 7
+    },
+    {
+      "id": "loss.interruptions",
+      "status": 200,
+      "passed": true,
+      "items": 7
+    },
+    {
+      "id": "loss.retry-backlog",
+      "status": 200,
+      "passed": true,
+      "items": 0
+    },
+    {
+      "id": "loss.alerts",
+      "status": 200,
+      "passed": true,
+      "items": 6,
+      "total": 6
+    },
+    {
+      "id": "admin.fleet-loss",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "id": "admin.loss-thresholds",
+      "status": 200,
+      "passed": true
+    },
+    {
+      "id": "config.catalog",
+      "status": 200,
+      "passed": true,
+      "items": 7
+    },
+    {
+      "id": "config.summary",
+      "status": 200,
+      "passed": true,
+      "items": 1
+    },
+    {
+      "id": "config.policies",
+      "status": 200,
+      "passed": true,
+      "items": 1
+    },
+    {
+      "id": "config.status",
+      "status": 200,
+      "passed": true,
+      "items": 2
+    },
+    {
+      "id": "config.audit",
+      "status": 200,
+      "passed": true,
+      "items": 0
+    },
+    {
+      "id": "dashboard.raw-detail",
+      "status": 200,
+      "passed": true,
+      "idempotencyKey": "b9c05584b3ce1f3873daad6e21b0a4caadd935adca6bf953b91b8f2f5b182622"
+    },
+    {
+      "id": "alerts.detail",
+      "status": 200,
+      "passed": true,
+      "alertId": "event:a4d16ff59a6b9deb72c27cb1d58dcccf1c5463ce794943f3db1538ddbd230724",
+      "ruleId": "HE-PS-001"
+    },
+    {
+      "id": "loss.csv-export",
+      "status": 200,
+      "passed": true,
+      "contentType": "text/csv; charset=utf-8",
+      "bytes": 4337
+    },
+    {
+      "id": "accounts.create-scoped-viewer",
+      "status": 201,
+      "passed": true,
+      "username": "st37.viewer.20260807052332",
+      "allowedHost": "bruh"
+    },
+    {
+      "id": "auth.viewer.login",
+      "status": 200,
+      "passed": true,
+      "role": "viewer"
+    },
+    {
+      "id": "authorization.allowed-host",
+      "status": 200,
+      "passed": true,
+      "host": "bruh"
+    },
+    {
+      "id": "authorization.denied-host",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "id": "authorization.denied-function",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "id": "authorization.denied-user-admin",
+      "status": 403,
+      "passed": true
+    },
+    {
+      "id": "accounts.lock-viewer",
+      "status": 200,
+      "passed": true,
+      "locked": true
+    },
+    {
+      "id": "accounts.lock-revokes-session",
+      "status": 401,
+      "passed": true
+    },
+    {
+      "id": "accounts.unlock-viewer",
+      "status": 200,
+      "passed": true,
+      "locked": false
+    }
+  ],
+  "summary": {
+    "total": 30,
+    "passed": 30,
+    "failed": 0
+  }
+}

@@ -1,0 +1,102 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "executed_at":  "2026-08-05",
+    "branch":  "uc/UC-17-collection-interruption-history",
+    "commit":  "52eab3c1cab9fff8a117bdb5baa8d67d2f99b317",
+    "scope":  "Implemented HostEye system workflows through UC-17",
+    "formal_unit_tests_included":  false,
+    "total":  10,
+    "passed":  8,
+    "passed_with_observation":  2,
+    "failed":  0,
+    "blocked":  0,
+    "cases":  [
+                  {
+                      "id":  "ST-01",
+                      "name":  "Infrastructure readiness",
+                      "mapped_use_cases":  "UC-01, UC-02, UC-09-UC-17",
+                      "status":  "PASSED",
+                      "evidence":  "st01-health.json"
+                  },
+                  {
+                      "id":  "ST-02",
+                      "name":  "Control Plane to Data Plane durable ingest",
+                      "mapped_use_cases":  "UC-02",
+                      "status":  "PASSED",
+                      "evidence":  "st02-control-data-flow.txt"
+                  },
+                  {
+                      "id":  "ST-03",
+                      "name":  "Dashboard search and raw drill-down",
+                      "mapped_use_cases":  "UC-01, UC-03",
+                      "status":  "PASSED",
+                      "evidence":  "st03-dashboard-flow.json"
+                  },
+                  {
+                      "id":  "ST-04",
+                      "name":  "Alert list and alert detail",
+                      "mapped_use_cases":  "UC-06, UC-07, UC-08",
+                      "status":  "PASSED",
+                      "evidence":  "st04-alert-flow.json"
+                  },
+                  {
+                      "id":  "ST-05",
+                      "name":  "Signed Dynamic Config apply and ACK",
+                      "mapped_use_cases":  "UC-09-UC-13",
+                      "status":  "PASSED_WITH_OBSERVATION",
+                      "evidence":  "st05-dynamic-config-summary.json"
+                  },
+                  {
+                      "id":  "ST-06",
+                      "name":  "Log-loss status, causes and interruption history",
+                      "mapped_use_cases":  "UC-14-UC-17",
+                      "status":  "PASSED",
+                      "evidence":  "st06-log-loss.json"
+                  },
+                  {
+                      "id":  "ST-07",
+                      "name":  "Endpoint spool preservation and local freshness mirror",
+                      "mapped_use_cases":  "UC-02, UC-14-UC-17",
+                      "status":  "PASSED_WITH_OBSERVATION",
+                      "evidence":  "st07-endpoint-spool.json"
+                  },
+                  {
+                      "id":  "ST-08",
+                      "name":  "Dashboard desktop/mobile workflow",
+                      "mapped_use_cases":  "UC-01-UC-03, UC-06-UC-17",
+                      "status":  "PASSED",
+                      "evidence":  "st08-browser-qa.json"
+                  },
+                  {
+                      "id":  "ST-09",
+                      "name":  "Dashboard failure response when ClickHouse is unavailable",
+                      "mapped_use_cases":  "UC-01-UC-03, UC-06-UC-08, UC-14-UC-17",
+                      "status":  "PASSED",
+                      "evidence":  "st09-clickhouse-outage.json"
+                  },
+                  {
+                      "id":  "ST-10",
+                      "name":  "Duplicate chunk idempotency",
+                      "mapped_use_cases":  "UC-02",
+                      "status":  "PASSED",
+                      "evidence":  "st10-idempotency.json"
+                  }
+              ],
+    "observations":  [
+                         {
+                             "id":  "OBS-01",
+                             "severity":  "High",
+                             "description":  "Endpoint authoritative upload has not succeeded since 2026-07-29; 192719 compressed spool chunks occupy 9497438277 bytes. Retry preservation works, but remote connectivity/quota requires remediation."
+                         },
+                         {
+                             "id":  "OBS-02",
+                             "severity":  "High",
+                             "description":  "The running Dynamic Config state still contains a legacy gateway URL in the default policy. The signed apply test used a synthetic Agent only; migrate/reset the stored policy before assigning it to real endpoints."
+                         },
+                         {
+                             "id":  "OBS-03",
+                             "severity":  "Low",
+                             "description":  "At 390x844 the Dashboard has one pixel of document-level horizontal overflow and two Vietnamese route headings are rendered without diacritics; no workflow or console error was observed."
+                         }
+                     ]
+}

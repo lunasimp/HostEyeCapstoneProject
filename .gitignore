@@ -25,7 +25,6 @@ VectorServer/organization_private.pem
 # Build outputs / generated binaries
 **/bin/
 **/obj/
-**/target/
 **/publish/
 **/publish-self-contained/
 VectorBuild/Output/
@@ -58,9 +57,18 @@ tools/InnoSetup/Examples/
 VectorBuild/Sysmon/*-output.*
 *.tmp
 *.bak
-*.bak-*
 
-# Local runtime, backup, and demo-signing state
-cert-backup-*/
-Installer/CodeSigning/certs/
-Installer/CodeSigning/last-demo-cert.json
+# Rust build outputs
+**/target/
+
+# Local HostEye agent runtime configs
+HostEyeAgent/shipper/shipper-config.local.json
+HostEyeAgent/shipper/shipper-config.local-smoke.json
+HostEyeAgent/shipper/runtime/
+HostEyeAgent/vector/vector-full-local.toml
+HostEyeAgent/installer/generated/*.json
+.runtime/
+HostEyeDashboardApi/data/*.json
+Vector-HA-Cluster/.env
+DockerAllInOne/.env
+deploy/cloudflare-tunnel/.env

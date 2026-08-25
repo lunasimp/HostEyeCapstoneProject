@@ -1,0 +1,89 @@
+﻿{
+  "run_id": "ST-20260805-HOSTEYE-01",
+  "captured_at_utc": "2026-08-05T06:00:26.069Z",
+  "agentId": "st10-idem-agent-20260805060022",
+  "hostId": "st10-idem-host-20260805060022",
+  "computer": "ST10-IDEM-20260805060022",
+  "chunkId": "b798a2c290950676ca86a2bdbfa7d8f32781cfb3334f288416b0d9777a508f3b",
+  "first": {
+    "http_status": 200,
+    "body": {
+      "ack": true,
+      "commit": true,
+      "status": "raw_stored",
+      "index_status": "index_queued",
+      "index_message": "forwarded to vector gateway",
+      "chunk_id": "b798a2c290950676ca86a2bdbfa7d8f32781cfb3334f288416b0d9777a508f3b",
+      "checksum": "0da42b3c708a8db8daaf982b9681aedd51be3b78f99836e248ccac9b1bb11b10",
+      "event_count": 1,
+      "invalid_event_count": 0,
+      "sequence_number": 1,
+      "lease_id": "d355afc4-0adc-4339-9a6b-aaf2f987fe53",
+      "agent_config": {
+        "config_version": "1.0.0",
+        "schema_version": "1.0.0",
+        "normal_jitter_window_ms": 30000,
+        "recovery_jitter_window_ms": 300000,
+        "max_events": 500,
+        "max_bytes": 524288,
+        "enabled": true,
+        "routing": {
+          "control_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+          "admission_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+          "telemetry_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+          "config_url": "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+        },
+        "limits": {
+          "max_events": 500,
+          "max_bytes": 524288
+        },
+        "jitter": {
+          "normal_jitter_window_ms": 30000,
+          "recovery_jitter_window_ms": 300000
+        }
+      }
+    }
+  },
+  "second": {
+    "http_status": 200,
+    "body": {
+      "ack": true,
+      "commit": true,
+      "status": "duplicate",
+      "index_status": "index_queued",
+      "chunk_id": "b798a2c290950676ca86a2bdbfa7d8f32781cfb3334f288416b0d9777a508f3b",
+      "checksum": "0da42b3c708a8db8daaf982b9681aedd51be3b78f99836e248ccac9b1bb11b10",
+      "event_count": 1,
+      "sequence_number": 1,
+      "lease_id": "d355afc4-0adc-4339-9a6b-aaf2f987fe53",
+      "agent_config": {
+        "config_version": "1.0.0",
+        "schema_version": "1.0.0",
+        "normal_jitter_window_ms": 30000,
+        "recovery_jitter_window_ms": 300000,
+        "max_events": 500,
+        "max_bytes": 524288,
+        "enabled": true,
+        "routing": {
+          "control_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+          "admission_url": "https://hosteye.iahn.hanoi.vn/api/v1/control/bootstrap",
+          "telemetry_url": "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
+          "config_url": "https://hosteye.iahn.hanoi.vn/api/v1/agent/config"
+        },
+        "limits": {
+          "max_events": 500,
+          "max_bytes": 524288
+        },
+        "jitter": {
+          "normal_jitter_window_ms": 30000,
+          "recovery_jitter_window_ms": 300000
+        }
+      }
+    }
+  },
+  "indexed_counts": {
+    "events": 1,
+    "unique_events": 1
+  },
+  "pass": true
+}

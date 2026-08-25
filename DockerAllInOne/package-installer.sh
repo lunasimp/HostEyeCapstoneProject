@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ARTIFACT_ROOT=/opt/hosteye/artifacts
@@ -25,7 +25,7 @@ cp /opt/hosteye/certs/client.key "$CERT_DIR/client.key"
 
 cat >"$PACKAGE_DIR/install-lab.ps1" <<'EOF'
 param(
-    [string]$GatewayUri = "https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry",
+    [string]$GatewayUri = "https://hosteye.iahn.hanoi.vn/api/v1/telemetry",
     [switch]$NoStart
 )
 
@@ -58,7 +58,7 @@ Run PowerShell as Administrator, then:
 
 Default telemetry endpoint:
 
-  https://agent.hosteye.iahn.hanoi.vn/api/v1/telemetry
+  https://hosteye.iahn.hanoi.vn/api/v1/telemetry
 
 If the endpoint machine is not the Docker host, pass the reachable Docker host name or IP:
 
@@ -75,4 +75,3 @@ EOF
 )
 
 echo "HostEye lab installer package ready: $ZIP_PATH"
-

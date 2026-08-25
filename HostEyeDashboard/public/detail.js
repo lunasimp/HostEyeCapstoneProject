@@ -128,7 +128,14 @@ function setOptionalParam(url, key, value) {
 }
 
 async function api(path) {
-  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store" });
+  const token = localStorage.getItem("hosteyeDashboardSession") || "";
+  const headers = token ? { authorization: `Bearer ${token}` } : {};
+  const response = await fetch(`${API_BASE}${path}`, { cache: "no-store", headers });
+  if (response.status === 401) {
+    localStorage.removeItem("hosteyeDashboardSession");
+    window.location.replace(new URL("./index.html#heatmap", window.location.href));
+    throw new Error("Authentication expired. Returning to the Dashboard sign-in page.");
+  }
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 200)}`);

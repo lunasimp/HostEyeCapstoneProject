@@ -43,6 +43,30 @@ function ConvertTo-CompactJson {
     }
 }
 
+function ConvertTo-CanonicalValue {
+    param([object]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in @($Value.Keys | ForEach-Object { [string]$_ } | Sort-Object)) {
+            $result[$key] = ConvertTo-CanonicalValue $Value[$key]
+        }
+        return $result
+    }
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        return @($Value | ForEach-Object { ConvertTo-CanonicalValue $_ })
+    }
+    return $Value
+}
+
+function ConvertTo-CanonicalJson {
+    param([object]$Value)
+    return (ConvertTo-CanonicalValue $Value | ConvertTo-Json -Depth 30 -Compress)
+}
+
 function Get-Sha256Hex {
     param([string]$Text)
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
@@ -60,7 +84,7 @@ if (-not $NoStart) {
     $env:CONTROL_SEND_AFTER_MS = [string][Math]::Max(0, $DemoSendDelayMs)
     $env:CONTROL_COLLECTOR_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
     $env:COLLECTOR_UPLOAD_SLOT_MS = [string][Math]::Max(1, $DemoCollectorSlotMs)
-    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h | Out-Host
+    docker compose -f $ComposeFile up -d --remove-orphans clickhouse redpanda-broker vector-gateway-1 vector-gateway-2 control-plane collector-a collector-b collector-c collector-d collector-e collector-f collector-g collector-h raw-chunk-worker | Out-Host
 }
 
 Wait-HttpOk -Url "http://127.0.0.1:8123/?query=SELECT%201" -Name "ClickHouse"
@@ -143,7 +167,7 @@ $events = @(
     }
 )
 
-$eventsJson = ConvertTo-CompactJson $events
+$eventsJson = ConvertTo-CanonicalJson $events
 $checksum = Get-Sha256Hex $eventsJson
 $chunkId = Get-Sha256Hex "$agentId|$hostId|$computer|$now|$checksum"
 $batchBytes = [System.Text.Encoding]::UTF8.GetByteCount($eventsJson)
@@ -200,19 +224,56 @@ $payload = [ordered]@{
 }
 
 Write-Host "Sending telemetry chunk to Data Plane..."
-$ack = Invoke-RestMethod -Method Post -Uri $telemetryUrl -ContentType "application/json" -Body (ConvertTo-CompactJson $payload)
+$payloadJson = ConvertTo-CompactJson $payload
+$ack = Invoke-RestMethod -Method Post -Uri $telemetryUrl -ContentType "application/json" -Body $payloadJson
 if (-not $ack.ack -or -not $ack.commit) {
     throw "Data Plane did not ACK commit: $(ConvertTo-CompactJson $ack)"
 }
 Write-Host "ACK status=$($ack.status) broker_status=$($ack.broker_status) index_status=$($ack.index_status) chunk=$($ack.chunk_id) event_count=$($ack.event_count)"
 
-Start-Sleep -Seconds 3
 $chunkQuery = [Uri]::EscapeDataString("SELECT last_seen, status, duplicate, message FROM default.ingest_chunks WHERE agent_id='$agentId' AND chunk_id='$chunkId' ORDER BY last_seen FORMAT JSONEachRow")
 $rawQuery = [Uri]::EscapeDataString("SELECT raw_path, status FROM default.raw_chunk_vault WHERE agent_id='$agentId' AND chunk_id='$chunkId' LIMIT 1 FORMAT JSONEachRow")
 $eventQuery = [Uri]::EscapeDataString("SELECT count() AS events FROM default.windows_system_logs WHERE agent_id='$agentId' AND chunk_id='$chunkId' FORMAT JSONEachRow")
-$chunkRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$chunkQuery"
-$rawRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$rawQuery"
-$eventRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$eventQuery"
+$workerQuery = [Uri]::EscapeDataString("SELECT count() AS statuses FROM default.ingest_chunks WHERE agent_id='$agentId' AND chunk_id='$chunkId' AND status='worker_index_queued' FORMAT JSONEachRow")
+
+for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    $eventRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$eventQuery"
+    $workerRows = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$workerQuery"
+    if ([int]$eventRows.events -eq $events.Count -and [int]$workerRows.statuses -gt 0) { break }
+    Start-Sleep -Seconds 1
+}
+
+function Get-HttpText {
+    param([string]$Url)
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $Url
+    if ($response.Content -is [byte[]]) {
+        return [System.Text.Encoding]::UTF8.GetString($response.Content).Trim()
+    }
+    return ([string]$response.Content).Trim()
+}
+
+$chunkRows = Get-HttpText "http://127.0.0.1:8123/?query=$chunkQuery"
+$rawRows = Get-HttpText "http://127.0.0.1:8123/?query=$rawQuery"
+if ([int]$eventRows.events -ne $events.Count) {
+    throw "Worker did not index the expected event count: expected=$($events.Count) actual=$($eventRows.events)"
+}
+if ([int]$workerRows.statuses -lt 1) {
+    throw "Worker status was not persisted for chunk $chunkId"
+}
+if (-not $rawRows) {
+    throw "Raw chunk vault row is missing for chunk $chunkId"
+}
+
+Write-Host "Sending the same chunk again to verify idempotency..."
+$duplicateAck = Invoke-RestMethod -Method Post -Uri $telemetryUrl -ContentType "application/json" -Body $payloadJson
+if (-not $duplicateAck.ack -or -not $duplicateAck.commit -or $duplicateAck.status -ne "duplicate") {
+    throw "Duplicate upload was not acknowledged idempotently: $(ConvertTo-CompactJson $duplicateAck)"
+}
+Start-Sleep -Seconds 1
+$eventRowsAfterDuplicate = Invoke-RestMethod -Uri "http://127.0.0.1:8123/?query=$eventQuery"
+if ([int]$eventRowsAfterDuplicate.events -ne $events.Count) {
+    throw "Duplicate upload changed indexed event count: before=$($eventRows.events) after=$($eventRowsAfterDuplicate.events)"
+}
 
 Write-Host ""
 Write-Host "Flow test OK"
@@ -229,3 +290,4 @@ Write-Host "  Raw row    :"
 Write-Host $rawRows
 Write-Host "  Indexed events:"
 Write-Host $eventRows
+Write-Host "  Duplicate  : $($duplicateAck.status), indexed events still $($eventRowsAfterDuplicate.events)"

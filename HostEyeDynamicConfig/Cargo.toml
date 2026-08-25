@@ -9,7 +9,6 @@ anyhow = "1.0"
 axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
-flate2 = "1.0"
 hex = "0.4"
 hmac = "0.12"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
@@ -28,7 +27,3 @@ path = "src/bin/server.rs"
 name = "hosteye-config-client"
 path = "src/bin/client.rs"
 
-
-[[bin]]
-name = "hosteye-shipper"
-path = "src/bin/shipper.rs"

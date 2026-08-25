@@ -25,8 +25,7 @@ COPY --from=vector-bin /usr/local/bin/vector /usr/local/bin/vector
 WORKDIR /opt/hosteye
 
 COPY HostEyeDashboard /opt/hosteye/HostEyeDashboard
-COPY VectorDashboardApi /opt/hosteye/VectorDashboardApi
-COPY VectorBuild /opt/hosteye/artifacts/VectorBuild
+COPY HostEyeDashboardApi /opt/hosteye/HostEyeDashboardApi
 COPY VectorServer /opt/hosteye/artifacts/VectorServer
 
 COPY Vector-HA-Cluster/clickhouse-init /docker-entrypoint-initdb.d
@@ -40,7 +39,7 @@ COPY DockerAllInOne/init-clickhouse.sh /usr/local/bin/init-clickhouse.sh
 COPY DockerAllInOne/package-installer.sh /usr/local/bin/package-installer.sh
 
 RUN chmod +x /usr/local/bin/hosteye-entrypoint.sh /usr/local/bin/init-clickhouse.sh /usr/local/bin/package-installer.sh \
-    && mkdir -p /var/log/soc_vault /run/nginx /opt/hosteye/certs /opt/hosteye/runtime \
+    && mkdir -p /var/lib/vector /var/lib/hosteye-dashboard /var/log/soc_vault /run/nginx /opt/hosteye/certs /opt/hosteye/runtime \
     && chown -R clickhouse:clickhouse /var/lib/clickhouse /var/log/clickhouse-server
 
 # Single unified port; everything else is reverse-proxied by nginx internally.

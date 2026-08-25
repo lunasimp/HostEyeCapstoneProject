@@ -10,9 +10,16 @@ services:
     volumes:
       - hosteye_clickhouse:/var/lib/clickhouse
       - hosteye_vault:/var/log/soc_vault
+      - hosteye_dashboard_auth:/var/lib/hosteye-dashboard
     environment:
       TZ: Asia/Bangkok
+      HOSTEYE_DASHBOARD_AUTH_REQUIRED: "true"
+      HOSTEYE_DASHBOARD_USERS_FILE: "/var/lib/hosteye-dashboard/dashboard-users.json"
+      HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME: "${HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD: "${HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD:?Set HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD in Dokploy}"
+      HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES: "${HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES:-480}"
 
 volumes:
   hosteye_clickhouse:
   hosteye_vault:
+  hosteye_dashboard_auth:

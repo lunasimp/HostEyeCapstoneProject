@@ -72,6 +72,7 @@ if exists(.user_name) && is_string(.user_name) {
 [transforms.route_runtime_metrics]
 type = "route"
 inputs = ["pii_scrubber"]
+reroute_unmatched = false
 
 [transforms.route_runtime_metrics.route]
 shipper_metrics = '.source_type == "hosteye_shipper_metric" || .metric_type == "shipper_batch"'
@@ -279,6 +280,9 @@ table = "windows_system_logs"
 compression = "gzip"
 skip_unknown_fields = true
 
+[sinks.persist_to_clickhouse.healthcheck]
+enabled = false
+
 [sinks.persist_shipper_metrics_to_clickhouse]
 type = "clickhouse"
 inputs = ["prepare_shipper_metrics"]
@@ -287,3 +291,6 @@ database = "default"
 table = "shipper_runtime_metrics"
 compression = "gzip"
 skip_unknown_fields = true
+
+[sinks.persist_shipper_metrics_to_clickhouse.healthcheck]
+enabled = false

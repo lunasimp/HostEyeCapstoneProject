@@ -28,8 +28,14 @@ docker run --name hosteye-all-in-one --rm `
   -p 8080:80 `
   -v hosteye_clickhouse:/var/lib/clickhouse `
   -v hosteye_vault:/var/log/soc_vault `
+  -v hosteye_dashboard_auth:/var/lib/hosteye-dashboard `
+  -e HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD="<unique-secret-at-least-16-characters>" `
   hosteye-all-in-one:local
 ```
+
+The first authenticated start creates the Administrator account in the
+`hosteye_dashboard_auth` volume. The container refuses to bootstrap with a
+missing or known demo password.
 
 All routes live under the same port:
 

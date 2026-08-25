@@ -1,26 +1,9 @@
 import http from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { URL } from "node:url";
-import { readFileSync, existsSync } from "node:fs";
-import { resolve } from "node:path";
-import {
-  adminArtifactBuildById,
-  adminArtifactBuildNext,
-  adminArtifactVerify,
-  adminArtifacts,
-  adminEnrollmentTokenCreate,
-  adminEnrollmentTokens,
-  adminDeviceApprove,
-  adminDeviceAssignGroups,
-  adminDeviceDetail,
-  adminDeviceRevoke,
-  adminDevices,
-  enrollmentComplete,
-  enrollmentFail,
-  enrollmentHeartbeat,
-  enrollmentStart,
-  artifactDownload,
-  registryInfo,
-} from "./enrollment-store.js";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { AccountStore, PERMISSION_CATALOG, bearerToken } from "./account-store.js";
 
 loadDotEnv();
 
@@ -35,10 +18,68 @@ const config = {
   registrationAdminToken: process.env.HOSTEYE_REGISTRATION_ADMIN_TOKEN || "hosteye-admin-demo",
   dynamicConfigUrl: process.env.HOSTEYE_DYNAMIC_CONFIG_URL || "http://localhost:5063",
   dynamicConfigAdminToken: process.env.HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN || "hosteye-admin-demo",
+  lossAlertThresholdsFile: resolve(process.env.HOSTEYE_ALERT_THRESHOLDS_FILE || "data/log-loss-alert-thresholds.json"),
+  dashboardUsersFile: resolve(process.env.HOSTEYE_DASHBOARD_USERS_FILE || "data/dashboard-users.json"),
+  dashboardAuthRequired: boolFromEnv("HOSTEYE_DASHBOARD_AUTH_REQUIRED", process.env.NODE_ENV !== "test"),
+  bootstrapAdminUsername: process.env.HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME || "admin",
+  bootstrapAdminPassword: process.env.HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD || (process.env.NODE_ENV === "test" ? "hosteye-admin-demo" : ""),
+  sessionTtlMinutes: intFromEnv("HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES", 480),
+  loginAttemptLimit: intFromEnv("HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_LIMIT", 5),
+  loginAttemptWindowMinutes: intFromEnv("HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_WINDOW_MINUTES", 15),
 };
+
+validateDashboardAuthConfig(config);
+
+const accountStore = new AccountStore({
+  file: config.dashboardUsersFile,
+  bootstrapUsername: config.bootstrapAdminUsername,
+  bootstrapPassword: config.bootstrapAdminPassword,
+  sessionTtlMinutes: config.sessionTtlMinutes,
+});
+
+const requestContext = new AsyncLocalStorage();
+const loginAttempts = new Map();
+
+const DEFAULT_LOSS_ALERT_THRESHOLDS = Object.freeze({
+  lossRatioPercent: 1,
+  backlogEvents: 100,
+  disconnectMinutes: 0,
+  interruptionMinutes: 15,
+});
+const DYNAMIC_LOG_TYPES = Object.freeze([
+  { id: "windows-application", name: "Windows Application", description: "Application events emitted by Windows services and applications.", channels: ["Application"] },
+  { id: "windows-system", name: "Windows System", description: "Operating system, driver, service, and startup events.", channels: ["System"] },
+  { id: "windows-security", name: "Windows Security", description: "Authentication, account, privilege, audit, and WFP security events.", channels: ["Security"] },
+  { id: "sysmon", name: "Sysmon", description: "Process, file, registry, network, and DNS telemetry produced by Sysmon.", channels: ["Microsoft-Windows-Sysmon/Operational"], sensors: ["sysmon", "network"] },
+  { id: "powershell", name: "PowerShell", description: "PowerShell operational and script block telemetry.", channels: ["Microsoft-Windows-PowerShell/Operational"], sensors: ["powershell"] },
+  { id: "wmi", name: "WMI Activity", description: "Operational events from Windows Management Instrumentation.", channels: ["Microsoft-Windows-WMI-Activity/Operational"] },
+  { id: "defender", name: "Microsoft Defender", description: "Microsoft Defender detections and operational health events.", channels: ["Microsoft-Windows-Windows Defender/Operational"] },
+]);
+
+const DYNAMIC_LOG_FIELDS = Object.freeze([
+  { id: "timestamp", field: "timestamp", name: "Timestamp", description: "Event occurrence time.", required: true },
+  { id: "hostname", field: "computer", name: "Hostname", description: "Normalized Windows computer name.", required: true },
+  { id: "username", field: "user_name", name: "Username", description: "Account associated with the event." },
+  { id: "process_name", field: "process_name", name: "Process name", description: "Executable name associated with process activity." },
+  { id: "process_id", field: "process_id", name: "Process ID", description: "Numeric process identifier." },
+  { id: "source_ip", field: "source_ip", name: "Source IP", description: "Source network address when available." },
+  { id: "destination_ip", field: "destination_ip", name: "Destination IP", description: "Destination network address when available." },
+  { id: "destination_port", field: "destination_port", name: "Port", description: "Destination network port when available." },
+  { id: "event_id", field: "event_id", name: "Event ID", description: "Windows or Sysmon event identifier.", required: true },
+  { id: "channel", field: "channel", name: "Channel", description: "Source Windows Event Log channel.", required: true },
+  { id: "message", field: "message", name: "Message", description: "Human-readable event message." },
+]);
 
 const routes = [
   ["GET", /^\/api\/health$/, health],
+  ["GET", /^\/api\/dashboard\/auth\/status$/, authStatus],
+  ["POST", /^\/api\/dashboard\/auth\/login$/, authLogin],
+  ["POST", /^\/api\/dashboard\/auth\/logout$/, authLogout],
+  ["GET", /^\/api\/dashboard\/auth\/me$/, authMe],
+  ["GET", /^\/api\/dashboard\/admin\/users$/, adminUsersList],
+  ["POST", /^\/api\/dashboard\/admin\/users$/, adminUsersCreate],
+  ["PUT", /^\/api\/dashboard\/admin\/users\/([^/]+)$/, adminUsersUpdate],
+  ["POST", /^\/api\/dashboard\/admin\/users\/([^/]+)\/(lock|unlock)$/, adminUsersLockState],
   ["GET", /^\/api\/dashboard\/overview\/summary$/, overviewSummary],
   ["GET", /^\/api\/dashboard\/overview\/log-volume$/, overviewLogVolume],
   ["GET", /^\/api\/dashboard\/overview\/top-hosts$/, overviewTopHosts],
@@ -46,6 +87,22 @@ const routes = [
   ["GET", /^\/api\/dashboard\/overview\/security-timeline$/, overviewSecurityTimeline],
   ["GET", /^\/api\/dashboard\/hosts\/summary$/, hostsSummary],
   ["GET", /^\/api\/dashboard\/agents\/registered$/, registeredAgents],
+  ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
+  ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
+  ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
+  ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
+  ["GET", /^\/api\/dashboard\/agent-errors\/summary$/, agentErrorsSummary],
+  ["GET", /^\/api\/dashboard\/agent-errors$/, agentErrorsList],
+  ["GET", /^\/api\/dashboard\/log-loss\/summary$/, logLossSummary],
+  ["GET", /^\/api\/dashboard\/log-loss\/hosts$/, logLossHosts],
+  ["GET", /^\/api\/dashboard\/log-loss\/host-detail$/, logLossHostDetail],
+  ["GET", /^\/api\/dashboard\/log-loss\/export$/, logLossExport],
+  ["GET", /^\/api\/dashboard\/log-loss\/interruptions$/, logLossInterruptions],
+  ["GET", /^\/api\/dashboard\/log-loss\/retry-backlog$/, logLossRetryBacklog],
+  ["GET", /^\/api\/dashboard\/log-loss\/alerts$/, logLossAlerts],
+  ["GET", /^\/api\/dashboard\/admin\/log-loss\/fleet$/, adminFleetLogLoss],
+  ["GET", /^\/api\/dashboard\/admin\/log-loss\/thresholds$/, adminLossAlertThresholdsGet],
+  ["PUT", /^\/api\/dashboard\/admin\/log-loss\/thresholds$/, adminLossAlertThresholdsPut],
   ["GET", /^\/api\/dashboard\/process\/top-processes$/, processTopProcesses],
   ["GET", /^\/api\/dashboard\/process\/recent$/, processRecent],
   ["GET", /^\/api\/dashboard\/network\/top-destination-ips$/, networkTopDestinationIps],
@@ -57,36 +114,25 @@ const routes = [
   ["GET", /^\/api\/dashboard\/process-access\/recent$/, processAccessRecent],
   ["GET", /^\/api\/dashboard\/powershell\/volume$/, powershellVolume],
   ["GET", /^\/api\/dashboard\/powershell\/recent$/, powershellRecent],
-  ["GET", /^\/api\/dashboard\/jitter\/summary$/, jitterSummary],
-  ["GET", /^\/api\/dashboard\/jitter\/hosts$/, jitterHosts],
-  ["GET", /^\/api\/dashboard\/chunks\/summary$/, chunksSummary],
-  ["GET", /^\/api\/dashboard\/chunks\/hosts$/, chunksHosts],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap$/, hostsHeatmap],
   ["GET", /^\/api\/dashboard\/registrations\/summary$/, registrationsSummary],
+  ["POST", /^\/api\/dashboard\/admin\/enrollment-tokens$/, enrollmentTokenCreate],
+  ["POST", /^\/api\/dashboard\/admin\/enrolled-devices\/([^/]+)\/revoke$/, enrolledDeviceRevoke],
   ["GET", /^\/api\/dashboard\/dynamic-config\/summary$/, dynamicConfigSummary],
   ["GET", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigPolicies],
   ["GET", /^\/api\/dashboard\/dynamic-config\/agents$/, dynamicConfigAgents],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/config-status$/, dynamicConfigStatus],
   ["GET", /^\/api\/dashboard\/dynamic-config\/audit$/, dynamicConfigAudit],
+  ["GET", /^\/api\/dashboard\/dynamic-config\/catalog$/, dynamicConfigCatalog],
+  ["POST", /^\/api\/dashboard\/dynamic-config\/preview$/, dynamicConfigPreview],
+  ["POST", /^\/api\/dashboard\/dynamic-config\/assignments$/, dynamicConfigAssignPolicy],
   ["POST", /^\/api\/dashboard\/dynamic-config\/policies$/, dynamicConfigUpsertPolicy],
   ["GET", /^\/api\/dashboard\/hosts\/heatmap\/cell$/, hostsHeatmapCell],
   ["GET", /^\/api\/logs\/search$/, logsSearch],
+  ["GET", /^\/api\/alerts$/, alertsList],
+  ["GET", /^\/api\/alerts\/([^/]+)$/, alertDetail],
   ["GET", /^\/api\/logs\/raw\/([^/]+)$/, logsRaw],
-  ["POST", /^\/api\/v1\/enrollment\/start$/, enrollmentStart],
-  ["POST", /^\/api\/v1\/enrollment\/complete$/, enrollmentComplete],
-  ["POST", /^\/api\/v1\/enrollment\/heartbeat$/, enrollmentHeartbeat],
-  ["POST", /^\/api\/v1\/enrollment\/fail$/, enrollmentFail],
-  ["GET", /^\/api\/v1\/admin\/enrollment-tokens$/, adminEnrollmentTokens],
-  ["POST", /^\/api\/v1\/admin\/enrollment-tokens$/, adminEnrollmentTokenCreate],
-  ["GET", /^\/api\/v1\/admin\/devices$/, adminDevices],
-  ["GET", /^\/api\/v1\/admin\/devices\/([^/]+)$/, adminDeviceDetail],
-  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/approve$/, adminDeviceApprove],
-  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/revoke$/, adminDeviceRevoke],
-  ["POST", /^\/api\/v1\/admin\/devices\/([^/]+)\/assign-groups$/, adminDeviceAssignGroups],
-  ["GET", /^\/api\/v1\/admin\/artifacts$/, adminArtifacts],
-  ["POST", /^\/api\/v1\/admin\/artifacts\/build-next$/, adminArtifactBuildNext],
-  ["POST", /^\/api\/v1\/admin\/artifacts\/([^/]+)\/build$/, adminArtifactBuildById],
-  ["POST", /^\/api\/v1\/admin\/artifacts\/([^/]+)\/verify$/, adminArtifactVerify],
-  ["GET", /^\/api\/v1\/artifacts\/([^/]+)\/download$/, artifactDownload],];
+];
 
 const server = http.createServer(async (req, res) => {
   setCors(res);
@@ -107,8 +153,13 @@ const server = http.createServer(async (req, res) => {
 
   try {
     const match = url.pathname.match(route[1]);
-    const body = await readJsonBody(req);
-    await route[2]({ req, url, params: match?.slice(1) || [], body }, res);
+    const ctx = { req, url, params: match?.slice(1) || [], user: null };
+    if (config.dashboardAuthRequired && !isPublicRoute(req.method, url.pathname)) {
+      ctx.user = accountStore.authenticate(bearerToken(req));
+      accountStore.authorize(ctx.user, routePermission(req.method, url.pathname));
+      validateExplicitScopes(ctx.user, url);
+    }
+    await requestContext.run({ user: ctx.user }, () => route[2](ctx, res));
   } catch (error) {
     const status = error.statusCode || 500;
     sendJson(res, status, {
@@ -121,16 +172,127 @@ const server = http.createServer(async (req, res) => {
 server.listen(config.port, () => {
   console.log(`HostEye Dashboard API listening on http://localhost:${config.port}`);
   console.log(`ClickHouse: ${config.clickhouseUrl} database=${config.database}`);
-  console.log(`HostEye registry: ${registryInfo().path}`);
 });
 
+async function authStatus(_ctx, res) {
+  sendJson(res, 200, { required: config.dashboardAuthRequired, permissions: PERMISSION_CATALOG, ...accountStore.status() });
+}
+
+async function authLogin(ctx, res) {
+  const clientKey = loginClientKey(ctx.req);
+  enforceLoginRateLimit(clientKey, res);
+  const body = await readJsonBody(ctx.req);
+  try {
+    const session = accountStore.login(body.username, body.password);
+    loginAttempts.delete(clientKey);
+    sendJson(res, 200, session);
+  } catch (error) {
+    if (error.statusCode === 401) recordFailedLogin(clientKey);
+    throw error;
+  }
+}
+
+async function authLogout(ctx, res) {
+  accountStore.logout(bearerToken(ctx.req));
+  sendJson(res, 200, { status: "logged_out" });
+}
+
+async function authMe(ctx, res) {
+  sendJson(res, 200, { user: accountStore.authenticate(bearerToken(ctx.req)) });
+}
+
+async function adminUsersList(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  sendJson(res, 200, { items: accountStore.list(), actor });
+}
+
+async function adminUsersCreate(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.create(await readJsonBody(ctx.req), actor);
+  sendJson(res, 201, { user });
+}
+
+async function adminUsersUpdate(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.update(ctx.params[0], await readJsonBody(ctx.req), actor);
+  sendJson(res, 200, { user });
+}
+
+async function adminUsersLockState(ctx, res) {
+  const actor = requireAccountAdmin(ctx);
+  const user = accountStore.setLocked(ctx.params[0], ctx.params[1] === "lock", actor);
+  sendJson(res, 200, { user });
+}
+
+function requireAccountAdmin(ctx) {
+  const user = ctx.user || accountStore.authenticate(bearerToken(ctx.req));
+  accountStore.authorize(user, "users:manage");
+  return user;
+}
+
+function isPublicRoute(method, pathname) {
+  return method === "GET" && (pathname === "/api/health" || pathname === "/api/dashboard/auth/status")
+    || method === "POST" && pathname === "/api/dashboard/auth/login";
+}
+
+function routePermission(method, pathname) {
+  if (pathname.startsWith("/api/dashboard/auth/")) return null;
+  if (pathname.startsWith("/api/dashboard/admin/users")) return "users:manage";
+  if (pathname.startsWith("/api/dashboard/admin/enrollment-") || pathname.startsWith("/api/dashboard/admin/enrolled-devices")) return "enrollment:write";
+  if (pathname.startsWith("/api/dashboard/registrations/")) return "enrollment:read";
+  if (pathname.startsWith("/api/dashboard/admin/")) return "operations:admin";
+  if (pathname.startsWith("/api/dashboard/dynamic-config/")) {
+    return method === "GET" || pathname.endsWith("/preview") ? "config:read" : "config:write";
+  }
+  if (pathname.startsWith("/api/alerts")) return "alerts:read";
+  if (pathname.startsWith("/api/dashboard/log-loss/")) return "loss:read";
+  if (pathname.startsWith("/api/logs/") || pathname.startsWith("/api/dashboard/process/")
+    || pathname.startsWith("/api/dashboard/network/") || pathname.startsWith("/api/dashboard/dns/")
+    || pathname.startsWith("/api/dashboard/registry/") || pathname.startsWith("/api/dashboard/file/")
+    || pathname.startsWith("/api/dashboard/process-access/") || pathname.startsWith("/api/dashboard/powershell/")
+    || pathname.startsWith("/api/dashboard/agent-errors")) {
+    return "telemetry:read";
+  }
+  return "dashboard:view";
+}
+
+function validateExplicitScopes(user, url) {
+  assertScopedValue(user, "hosts", url.searchParams.get("host") || url.searchParams.get("machine"));
+  assertScopedValue(user, "agents", url.searchParams.get("agent") || url.searchParams.get("agentId") || url.searchParams.get("agent_id"));
+  assertScopedValue(user, "groups", url.searchParams.get("group") || url.searchParams.get("groupId") || url.searchParams.get("group_id"));
+}
+
+function assertScopedValue(user, dimension, value) {
+  if (!value) return;
+  const allowed = user?.scopes?.[dimension] || [];
+  if (allowed.length && !allowed.includes(value)) {
+    const error = new Error(`${dimension.slice(0, -1)} is outside the authorized scope`);
+    error.statusCode = 403;
+    throw error;
+  }
+}
+
 async function health(_ctx, res) {
-  const rows = await queryRows("SELECT count() AS rows FROM default.windows_system_logs");
+  const result = await queryRows(`
+    SELECT
+      count() AS rows,
+      min(kafka_timestamp) AS firstSeen,
+      max(kafka_timestamp) AS lastSeen,
+      dateDiff('second', max(kafka_timestamp), now()) AS dataAgeSeconds
+    FROM default.windows_system_logs
+  `);
+  const row = result[0] || {};
+  const rows = Number(row.rows || 0);
+  const dataAgeSeconds = rows > 0 ? Math.max(0, Number(row.dataAgeSeconds || 0)) : null;
   sendJson(res, 200, {
     status: "ok",
     clickhouse: config.clickhouseUrl,
     database: config.database,
-    rows: Number(rows[0]?.rows || 0),
+    rows,
+    firstSeen: rows > 0 ? row.firstSeen || null : null,
+    lastSeen: rows > 0 ? row.lastSeen || null : null,
+    dataAgeSeconds,
+    stale: dataAgeSeconds !== null && dataAgeSeconds > 24 * 60 * 60,
   });
 }
 
@@ -147,12 +309,21 @@ async function overviewSummary(ctx, res) {
     FROM default.windows_system_logs
     ${where.sql}
   `);
-  sendJson(res, 200, rows[0] || {});
+  const row = rows[0] || {};
+  const totalEvents = Number(row.totalEvents || 0);
+  sendJson(res, 200, {
+    totalEvents,
+    totalHosts: Number(row.totalHosts || 0),
+    totalChannels: Number(row.totalChannels || 0),
+    totalEventIds: Number(row.totalEventIds || 0),
+    firstSeen: totalEvents > 0 ? row.firstSeen || null : null,
+    lastSeen: totalEvents > 0 ? row.lastSeen || null : null,
+  });
 }
 
 async function overviewLogVolume(ctx, res) {
   const where = timeWhere(ctx.url);
-  const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "second");
+  const bucket = bucketFunction(bucketParam(ctx.url));
   const rows = await queryRows(`
     SELECT
       ${bucket}(kafka_timestamp) AS time,
@@ -218,47 +389,187 @@ async function overviewSecurityTimeline(ctx, res) {
 
 async function hostsSummary(ctx, res) {
   const limit = limitParam(ctx.url, 500, 5000);
-  const rows = await queryRows(`
-    SELECT
-      computer,
-      count() AS totalEvents,
-      min(kafka_timestamp) AS firstSeen,
-      max(kafka_timestamp) AS lastSeen,
-      uniqExact(channel) AS channels,
-      uniqExact(event_id) AS eventIds
-    FROM default.windows_system_logs
-    WHERE computer != ''
-    GROUP BY computer
-    ORDER BY lastSeen DESC
-    LIMIT ${limit}
-  `);
+  const logsWhere = timeWhere(ctx.url, ["computer != ''"]);
+  const metricsWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
+  const host = ctx.url.searchParams.get("host");
+  const hostAgentPredicates = [...scopePredicates()];
+  if (host) hostAgentPredicates.push(`computer = ${sqlString(host)}`);
+  const agentPredicates = hostAgentPredicates.length ? `WHERE ${hostAgentPredicates.join(" AND ")}` : "";
 
-  const hosts = rows.map((row) => {
-    const status = hostStatus(row.lastSeen);
-    return {
-      computer: row.computer,
+  const [logRows, agentRows, metricRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        computer,
+        count() AS totalEvents,
+        min(kafka_timestamp) AS firstSeen,
+        max(kafka_timestamp) AS lastLogSeen,
+        uniqExact(channel) AS channels,
+        uniqExact(event_id) AS eventIds
+      FROM default.windows_system_logs
+      ${logsWhere.sql}
+      GROUP BY computer
+      ORDER BY lastLogSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        agent_id AS agentId,
+        host_id AS hostId,
+        argMax(ci_id, last_seen) AS ciId,
+        computer,
+        min(first_seen) AS agentFirstSeen,
+        max(last_seen) AS agentLastSeen,
+        argMax(shipper_version, last_seen) AS shipperVersion,
+        argMax(status, last_seen) AS agentStatus,
+        argMax(enrollment_status, last_seen) AS enrollmentStatus,
+        argMax(last_chunk_id, last_seen) AS registeredLastChunk,
+        argMax(last_ack_status, last_seen) AS registeredLastAckStatus
+      FROM default.registered_agents
+      ${agentPredicates}
+      GROUP BY agent_id, host_id, computer
+      ORDER BY agentLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, metric_timestamp) AS metricAgentId,
+        argMax(host_id, metric_timestamp) AS metricHostId,
+        argMax(shipper_version, metric_timestamp) AS metricShipperVersion,
+        max(metric_timestamp) AS lastMetricSeen,
+        argMax(chunk_id, metric_timestamp) AS metricLastChunk,
+        argMax(spool_file, metric_timestamp) AS spoolFile,
+        argMax(ack_status, metric_timestamp) AS metricLastAckStatus,
+        argMax(status_code, metric_timestamp) AS statusCode,
+        argMax(success, metric_timestamp) AS success,
+        argMax(data_loss, metric_timestamp) AS dataLoss,
+        argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+        argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+        count() AS uploadSamples
+      FROM default.shipper_runtime_metrics
+      ${metricsWhere.sql}
+      GROUP BY computer
+      ORDER BY lastMetricSeen DESC
+      LIMIT ${limit}
+    `),
+
+  ]);
+
+  const byHost = new Map();
+  const ensureHost = (row) => {
+    const computer = String(row.computer || row.hostId || row.agentId || "").trim();
+    if (!computer) return null;
+    if (!byHost.has(computer)) {
+      byHost.set(computer, {
+        computer,
+        agentId: "",
+        hostId: "",
+        ciId: "",
+        shipperVersion: "",
+        agentStatus: "",
+        enrollmentStatus: "",
+        agentFirstSeen: null,
+        agentLastSeen: null,
+        firstSeen: null,
+        lastLogSeen: null,
+        lastMetricSeen: null,
+        lastSeen: null,
+        lastChunk: "",
+        lastAckStatus: "",
+        statusCode: 0,
+        success: null,
+        dataLoss: false,
+        spoolDepthBytes: 0,
+        pendingFileCount: 0,
+        uploadSamples: 0,
+        totalEvents: 0,
+        channels: 0,
+        eventIds: 0,
+      });
+    }
+    return byHost.get(computer);
+  };
+
+  for (const row of logRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    Object.assign(item, {
+      firstSeen: row.firstSeen || null,
+      lastLogSeen: row.lastLogSeen || null,
       totalEvents: Number(row.totalEvents || 0),
-      firstSeen: row.firstSeen,
-      lastSeen: row.lastSeen,
       channels: Number(row.channels || 0),
       eventIds: Number(row.eventIds || 0),
-      statusLevel: status.level,
-      statusLabel: status.label,
-      ageSeconds: status.ageSeconds,
-    };
-  });
+    });
+  }
 
-  const groups = ["online", "active", "delayed", "stale", "unknown"].map((level) => {
-    const members = hosts.filter((host) => host.statusLevel === level);
-    return {
-      level,
-      label: hostLevelLabel(level),
-      count: members.length,
-      hosts: members.slice(0, 20),
-    };
-  });
+  for (const row of agentRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    if (!item.agentLastSeen || dateValue(row.agentLastSeen) >= dateValue(item.agentLastSeen)) {
+      Object.assign(item, {
+        agentId: row.agentId || item.agentId,
+        hostId: row.hostId || item.hostId,
+        ciId: row.ciId || item.ciId,
+        shipperVersion: row.shipperVersion || item.shipperVersion,
+        agentStatus: row.agentStatus || "",
+        enrollmentStatus: row.enrollmentStatus || "",
+        agentFirstSeen: row.agentFirstSeen || null,
+        agentLastSeen: row.agentLastSeen || null,
+        lastChunk: row.registeredLastChunk || item.lastChunk,
+        lastAckStatus: row.registeredLastAckStatus || item.lastAckStatus,
+      });
+    }
+  }
 
-  sendJson(res, 200, { hosts, groups });
+  for (const row of metricRows) {
+    const item = ensureHost(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: item.agentId || row.metricAgentId || "",
+      hostId: item.hostId || row.metricHostId || "",
+      shipperVersion: item.shipperVersion || row.metricShipperVersion || "",
+      lastMetricSeen: row.lastMetricSeen || null,
+      lastChunk: row.metricLastChunk || row.spoolFile || item.lastChunk,
+      lastAckStatus: row.metricLastAckStatus || item.lastAckStatus,
+      statusCode: Number(row.statusCode || 0),
+      success: row.success === undefined || row.success === null ? null : Number(row.success) === 1,
+      dataLoss: Number(row.dataLoss || 0) === 1,
+      spoolDepthBytes: Number(row.spoolDepthBytes || 0),
+      pendingFileCount: Number(row.pendingFileCount || 0),
+      uploadSamples: Number(row.uploadSamples || 0),
+    });
+  }
+
+  const hosts = [...byHost.values()]
+    .map((item) => {
+      item.lastSeen = latestDate(item.agentLastSeen, item.lastLogSeen, item.lastMetricSeen);
+      const activity = hostStatus(item.lastSeen);
+      const collection = collectionStatus(item, activity.level);
+      return {
+        ...item,
+        statusLevel: activity.level,
+        statusLabel: activity.label,
+        ageSeconds: activity.ageSeconds,
+        collectionLevel: collection.level,
+        collectionLabel: collection.label,
+      };
+    })
+    .sort((left, right) => dateValue(right.lastSeen) - dateValue(left.lastSeen))
+    .slice(0, limit);
+
+  const groups = ["online", "active", "delayed", "stale", "unknown"].map((level) => ({
+    level,
+    label: hostLevelLabel(level),
+    count: hosts.filter((item) => item.statusLevel === level).length,
+    hosts: hosts.filter((item) => item.statusLevel === level).slice(0, 20),
+  }));
+  const collectionGroups = ["ok", "delayed", "failed", "stale", "disabled", "unknown"].map((level) => ({
+    level,
+    label: collectionLevelLabel(level),
+    count: hosts.filter((item) => item.collectionLevel === level).length,
+  }));
+
+  sendJson(res, 200, { hosts, groups, collectionGroups });
 }
 
 async function registeredAgents(ctx, res) {
@@ -284,6 +595,7 @@ async function registeredAgents(ctx, res) {
       argMax(max_events, last_seen) AS maxEvents,
       argMax(max_bytes, last_seen) AS maxBytes
     FROM default.registered_agents
+    ${scopedWhere()}
     GROUP BY agent_id, host_id, computer
     ORDER BY lastSeen DESC
     LIMIT ${limit}
@@ -302,12 +614,1148 @@ async function registeredAgents(ctx, res) {
   });
 }
 
+async function jitterSummary(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const rows = await queryRows(`
+    SELECT
+      count() AS samples,
+      uniqExact(computer) AS hosts,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const worstRows = await queryRows(`
+    SELECT
+      computer,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY p95JitterMs DESC, spoolDepthBytes DESC
+    LIMIT 1
+  `);
+
+  if (Number(rows[0]?.samples || 0) > 0) {
+    sendJson(res, 200, { ...(rows[0] || {}), worstHost: worstRows[0] || null, source: "runtime_metrics" });
+    return;
+  }
+
+  const configured = await queryRows(`
+    SELECT
+      count() AS samples,
+      count() AS hosts,
+      avg(normalJitterWindowMs) AS avgJitterMs,
+      quantile(0.95)(normalJitterWindowMs) AS p95JitterMs,
+      max(normalJitterWindowMs) AS maxJitterMs,
+      max(lastSeen) AS lastSeen
+    FROM (
+      SELECT agent_id,
+        argMax(normal_jitter_window_ms, last_seen) AS normalJitterWindowMs,
+        max(last_seen) AS lastSeen
+      FROM default.registered_agents
+      ${operationalTimeWhere(ctx.url, "last_seen").sql}
+      GROUP BY agent_id
+    )
+  `);
+  const configuredWorst = await queryRows(`
+    SELECT computer, agentId, normalJitterWindowMs AS p95JitterMs, recoveryJitterWindowMs, lastSeen
+    FROM (
+      SELECT agent_id AS agentId,
+        argMax(computer, last_seen) AS computer,
+        argMax(normal_jitter_window_ms, last_seen) AS normalJitterWindowMs,
+        argMax(recovery_jitter_window_ms, last_seen) AS recoveryJitterWindowMs,
+        max(last_seen) AS lastSeen
+      FROM default.registered_agents
+      ${operationalTimeWhere(ctx.url, "last_seen").sql}
+      GROUP BY agent_id
+    )
+    ORDER BY normalJitterWindowMs DESC
+    LIMIT 1
+  `);
+  sendJson(res, 200, { ...(configured[0] || {}), worstHost: configuredWorst[0] || null, source: "registered_config" });
+}
+
+async function jitterHosts(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      anyLast(agent_id) AS agentId,
+      count() AS samples,
+      avg(planned_jitter_ms) AS avgJitterMs,
+      min(planned_jitter_ms) AS minJitterMs,
+      max(planned_jitter_ms) AS maxJitterMs,
+      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
+      avg(batch_size) AS avgBatchSize,
+      max(batch_size) AS maxBatchSize,
+      max(spool_depth_bytes) AS spoolDepthBytes,
+      max(pending_file_count) AS pendingFileCount,
+      max(send_duration_ms) AS maxSendDurationMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  if (rows.length) {
+    sendJson(res, 200, { source: "runtime_metrics", items: rows.map((row) => ({
+      ...row,
+      statusLevel: jitterStatus(row),
+      statusLabel: jitterStatusLabel(jitterStatus(row)),
+    })) });
+    return;
+  }
+
+  const configuredRows = await queryRows(`
+    SELECT
+      argMax(computer, last_seen) AS computer,
+      agent_id AS agentId,
+      count() AS samples,
+      argMax(normal_jitter_window_ms, last_seen) AS avgJitterMs,
+      argMax(normal_jitter_window_ms, last_seen) AS minJitterMs,
+      argMax(normal_jitter_window_ms, last_seen) AS maxJitterMs,
+      argMax(normal_jitter_window_ms, last_seen) AS p95JitterMs,
+      argMax(recovery_jitter_window_ms, last_seen) AS recoveryJitterWindowMs,
+      argMax(max_events, last_seen) AS avgBatchSize,
+      argMax(max_events, last_seen) AS maxBatchSize,
+      0 AS spoolDepthBytes,
+      0 AS pendingFileCount,
+      max(last_seen) AS lastSeen
+    FROM default.registered_agents
+    ${operationalTimeWhere(ctx.url, "last_seen").sql}
+    GROUP BY agent_id
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+  sendJson(res, 200, {
+    source: "registered_config",
+    items: configuredRows.map((row) => ({ ...row, statusLevel: hostStatus(row.lastSeen).level === "stale" ? "silent" : "stable", statusLabel: "Configured window" })),
+  });
+}
+
+async function chunksSummary(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const rows = await queryRows(`
+    SELECT
+      count() AS chunks,
+      uniqExact(computer) AS hosts,
+      sum(batch_size) AS eventsSent,
+      avg(batch_size) AS avgBatchSize,
+      max(spool_depth_bytes) AS maxSpoolDepthBytes,
+      sum(if(success = 1, 1, 0)) AS okChunks,
+      sum(if(success = 0, 1, 0)) AS failedChunks,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+  `);
+
+  const latestRows = await queryRows(`
+    SELECT
+      computer,
+      argMax(spool_file, metric_timestamp) AS spoolFile,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT 1
+  `);
+
+  if (Number(rows[0]?.chunks || 0) > 0) {
+    sendJson(res, 200, { ...(rows[0] || {}), latestChunk: latestRows[0] || null, source: "runtime_metrics" });
+    return;
+  }
+
+  const ingestWhere = operationalTimeWhere(ctx.url, "last_seen");
+  const ingestRows = await queryRows(`
+    SELECT count() AS chunks, uniqExact(computer) AS hosts, sum(eventCount) AS eventsSent,
+      avg(eventCount) AS avgBatchSize, 0 AS maxSpoolDepthBytes,
+      countIf(status IN ('rejected', 'quarantined', 'failed')) AS failedChunks,
+      countIf(status NOT IN ('rejected', 'quarantined', 'failed')) AS okChunks,
+      max(lastSeen) AS lastSeen
+    FROM (
+      SELECT chunk_id, argMax(computer, last_seen) AS computer,
+        argMax(event_count, last_seen) AS eventCount,
+        argMax(status, last_seen) AS status, max(last_seen) AS lastSeen
+      FROM default.ingest_chunks ${ingestWhere.sql}
+      GROUP BY chunk_id
+    )
+  `);
+  const ingestLatest = await queryRows(`
+    SELECT computer, chunk_id AS spoolFile, event_count AS batchSize, status, last_seen AS lastSeen
+    FROM default.ingest_chunks ${ingestWhere.sql}
+    ORDER BY last_seen DESC LIMIT 1
+  `);
+  sendJson(res, 200, { ...(ingestRows[0] || {}), latestChunk: ingestLatest[0] || null, source: "ingest_chunks" });
+}
+
+async function chunksHosts(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "metric_timestamp");
+  const limit = limitParam(ctx.url, 100, 500);
+  const rows = await queryRows(`
+    SELECT
+      computer,
+      argMax(agent_id, metric_timestamp) AS agentId,
+      argMax(spool_file, metric_timestamp) AS lastChunk,
+      argMax(line_offset, metric_timestamp) AS lineOffset,
+      argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
+      argMax(byte_offset, metric_timestamp) AS byteOffset,
+      argMax(next_byte_offset, metric_timestamp) AS nextByteOffset,
+      argMax(batch_size, metric_timestamp) AS batchSize,
+      argMax(batch_bytes, metric_timestamp) AS batchBytes,
+      argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
+      argMax(status_code, metric_timestamp) AS statusCode,
+      argMax(success, metric_timestamp) AS success,
+      argMax(data_loss, metric_timestamp) AS dataLoss,
+      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
+      argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
+      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
+      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
+      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
+      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
+      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
+      argMax(backoff_delay_ms, metric_timestamp) AS backoffDelayMs,
+      argMax(next_retry_at, metric_timestamp) AS nextRetryAt,
+      argMax(lease_id, metric_timestamp) AS leaseId,
+      argMax(lease_expires_at, metric_timestamp) AS leaseExpiresAt,
+      argMax(lease_ttl_seconds, metric_timestamp) AS leaseTtlSeconds,
+      argMax(max_batch_mb, metric_timestamp) AS maxBatchMb,
+      argMax(max_upload_rate_kbps, metric_timestamp) AS maxUploadRateKbps,
+      argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
+      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
+      argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
+      count() AS chunks,
+      sum(batch_size) AS eventsSent,
+      max(metric_timestamp) AS lastSeen
+    FROM default.shipper_runtime_metrics
+    ${where.sql}
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+
+  if (rows.length) {
+    sendJson(res, 200, { source: "runtime_metrics", items: rows.map((row) => ({
+      ...row,
+      statusLevel: chunkStatus(row),
+      statusLabel: chunkStatusLabel(chunkStatus(row)),
+    })) });
+    return;
+  }
+
+  const ingestWhere = operationalTimeWhere(ctx.url, "last_seen");
+  const ingestRows = await queryRows(`
+    SELECT computer, argMax(agentId, chunkLastSeen) AS agentId,
+      argMax(chunkId, chunkLastSeen) AS lastChunk, argMax(status, chunkLastSeen) AS ingestStatus,
+      argMax(eventCount, chunkLastSeen) AS batchSize, count() AS chunks,
+      sum(eventCount) AS eventsSent, max(chunkLastSeen) AS lastSeen
+    FROM (
+      SELECT chunk_id AS chunkId, argMax(computer, last_seen) AS computer,
+        argMax(agent_id, last_seen) AS agentId, argMax(event_count, last_seen) AS eventCount,
+        argMax(status, last_seen) AS status, max(last_seen) AS chunkLastSeen
+      FROM default.ingest_chunks ${ingestWhere.sql}
+      GROUP BY chunk_id
+    )
+    GROUP BY computer
+    ORDER BY lastSeen DESC
+    LIMIT ${limit}
+  `);
+  sendJson(res, 200, {
+    source: "ingest_chunks",
+    items: ingestRows.map((row) => {
+      const failed = ["rejected", "quarantined", "failed"].includes(String(row.ingestStatus || "").toLowerCase());
+      const stale = hostStatus(row.lastSeen).level === "stale";
+      return { ...row, statusCode: failed ? 500 : 200, success: failed ? 0 : 1, dataLoss: failed ? 1 : 0,
+        spoolDepthBytes: 0, plannedJitterMs: 0, sendDurationMs: 0, pendingFileCount: 0,
+        statusLevel: stale ? "stale" : failed ? "failed" : "ok",
+        statusLabel: stale ? "No recent activity" : failed ? "Ingest failed" : String(row.ingestStatus || "Accepted").replaceAll("_", " ") };
+    }),
+  });
+}
+
+async function agentErrorsSummary(ctx, res) {
+  const where = operationalTimeWhere(ctx.url, "reported_at", [], { hostColumn: null });
+  const rows = await queryRowsOptionalTable(`
+    SELECT agent_id,
+      countIf(error_type = 'checksum_invalid') AS checksum_invalid,
+      countIf(error_type = 'event_count_mismatch') AS event_count_mismatch,
+      countIf(error_type = 'missing_fields') AS missing_fields,
+      countIf(error_type = 'schema_invalid') AS schema_invalid,
+      countIf(error_type = 'conflict_409') AS conflict_409,
+      count() AS total, max(reported_at) AS lastReportedAt
+    FROM default.agent_chunk_errors ${where.sql}
+    GROUP BY agent_id ORDER BY total DESC
+  `, "agent_chunk_errors");
+  sendJson(res, 200, { agents: rows, source: "agent_chunk_errors" });
+}
+
+async function agentErrorsList(ctx, res) {
+  const agentId = optionalString(ctx.url, "agent_id", 255);
+  const errorType = optionalString(ctx.url, "error_type", 64);
+  const predicates = [];
+  if (agentId) predicates.push(`agent_id = ${sqlString(agentId)}`);
+  if (errorType) predicates.push(`error_type = ${sqlString(errorType)}`);
+  const where = operationalTimeWhere(ctx.url, "reported_at", predicates, { hostColumn: null });
+  const limit = limitParam(ctx.url, 200, 500);
+  const rows = await queryRowsOptionalTable(`
+    SELECT reported_at, agent_id, chunk_id, error_type, quarantined_at
+    FROM default.agent_chunk_errors ${where.sql}
+    ORDER BY quarantined_at DESC LIMIT ${limit}
+  `, "agent_chunk_errors");
+  sendJson(res, 200, { total: rows.length, errors: rows, source: "agent_chunk_errors" });
+}
+
+async function logLossData(ctx) {
+  const limit = limitParam(ctx.url, 500, 5000);
+  const admissionWhere = operationalTimeWhere(ctx.url, "decided_at", ["computer != ''"]);
+  const chunkWhere = operationalTimeWhere(ctx.url, "last_seen", ["computer != ''", "chunk_id != ''"]);
+  const transportWhere = operationalTimeWhere(ctx.url, "metric_timestamp", ["computer != ''"]);
+  const errorUrl = new URL(ctx.url);
+  errorUrl.searchParams.delete("host");
+  const errorWhere = operationalTimeWhere(errorUrl, "reported_at", ["agent_id != ''"], { hostColumn: null, agentColumn: "agent_id" });
+  const host = ctx.url.searchParams.get("host");
+  const registeredPredicates = [...scopePredicates()];
+  if (host) registeredPredicates.push(`computer = ${sqlString(host)}`);
+  const agentWhere = registeredPredicates.length ? `WHERE ${registeredPredicates.join(" AND ")}` : "";
+
+  const [agentRows, metricRows, chunkRows, transportRows, errorRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, last_seen) AS agentId,
+        argMax(host_id, last_seen) AS hostId,
+        max(last_seen) AS registeredLastSeen
+      FROM default.registered_agents
+      ${agentWhere}
+      GROUP BY computer
+      ORDER BY registeredLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, decided_at) AS agentId,
+        argMax(host_id, decided_at) AS hostId,
+        argMax(loss_metrics_version, decided_at) AS lossMetricsVersion,
+        argMax(collected_event_count, decided_at) AS collectedEventCount,
+        argMax(sent_event_count, decided_at) AS sentEventCount,
+        argMax(pending_event_count, decided_at) AS pendingEventCount,
+        argMax(dropped_event_count, decided_at) AS droppedEventCount,
+        argMax(collected_events_by_source_json, decided_at) AS collectedBySourceJson,
+        argMax(dropped_events_by_source_json, decided_at) AS droppedBySourceJson,
+        argMax(unattributed_dropped_event_count, decided_at) AS unattributedDroppedEventCount,
+        argMax(queue_used_mb, decided_at) AS queueUsedMb,
+        argMax(max_spool_bytes, decided_at) AS maxSpoolBytes,
+        argMax(retry_count, decided_at) AS retryCount,
+        argMax(decision, decided_at) AS admissionDecision,
+        argMax(retry_after_seconds, decided_at) AS retryAfterSeconds,
+        argMax(message, decided_at) AS admissionMessage,
+        max(decided_at) AS metricLastSeen
+      FROM default.admission_decisions
+      ${admissionWhere.sql}
+      GROUP BY computer
+      ORDER BY metricLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        sum(eventCount) AS serverReceivedEvents,
+        count() AS receivedChunks,
+        max(chunkLastSeen) AS serverLastSeen
+      FROM (
+        SELECT
+          computer,
+          chunk_id,
+          argMax(event_count, last_seen) AS eventCount,
+          max(last_seen) AS chunkLastSeen
+        FROM default.ingest_chunks
+        ${chunkWhere.sql}
+        GROUP BY computer, chunk_id
+      )
+      GROUP BY computer
+      ORDER BY serverLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRows(`
+      SELECT
+        computer,
+        argMax(agent_id, metric_timestamp) AS agentId,
+        argMax(status_code, metric_timestamp) AS transportStatusCode,
+        argMax(success, metric_timestamp) AS transportSuccess,
+        argMax(data_loss, metric_timestamp) AS transportDataLoss,
+        argMax(message, metric_timestamp) AS transportMessage,
+        argMax(metric_type, metric_timestamp) AS transportMetricType,
+        max(metric_timestamp) AS transportLastSeen
+      FROM default.shipper_runtime_metrics
+      ${transportWhere.sql}
+      GROUP BY computer
+      ORDER BY transportLastSeen DESC
+      LIMIT ${limit}
+    `),
+    queryRowsOptionalTable(`
+      SELECT
+        agent_id AS agentId,
+        argMax(error_type, reported_at) AS latestErrorType,
+        max(reported_at) AS latestErrorSeen,
+        count() AS errorCount
+      FROM default.agent_chunk_errors
+      ${errorWhere.sql}
+      GROUP BY agentId
+      ORDER BY latestErrorSeen DESC
+      LIMIT ${limit}
+    `, "agent_chunk_errors"),
+  ]);
+
+  const byHost = new Map();
+  const ensure = (row) => {
+    const computer = String(row.computer || row.hostId || row.agentId || "").trim();
+    if (!computer) return null;
+    if (!byHost.has(computer)) {
+      byHost.set(computer, {
+        computer,
+        agentId: "",
+        hostId: "",
+        registeredLastSeen: null,
+        metricLastSeen: null,
+        serverLastSeen: null,
+        transportLastSeen: null,
+        transportStatusCode: null,
+        transportSuccess: null,
+        transportDataLoss: null,
+        transportMessage: "",
+        transportMetricType: "",
+        latestErrorType: "",
+        latestErrorSeen: null,
+        errorCount: 0,
+        generatedEventCount: null,
+        collectedEventCount: null,
+        sentEventCount: null,
+        pendingEventCount: null,
+        droppedEventCount: null,
+        collectedBySource: {},
+        droppedBySource: {},
+        unattributedDroppedEventCount: null,
+        lossRatioPercent: null,
+        ratioCoverage: "unavailable",
+        ratioMessage: "Endpoint has not reported ratio counters yet.",
+        serverReceivedEvents: 0,
+        receivedChunks: 0,
+        queueUsedBytes: null,
+        maxSpoolBytes: null,
+        retryCount: null,
+        admissionDecision: "",
+        retryAfterSeconds: null,
+        admissionMessage: "",
+        atRiskEventCount: null,
+        coverage: "unavailable",
+        coverageMessage: "Endpoint has not reported UC-14 counters yet.",
+      });
+    }
+    return byHost.get(computer);
+  };
+
+  for (const row of agentRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: row.agentId || "",
+      hostId: row.hostId || "",
+      registeredLastSeen: row.registeredLastSeen || null,
+    });
+  }
+
+  for (const row of metricRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    const covered = Number(row.lossMetricsVersion || 0) >= 1;
+    const queueUsedBytes = covered ? Number(row.queueUsedMb || 0) * 1024 * 1024 : null;
+    const maxSpoolBytes = covered ? Number(row.maxSpoolBytes || 0) : null;
+    const pending = covered ? Number(row.pendingEventCount || 0) : null;
+    const pressure = maxSpoolBytes > 0 ? queueUsedBytes / maxSpoolBytes : 0;
+    Object.assign(item, {
+      agentId: item.agentId || row.agentId || "",
+      hostId: item.hostId || row.hostId || "",
+      metricLastSeen: row.metricLastSeen || null,
+      collectedEventCount: covered ? Number(row.collectedEventCount || 0) : null,
+      sentEventCount: covered ? Number(row.sentEventCount || 0) : null,
+      pendingEventCount: pending,
+      droppedEventCount: covered ? Number(row.droppedEventCount || 0) : null,
+      collectedBySource: covered ? parseCounterMap(row.collectedBySourceJson) : {},
+      droppedBySource: covered ? parseCounterMap(row.droppedBySourceJson) : {},
+      unattributedDroppedEventCount: covered ? Number(row.unattributedDroppedEventCount || 0) : null,
+      queueUsedBytes,
+      maxSpoolBytes,
+      retryCount: covered ? Number(row.retryCount || 0) : null,
+      admissionDecision: covered ? String(row.admissionDecision || "") : "",
+      retryAfterSeconds: covered ? Number(row.retryAfterSeconds || 0) : null,
+      admissionMessage: covered ? String(row.admissionMessage || "") : "",
+      atRiskEventCount: covered ? (pressure >= 0.8 ? pending : 0) : null,
+      coverage: covered ? "measured" : "unavailable",
+      coverageMessage: covered
+        ? "Collected, sent, pending, and dropped counters are reported by HostEyeShipper."
+        : "Endpoint uses an older Shipper or has not requested an upload lease in this range.",
+    });
+  }
+
+  for (const row of chunkRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      serverReceivedEvents: Number(row.serverReceivedEvents || 0),
+      receivedChunks: Number(row.receivedChunks || 0),
+      serverLastSeen: row.serverLastSeen || null,
+    });
+  }
+
+  for (const row of transportRows) {
+    const item = ensure(row);
+    if (!item) continue;
+    Object.assign(item, {
+      agentId: item.agentId || row.agentId || "",
+      transportStatusCode: Number(row.transportStatusCode || 0),
+      transportSuccess: Number(row.transportSuccess || 0),
+      transportDataLoss: Number(row.transportDataLoss || 0),
+      transportMessage: row.transportMessage || "",
+      transportMetricType: row.transportMetricType || "",
+      transportLastSeen: row.transportLastSeen || null,
+    });
+  }
+
+  for (const row of errorRows) {
+    const item = [...byHost.values()].find((candidate) => candidate.agentId && candidate.agentId === row.agentId);
+    if (!item) continue;
+    Object.assign(item, {
+      latestErrorType: row.latestErrorType || "",
+      latestErrorSeen: row.latestErrorSeen || null,
+      errorCount: Number(row.errorCount || 0),
+    });
+  }
+
+  return [...byHost.values()]
+    .map((item) => {
+      const ratio = logLossRatio(item, ctx.url);
+      const lastSeen = latestDate(item.metricLastSeen, item.transportLastSeen, item.serverLastSeen, item.registeredLastSeen);
+      const cause = logLossCause({ ...item, lastSeen });
+      const status = logLossStatus(item);
+      const risk = logLossRiskState({ ...item, ...cause, lastSeen });
+      return {
+        ...item,
+        ...ratio,
+        ...cause,
+        lastSeen,
+        statusLevel: status.level,
+        statusLabel: status.label,
+        riskState: risk.state,
+        riskStateLabel: risk.label,
+        riskFlags: risk.flags,
+        generatedAvailability: "unavailable",
+        generatedMessage: "Windows does not expose a trustworthy total generated-event counter to HostEye.",
+      };
+    })
+    .filter((item) => !item.ratioExcluded)
+    .sort((left, right) => dateValue(right.lastSeen) - dateValue(left.lastSeen))
+    .slice(0, limit);
+}
+
+async function logLossSummary(ctx, res) {
+  const items = await logLossData(ctx);
+  const measured = items.filter((item) => item.coverage === "measured");
+  sendJson(res, 200, {
+    hosts: items.length,
+    measuredHosts: measured.length,
+    unavailableHosts: items.length - measured.length,
+    collectedEvents: sumNullable(measured, "collectedEventCount"),
+    sentEvents: sumNullable(measured, "sentEventCount"),
+    pendingEvents: sumNullable(measured, "pendingEventCount"),
+    droppedEvents: sumNullable(measured, "droppedEventCount"),
+    ratioCollectedEvents: sumNullable(measured.filter((item) => item.ratioCoverage !== "unavailable"), "ratioCollectedEventCount"),
+    ratioDroppedEvents: sumNullable(measured.filter((item) => item.ratioCoverage !== "unavailable"), "ratioDroppedEventCount"),
+    lossRatioPercent: weightedLossRatio(measured),
+    ratioMeasuredHosts: measured.filter((item) => item.ratioCoverage === "measured").length,
+    ratioPartialHosts: measured.filter((item) => item.ratioCoverage === "partial").length,
+    causeCounts: countBy(items, (item) => item.causeCode).map(({ key, count }) => ({ code: key, label: causeLabel(key), count })),
+    affectedHosts: items.filter((item) => item.causeLevel === "failed" || item.causeLevel === "delayed").length,
+    unknownCauseHosts: items.filter((item) => item.causeCode === "insufficient_evidence").length,
+    atRiskEvents: sumNullable(measured, "atRiskEventCount"),
+    serverReceivedEvents: items.reduce((sum, item) => sum + Number(item.serverReceivedEvents || 0), 0),
+    generatedEvents: null,
+    generatedAvailability: "unavailable",
+    generatedMessage: "HostEye does not estimate events generated by Windows without source instrumentation.",
+  });
+}
+
+async function adminLossAlertThresholdsGet(_ctx, res) {
+  const result = readLossAlertThresholds();
+  sendJson(res, 200, result);
+}
+
+async function adminLossAlertThresholdsPut(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const values = normalizeLossAlertThresholdValues(body, 400);
+  const current = readLossAlertThresholds().policy;
+  const updatedBy = String(body.updatedBy || "dashboard-admin").trim();
+  if (!updatedBy || updatedBy.length > 100) badRequest("updatedBy must be between 1 and 100 characters");
+  const policy = {
+    ...values,
+    version: Number(current.version || 0) + 1,
+    updatedAt: new Date().toISOString(),
+    updatedBy,
+  };
+  persistLossAlertThresholds(policy);
+  sendJson(res, 200, { policy, source: "file" });
+}
+
+async function adminFleetLogLoss(ctx, res) {
+  const top = limitParam(ctx.url, 10, 50, "top");
+  const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
+  const dataUrl = new URL(ctx.url);
+  dataUrl.searchParams.delete("top");
+  dataUrl.searchParams.delete("riskState");
+  dataUrl.searchParams.set("limit", "5000");
+
+  const rawItems = await logLossData({ ...ctx, url: dataUrl });
+  const byIdentity = new Map();
+  for (const item of rawItems) {
+    const identity = String(item.hostId || item.agentId || item.computer || "").toLowerCase();
+    const current = byIdentity.get(identity);
+    if (!current || dateValue(item.lastSeen) > dateValue(current.lastSeen)) byIdentity.set(identity, item);
+  }
+  const items = [...byIdentity.values()];
+  const measured = items.filter((item) => item.coverage === "measured");
+  const hasOperationalRisk = (item) => (item.riskFlags || [])
+    .some((flag) => ["interrupted", "backlog", "disconnected", "at_risk"].includes(flag));
+  const focused = (riskState
+    ? items.filter((item) => (item.riskFlags || []).includes(riskState))
+    : items.filter(hasOperationalRisk))
+    .sort((left, right) => {
+      const priority = { disconnected: 6, interrupted: 5, at_risk: 4, backlog: 3, unknown: 2, normal: 1 };
+      return (priority[right.riskState] || 0) - (priority[left.riskState] || 0)
+        || Number(right.droppedEventCount || 0) - Number(left.droppedEventCount || 0)
+        || Number(right.atRiskEventCount || 0) - Number(left.atRiskEventCount || 0)
+        || Number(right.pendingEventCount || 0) - Number(left.pendingEventCount || 0)
+        || dateValue(right.lastSeen) - dateValue(left.lastSeen);
+    });
+
+  const flagCount = (flag) => items.filter((item) => (item.riskFlags || []).includes(flag)).length;
+  const riskDistribution = ["disconnected", "interrupted", "at_risk", "backlog", "normal", "unknown"].map((state) => ({
+    state,
+    label: logLossRiskStateLabel(state),
+    hosts: items.filter((item) => item.riskState === state).length,
+  }));
+  const measuredRatioHosts = measured.filter((item) => item.ratioCoverage !== "unavailable");
+
+  sendJson(res, 200, {
+    scope: {
+      host: ctx.url.searchParams.get("host") || "",
+      from: dateParam(ctx.url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)).toISOString(),
+      to: dateParam(ctx.url, "to", new Date()).toISOString(),
+      riskState: riskState || "",
+    },
+    summary: {
+      hosts: items.length,
+      sourceRows: rawItems.length,
+      duplicateRowsCollapsed: rawItems.length - items.length,
+      measuredHosts: measured.length,
+      unavailableHosts: items.length - measured.length,
+      measurementCoveragePercent: items.length ? Number((measured.length / items.length * 100).toFixed(2)) : 0,
+      affectedHosts: items.filter(hasOperationalRisk).length,
+      disconnectedHosts: flagCount("disconnected"),
+      interruptedHosts: flagCount("interrupted"),
+      atRiskHosts: flagCount("at_risk"),
+      backlogHosts: flagCount("backlog"),
+      collectedEvents: sumNullable(measured, "collectedEventCount"),
+      ackedEvents: sumNullable(measured, "sentEventCount"),
+      pendingEvents: sumNullable(measured, "pendingEventCount"),
+      atRiskEvents: sumNullable(measured, "atRiskEventCount"),
+      droppedEvents: sumNullable(measured, "droppedEventCount"),
+      gatewayReceivedEvents: items.reduce((sum, item) => sum + Number(item.serverReceivedEvents || 0), 0),
+      lossRatioPercent: weightedLossRatio(measured),
+      ratioMeasuredHosts: measuredRatioHosts.length,
+      generatedEvents: null,
+      generatedAvailability: "unavailable",
+    },
+    riskDistribution,
+    focusTotal: focused.length,
+    topHosts: focused.slice(0, top).map((item) => ({
+      computer: item.computer,
+      agentId: item.agentId,
+      hostId: item.hostId,
+      riskState: item.riskState,
+      riskStateLabel: item.riskStateLabel,
+      riskFlags: item.riskFlags,
+      causeLabel: item.causeLabel,
+      coverage: item.coverage,
+      collectedEventCount: item.collectedEventCount,
+      sentEventCount: item.sentEventCount,
+      pendingEventCount: item.pendingEventCount,
+      atRiskEventCount: item.atRiskEventCount,
+      droppedEventCount: item.droppedEventCount,
+      lossRatioPercent: item.lossRatioPercent,
+      lastSeen: item.lastSeen,
+    })),
+    basis: "The fleet view is unified by Agent/Host ID and uses only HostEyeShipper counters, durable upload evidence, and gateway commits. Endpoints without counters remain unmeasured.",
+  });
+}
+
+async function logLossHosts(ctx, res) {
+  const machine = optionalString(ctx.url, "machine", 255);
+  const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
+  let items = await logLossData(ctx);
+  if (machine) {
+    const needle = machine.toLowerCase();
+    items = items.filter((item) => [item.computer, item.agentId, item.hostId]
+      .some((value) => String(value || "").toLowerCase().includes(needle)));
+  }
+  if (riskState) items = items.filter((item) => (item.riskFlags || []).includes(riskState));
+  sendJson(res, 200, { items, filters: { machine: machine || "", riskState: riskState || "" } });
+}
+
+async function logLossExport(ctx, res) {
+  optionalEnum(ctx.url, "format", ["csv"]);
+  const machine = optionalString(ctx.url, "machine", 255);
+  const riskState = optionalEnum(ctx.url, "riskState", ["normal", "interrupted", "backlog", "disconnected", "at_risk", "unknown"]);
+  const exportUrl = new URL(ctx.url);
+  exportUrl.searchParams.set("limit", "5000");
+  let items = await logLossData({ ...ctx, url: exportUrl });
+  if (machine) {
+    const needle = machine.toLowerCase();
+    items = items.filter((item) => [item.computer, item.agentId, item.hostId]
+      .some((value) => String(value || "").toLowerCase().includes(needle)));
+  }
+  if (riskState) items = items.filter((item) => (item.riskFlags || []).includes(riskState));
+
+  const from = dateParam(ctx.url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(ctx.url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const generatedAt = new Date();
+  const channel = optionalString(ctx.url, "channel", 255) || "";
+  const eventId = optionalString(ctx.url, "eventId", 64) || "";
+  const agent = optionalString(ctx.url, "agent", 255) || "";
+  const headers = [
+    "report_generated_at", "range_from", "range_to", "selected_machine", "selected_agent",
+    "selected_channel", "selected_event_id", "selected_risk_state", "computer", "agent_id", "host_id",
+    "evidence_status", "risk_state", "risk_label", "risk_flags", "collection_status", "cause_code", "cause_label",
+    "last_evidence_at", "collected_events", "acked_events", "pending_events", "at_risk_events", "quota_dropped_events",
+    "filtered_collected_events", "filtered_dropped_events", "loss_ratio_percent", "gateway_received_events",
+    "coverage", "ratio_coverage", "coverage_note", "cause_evidence",
+  ];
+  const rows = items.map((item) => {
+    const measured = item.coverage === "measured";
+    const evidenceStatus = item.riskState === "normal" ? "normal"
+      : item.riskState === "unknown" ? "insufficient_evidence" : "requires_attention";
+    return [
+      generatedAt.toISOString(), from.toISOString(), to.toISOString(), machine || "", agent, channel, eventId, riskState || "",
+      item.computer, item.agentId, item.hostId, evidenceStatus, item.riskState, item.riskStateLabel,
+      (item.riskFlags || []).join("|"), item.statusLabel, item.causeCode, item.causeLabel, item.lastSeen,
+      measured ? item.collectedEventCount : null, measured ? item.sentEventCount : null,
+      measured ? item.pendingEventCount : null, measured ? item.atRiskEventCount : null, measured ? item.droppedEventCount : null,
+      item.ratioCoverage === "unavailable" ? null : item.ratioCollectedEventCount,
+      item.ratioCoverage === "unavailable" ? null : item.ratioDroppedEventCount,
+      item.lossRatioPercent, item.serverReceivedEvents, item.coverage, item.ratioCoverage,
+      item.ratioMessage || item.coverageMessage, item.causeEvidence,
+    ];
+  });
+  const stamp = generatedAt.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  sendCsv(res, `hosteye-log-loss-${stamp}.csv`, headers, rows);
+}
+async function logLossHostDetail(ctx, res) {
+  const machine = requiredString(ctx.url, "machine");
+  if (machine.length > 255) badRequest("machine must be at most 255 characters");
+  const agent = optionalString(ctx.url, "agent", 255);
+  const thresholdMinutes = ctx.url.searchParams.has("thresholdMinutes")
+    ? uintParam(ctx.url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
+    : readLossAlertThresholds().policy.interruptionMinutes;
+  if (thresholdMinutes < 5 || thresholdMinutes > 1440) badRequest("thresholdMinutes must be between 5 and 1440");
+
+  const dataUrl = new URL(ctx.url);
+  dataUrl.searchParams.delete("host");
+  dataUrl.searchParams.delete("machine");
+  for (const name of ["machine", "riskState", "channel", "eventId"]) dataUrl.searchParams.delete(name);
+  dataUrl.searchParams.set("limit", "500");
+  const candidates = await logLossData({ ...ctx, url: dataUrl });
+  const matchingAgent = agent ? candidates.filter((item) => String(item.agentId || "") === agent) : candidates;
+  const item = matchingAgent.find((candidate) => String(candidate.computer || "") === machine)
+    || matchingAgent.find((candidate) => String(candidate.computer || "").toLowerCase() === machine.toLowerCase());
+  if (!item) return sendJson(res, 404, { message: "Host log-loss detail not found" });
+
+  const interruptionUrl = new URL(ctx.url);
+  interruptionUrl.searchParams.set("host", item.computer);
+  for (const name of ["machine", "agent", "riskState", "channel", "eventId"]) interruptionUrl.searchParams.delete(name);
+  interruptionUrl.searchParams.set("thresholdMinutes", String(thresholdMinutes));
+  interruptionUrl.searchParams.set("limit", "500");
+  const interruptionData = await logLossInterruptionData(interruptionUrl);
+  const interruptions = (interruptionData.items || []).filter((entry) => String(entry.computer || "").toLowerCase() === String(item.computer || "").toLowerCase());
+  const ongoing = interruptions.find((entry) => entry.status === "ongoing") || null;
+  const latest = interruptions[0] || null;
+  const sourceBreakdown = logLossSourceBreakdown(item);
+  const firstStartedAt = interruptions.length
+    ? interruptions.reduce((earliest, entry) => dateValue(entry.startedAt) < dateValue(earliest) ? entry.startedAt : earliest, interruptions[0].startedAt)
+    : null;
+  const recovery = ongoing
+    ? { status: "ongoing", label: "Not recovered", observedAt: ongoing.startedAt }
+    : latest?.status === "recovered"
+      ? { status: "recovered", label: "Recovered", observedAt: latest.endedAt }
+      : item.riskState === "normal"
+        ? { status: "stable", label: "No active incident", observedAt: item.lastSeen }
+        : { status: "unknown", label: "Insufficient evidence", observedAt: item.lastSeen };
+
+  sendJson(res, 200, {
+    host: item,
+    loss: {
+      generatedEventCount: null,
+      generatedAvailability: "unavailable",
+      recordedDroppedEventCount: item.droppedEventCount,
+      pendingEventCount: item.pendingEventCount,
+      atRiskEventCount: item.atRiskEventCount,
+      collectedEventCount: item.collectedEventCount,
+      sentEventCount: item.sentEventCount,
+      lossRatioPercent: item.lossRatioPercent,
+      coverage: item.coverage,
+      message: item.coverage === "measured"
+        ? "Dropped logs include only events that HostEyeShipper recorded as discarded while enforcing its quota; this does not infer the total number of missing Windows events."
+        : item.coverageMessage,
+    },
+    affectedPeriod: {
+      startedAt: firstStartedAt,
+      endedAt: ongoing ? null : latest?.endedAt || null,
+      interruptionCount: interruptions.length,
+      totalDurationSeconds: interruptions.reduce((sum, entry) => sum + Number(entry.durationSeconds || 0), 0),
+      thresholdMinutes,
+      basis: interruptionData.basis,
+    },
+    recovery,
+    sourceCoverage: item.coverage === "measured"
+      ? (Number(item.unattributedDroppedEventCount || 0) > 0 ? "partial" : "measured")
+      : "unavailable",
+    affectedSources: sourceBreakdown.filter((source) => source.droppedEventCount > 0),
+    sourceBreakdown,
+    interruptions,
+  });
+}
+
+function logLossSourceBreakdown(item) {
+  const keys = new Set([...Object.keys(item.collectedBySource || {}), ...Object.keys(item.droppedBySource || {})]);
+  return [...keys].map((key) => {
+    const separator = key.indexOf("\u001f");
+    const channel = separator >= 0 ? key.slice(0, separator) : key;
+    const eventId = separator >= 0 ? key.slice(separator + 1) : "";
+    const collectedEventCount = Number(item.collectedBySource?.[key] || 0);
+    const droppedEventCount = Number(item.droppedBySource?.[key] || 0);
+    return {
+      channel,
+      eventId,
+      collectedEventCount,
+      droppedEventCount,
+      lossRatioPercent: collectedEventCount > 0
+        ? Number((droppedEventCount * 100 / collectedEventCount).toFixed(4))
+        : (droppedEventCount === 0 ? 0 : null),
+    };
+  }).sort((left, right) => right.droppedEventCount - left.droppedEventCount
+    || right.collectedEventCount - left.collectedEventCount
+    || left.channel.localeCompare(right.channel));
+}
+async function logLossRetryBacklog(ctx, res) {
+  const retryUrl = new URL(ctx.url);
+  retryUrl.searchParams.delete("channel");
+  retryUrl.searchParams.delete("eventId");
+  const measured = (await logLossData({ ...ctx, url: retryUrl })).filter((item) => item.coverage === "measured");
+  const items = measured
+    .filter((item) => Number(item.pendingEventCount || 0) > 0)
+    .map((item) => ({ ...item, ...retryBacklogStatus(item) }))
+    .sort((left, right) => Number(right.pendingEventCount || 0) - Number(left.pendingEventCount || 0));
+
+  sendJson(res, 200, {
+    summary: {
+      backlogHosts: items.length,
+      pendingEvents: sumNullable(items, "pendingEventCount"),
+      pendingBytes: sumNullable(items, "queueUsedBytes"),
+      resendingHosts: items.filter((item) => item.retryStatus === "resending").length,
+      waitingHosts: items.filter((item) => item.retryStatus === "waiting_connection").length,
+      backpressureHosts: items.filter((item) => item.retryStatus === "backpressure").length,
+      measuredHosts: measured.length,
+    },
+    items,
+    basis: "Pending event and spool counters reported directly by HostEyeShipper through upload admission.",
+  });
+}
+
+async function logLossAlerts(ctx, res) {
+  const configured = readLossAlertThresholds();
+  const rawThreshold = ctx.url.searchParams.get("thresholdPercent");
+  const thresholdPercent = rawThreshold === null || rawThreshold === ""
+    ? configured.policy.lossRatioPercent
+    : Number(rawThreshold);
+  if (!Number.isFinite(thresholdPercent) || thresholdPercent < 0 || thresholdPercent > 100) {
+    badRequest("thresholdPercent must be a number between 0 and 100");
+  }
+  const thresholds = { ...configured.policy, lossRatioPercent: thresholdPercent };
+
+  const items = operationalLossAlerts(await logLossData(ctx), thresholds)
+    .sort((left, right) => dateValue(right.detectedAt) - dateValue(left.detectedAt));
+  const affectedHosts = new Set(items.map((item) => String(item.computer || "").toLowerCase()).filter(Boolean)).size;
+  sendJson(res, 200, {
+    summary: {
+      total: items.length,
+      critical: items.filter((item) => item.severity === "critical").length,
+      high: items.filter((item) => item.severity === "high").length,
+      affectedHosts,
+    },
+    thresholdPercent,
+    thresholds,
+    thresholdSource: rawThreshold === null || rawThreshold === "" ? configured.source : "query_override",
+    items,
+    basis: "Alerts use the saved Admin thresholds and only measured Shipper counters, transport failures, backlog, and observed endpoint silence.",
+  });
+}
+
+function operationalLossAlerts(rows, thresholds) {
+  const alerts = [];
+  for (const row of rows) {
+    if (row.coverage === "measured" && row.lossRatioPercent !== null && Number(row.lossRatioPercent) >= thresholds.lossRatioPercent && Number(row.droppedEventCount || 0) > 0) {
+      const ratio = Number(row.lossRatioPercent);
+      alerts.push({
+        alertId: `loss:HE-LOSS-001:${row.computer}`,
+        detectedAt: row.metricLastSeen || row.lastSeen,
+        severity: ratio >= 5 ? "critical" : "high",
+        ruleId: "HE-LOSS-001",
+        title: "Log loss ratio exceeded threshold",
+        status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "loss_threshold", evidenceCount: 1,
+        message: `${row.droppedEventCount} event(s) were dropped; measured loss ratio ${ratio.toFixed(4)}% exceeds ${thresholds.lossRatioPercent.toFixed(4)}%.`,
+        observedAt: row.metricLastSeen || row.lastSeen,
+      });
+    }
+    if (row.coverage === "measured" && Number(row.pendingEventCount || 0) >= thresholds.backlogEvents) {
+      const pending = Number(row.pendingEventCount || 0);
+      alerts.push({
+        alertId: `loss:HE-BACKLOG-001:${row.computer}`,
+        detectedAt: row.metricLastSeen || row.lastSeen,
+        severity: pending >= thresholds.backlogEvents * 5 ? "critical" : "high",
+        ruleId: "HE-BACKLOG-001",
+        title: "Retry backlog exceeded threshold",
+        status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "retry_backlog_threshold", evidenceCount: 1,
+        message: `${pending} event(s) are waiting in durable spool; configured threshold is ${thresholds.backlogEvents}.`,
+        observedAt: row.metricLastSeen || row.lastSeen,
+      });
+    }
+    const disconnectedMinutes = row.transportLastSeen
+      ? Math.max(0, (Date.now() - dateValue(row.transportLastSeen)) / 60000)
+      : null;
+    if (Number(row.transportStatusCode || 0) === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen
+      && disconnectedMinutes >= thresholds.disconnectMinutes) {
+      alerts.push({
+        alertId: `loss:HE-CONN-001:${row.computer}`,
+        detectedAt: row.transportLastSeen, severity: "high", ruleId: "HE-CONN-001",
+        title: "Endpoint upload connection lost", status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "connection_lost", evidenceCount: 1,
+        message: `${row.transportMessage || "HostEyeShipper could not reach the upload path."} Disconnection threshold: ${thresholds.disconnectMinutes} minute(s).`,
+        observedAt: row.transportLastSeen,
+      });
+    }
+    if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > thresholds.interruptionMinutes * 60 * 1000) {
+      alerts.push({
+        alertId: `loss:HE-COLL-001:${row.computer}`,
+        detectedAt: row.lastSeen, severity: "high", ruleId: "HE-COLL-001",
+        title: "Endpoint collection evidence interrupted", status: "new",
+        computer: row.computer, agentId: row.agentId, hostId: row.hostId,
+        category: "collection_interruption", evidenceCount: 1,
+        message: `No Agent, Shipper, gateway, or registration evidence was observed for more than ${thresholds.interruptionMinutes} minutes.`,
+        observedAt: row.lastSeen,
+      });
+    }
+  }
+  const deduped = new Map();
+  for (const alert of alerts) {
+    const key = `${alert.ruleId}|${String(alert.computer || "").toLowerCase()}`;
+    const current = deduped.get(key);
+    if (!current || dateValue(alert.detectedAt) > dateValue(current.detectedAt)) deduped.set(key, alert);
+  }
+  return [...deduped.values()];
+}
+
+async function logLossInterruptions(ctx, res) {
+  sendJson(res, 200, await logLossInterruptionData(ctx.url));
+}
+
+async function logLossInterruptionData(url) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+
+  const thresholdMinutes = url.searchParams.has("thresholdMinutes")
+    ? uintParam(url.searchParams.get("thresholdMinutes"), "thresholdMinutes")
+    : readLossAlertThresholds().policy.interruptionMinutes;
+  if (thresholdMinutes < 5 || thresholdMinutes > 1440) {
+    badRequest("thresholdMinutes must be between 5 and 1440");
+  }
+
+  const status = (optionalString(url, "status", 32) || "").toLowerCase();
+  if (status && !["ongoing", "recovered"].includes(status)) {
+    badRequest("status must be one of: ongoing, recovered");
+  }
+
+  const host = optionalString(url, "host", 255);
+  const agent = optionalString(url, "agent", 255);
+  const limit = limitParam(url, 500, 5000);
+  const signalLimit = 100000;
+  const sourceFilter = (timestampColumn) => {
+    const predicates = [`${timestampColumn} <= ${sqlDate(to)}`, "computer != ''", ...scopePredicates()];
+    if (host) predicates.push(`computer = ${sqlString(host)}`);
+    if (agent) predicates.push(`agent_id = ${sqlString(agent)}`);
+    return `WHERE ${predicates.join(" AND ")}`;
+  };
+
+  const rows = await queryRows(`
+    WITH activity AS (
+      SELECT computer, agent_id AS agentId, metric_timestamp AS signalAt, 'shipper_metric' AS source
+      FROM default.shipper_runtime_metrics
+      ${sourceFilter("metric_timestamp")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, decided_at AS signalAt, 'admission' AS source
+      FROM default.admission_decisions
+      ${sourceFilter("decided_at")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, last_seen AS signalAt, 'gateway_chunk' AS source
+      FROM default.ingest_chunks
+      ${sourceFilter("last_seen")}
+      UNION ALL
+      SELECT computer, agent_id AS agentId, last_seen AS signalAt, 'registration' AS source
+      FROM default.registered_agents
+      ${sourceFilter("last_seen")}
+    ), scoped_activity AS (
+      SELECT computer, agentId, signalAt, source
+      FROM activity
+      WHERE signalAt >= ${sqlDate(from)}
+      UNION ALL
+      SELECT
+        computer,
+        argMax(agentId, signalAt) AS agentId,
+        max(signalAt) AS baselineSignalAt,
+        argMax(source, signalAt) AS source
+      FROM activity
+      WHERE signalAt < ${sqlDate(from)}
+      GROUP BY computer
+    )
+    SELECT
+      computer,
+      argMax(agentId, signalAt) AS agentId,
+      toUnixTimestamp64Milli(max(signalAt)) AS activitySignalUnixMs,
+      groupUniqArray(source) AS evidenceSources
+    FROM scoped_activity
+    GROUP BY computer, toStartOfMinute(signalAt)
+    ORDER BY computer ASC, activitySignalUnixMs ASC
+    LIMIT ${signalLimit}
+  `);
+
+  const thresholdMs = thresholdMinutes * 60 * 1000;
+  const fromMs = from.getTime();
+  const toMs = to.getTime();
+  const byHost = new Map();
+  for (const row of rows) {
+    const computer = String(row.computer || "").trim();
+    const signalMs = Number(row.activitySignalUnixMs || 0);
+    if (!computer || !signalMs) continue;
+    const hostKey = computer.toLocaleLowerCase();
+    if (!byHost.has(hostKey)) byHost.set(hostKey, []);
+    byHost.get(hostKey).push({
+      computer,
+      agentId: row.agentId || "",
+      signalAt: new Date(signalMs).toISOString(),
+      signalMs,
+      evidenceSources: Array.isArray(row.evidenceSources) ? row.evidenceSources : [],
+    });
+  }
+
+  const interruptions = [];
+  for (const signals of byHost.values()) {
+    signals.sort((left, right) => left.signalMs - right.signalMs);
+    for (let index = 1; index < signals.length; index += 1) {
+      const previous = signals[index - 1];
+      const current = signals[index];
+      const startedMs = previous.signalMs + thresholdMs;
+      if (current.signalMs <= startedMs || current.signalMs < fromMs || startedMs > toMs) continue;
+      interruptions.push(interruptionRecord(previous, current, startedMs, current.signalMs, "recovered", thresholdMinutes));
+    }
+
+    const latest = signals[signals.length - 1];
+    const ongoingStartedMs = latest.signalMs + thresholdMs;
+    if (ongoingStartedMs <= toMs && toMs >= fromMs) {
+      interruptions.push(interruptionRecord(latest, null, ongoingStartedMs, toMs, "ongoing", thresholdMinutes));
+    }
+  }
+
+  const filtered = interruptions
+    .filter((item) => !status || item.status === status)
+    .sort((left, right) => dateValue(right.startedAt) - dateValue(left.startedAt));
+  const affectedHosts = new Set(filtered.map((item) => item.computer.toLocaleLowerCase())).size;
+
+  return {
+    thresholdMinutes,
+    basis: "Silence intervals are derived from observed Shipper metrics, admission decisions, gateway chunks, and registration evidence.",
+    coverageTruncated: rows.length >= signalLimit,
+    summary: {
+      interruptions: filtered.length,
+      ongoing: filtered.filter((item) => item.status === "ongoing").length,
+      recovered: filtered.filter((item) => item.status === "recovered").length,
+      affectedHosts,
+    },
+    items: filtered.slice(0, limit),
+  };
+}
+
+function interruptionRecord(previous, current, startedMs, endedMs, status, thresholdMinutes) {
+  const evidenceSources = [...new Set([
+    ...(previous.evidenceSources || []),
+    ...(current?.evidenceSources || []),
+  ])];
+  return {
+    computer: current?.computer || previous.computer,
+    agentId: current?.agentId || previous.agentId || "",
+    startedAt: new Date(startedMs).toISOString(),
+    endedAt: status === "recovered" ? new Date(endedMs).toISOString() : null,
+    durationSeconds: Math.max(0, Math.floor((endedMs - startedMs) / 1000)),
+    status,
+    statusLabel: status === "recovered" ? "Recovered" : "Ongoing",
+    lastEvidenceAt: previous.signalAt,
+    recoveryEvidenceAt: current?.signalAt || null,
+    evidenceSources,
+    evidenceMessage: status === "recovered"
+      ? `No operational evidence was observed for more than ${thresholdMinutes} minutes; later evidence confirmed recovery.`
+      : `No operational evidence has been observed for more than ${thresholdMinutes} minutes as of the selected end time.`,
+  };
+}
+
 async function processTopProcesses(ctx, res) {
-  const processPath = processImageExpr();
-  const where = timeWhere(ctx.url, [`${processPath} != ''`]);
+  const where = timeWhere(ctx.url, ["process_path != ''"]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT ${processPath} AS processPath, count() AS volume
+    SELECT process_path AS processPath, count() AS volume
     FROM default.process_events
     ${where.sql}
     GROUP BY processPath
@@ -327,11 +1775,11 @@ async function processRecent(ctx, res) {
       event_type AS eventType,
       event_id AS eventId,
       user_name AS userName,
-      ${processImageExpr()} AS processPath,
-      ${fieldExpr('parent_process_path', 'ParentImage')} AS parentProcessPath,
-      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
-      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
-      ${fieldExpr('parent_process_guid', 'ParentProcessGuid')} AS parentProcessGuid
+      process_path AS processPath,
+      parent_process_path AS parentProcessPath,
+      left(command_line, 800) AS commandLine,
+      process_guid AS processGuid,
+      parent_process_guid AS parentProcessGuid
     FROM default.process_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -341,11 +1789,10 @@ async function processRecent(ctx, res) {
 }
 
 async function networkTopDestinationIps(ctx, res) {
-  const destinationIp = fieldExpr("destination_ip", "DestinationIp");
-  const where = timeWhere(ctx.url, [`${destinationIp} != ''`]);
+  const where = timeWhere(ctx.url, ["destination_ip != ''"]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT ${destinationIp} AS destinationIp, count() AS volume
+    SELECT destination_ip AS destinationIp, count() AS volume
     FROM default.network_events
     ${where.sql}
     GROUP BY destinationIp
@@ -362,15 +1809,15 @@ async function networkRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
-      ${processImageExpr()} AS processPath,
-      ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
-      ${uintFieldExpr("source_port", "SourcePort")} AS sourcePort,
-      ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
-      ${uintFieldExpr("destination_port", "DestinationPort")} AS destinationPort,
-      ${fieldExpr('protocol', 'Protocol')} AS protocol,
-      ${fieldExpr('initiated', 'Initiated')} AS initiated
+      user_name AS userName,
+      process_guid AS processGuid,
+      process_path AS processPath,
+      source_ip AS sourceIp,
+      source_port AS sourcePort,
+      destination_ip AS destinationIp,
+      destination_port AS destinationPort,
+      protocol,
+      initiated
     FROM default.network_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -380,11 +1827,10 @@ async function networkRecent(ctx, res) {
 }
 
 async function dnsTopDomains(ctx, res) {
-  const dnsQuery = fieldExpr("dns_query", "QueryName");
-  const where = timeWhere(ctx.url, [`${dnsQuery} != ''`]);
+  const where = timeWhere(ctx.url, ["dns_query != ''"]);
   const limit = limitParam(ctx.url, 50, 200);
   const rows = await queryRows(`
-    SELECT ${dnsQuery} AS domain, count() AS volume
+    SELECT dns_query AS domain, count() AS volume
     FROM default.dns_events
     ${where.sql}
     GROUP BY domain
@@ -401,11 +1847,11 @@ async function dnsRecent(ctx, res) {
     SELECT
       kafka_timestamp AS time,
       computer,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${fieldExpr('process_guid', 'ProcessGuid')} AS processGuid,
-      ${processImageExpr()} AS processPath,
-      ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
-      ${fieldExpr('query_status', 'QueryStatus')} AS queryStatus
+      user_name AS userName,
+      process_guid AS processGuid,
+      process_path AS processPath,
+      dns_query AS dnsQuery,
+      query_status AS queryStatus
     FROM default.dns_events
     ${where.sql}
     ORDER BY kafka_timestamp DESC
@@ -423,9 +1869,9 @@ async function registryRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${processImageExpr()} AS processPath,
-      ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
+      user_name AS userName,
+      process_path AS processPath,
+      target_object AS targetObject,
       left(message, 300) AS message
     FROM default.registry_events
     ${where.sql}
@@ -444,10 +1890,10 @@ async function fileRecent(ctx, res) {
       computer,
       event_type AS eventType,
       event_id AS eventId,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${processImageExpr()} AS processPath,
-      ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
-      ${fieldExpr('hashes', 'Hashes')} AS hashes,
+      user_name AS userName,
+      process_path AS processPath,
+      target_filename AS targetFilename,
+      hashes,
       left(message, 300) AS message
     FROM default.file_events
     ${where.sql}
@@ -465,11 +1911,11 @@ async function processAccessRecent(ctx, res) {
       kafka_timestamp AS time,
       computer,
       event_id AS eventId,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${fieldExpr('process_path', 'SourceImage', 'Image')} AS processPath,
-      ${fieldExpr('target_image', 'TargetImage')} AS targetImage,
-      ${fieldExpr('granted_access', 'GrantedAccess')} AS grantedAccess,
-      ${fieldExpr('call_trace', 'CallTrace')} AS callTrace,
+      user_name AS userName,
+      process_path AS processPath,
+      target_image AS targetImage,
+      granted_access AS grantedAccess,
+      call_trace AS callTrace,
       left(message, 300) AS message
     FROM default.process_access_events
     ${where.sql}
@@ -501,9 +1947,9 @@ async function powershellRecent(ctx, res) {
       computer,
       event_id AS eventId,
       level,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
-      left(${fieldExpr('script_block_text', 'ScriptBlockText')}, 1200) AS scriptBlockText,
+      user_name AS userName,
+      left(command_line, 800) AS commandLine,
+      left(script_block_text, 1200) AS scriptBlockText,
       left(message, 300) AS message
     FROM default.powershell_events
     ${where.sql}
@@ -513,11 +1959,11 @@ async function powershellRecent(ctx, res) {
   sendJson(res, 200, { items: rows });
 }
 
-async function registrationsSummary(_ctx, res) {
+async function registrationsSummary(ctx, res) {
   const started = Date.now();
   try {
     const devices = await registrationRequest("/api/v1/admin/devices");
-    const rows = Array.isArray(devices) ? devices : [];
+    const rows = filterRegistrationDevices(Array.isArray(devices) ? devices : [], ctx.user);
     const byStatus = new Map();
     for (const device of rows) {
       const status = String(device.status || "Unknown");
@@ -554,9 +2000,39 @@ async function registrationsSummary(_ctx, res) {
   }
 }
 
+async function enrollmentTokenCreate(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const result = await registrationRequest("/api/v1/admin/tokens", {
+    method: "POST",
+    actor: ctx.user?.username || "dashboard-admin",
+    body,
+  });
+  sendJson(res, 201, result);
+}
+
+async function enrolledDeviceRevoke(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const result = await registrationRequest(`/api/v1/admin/devices/${encodeURIComponent(ctx.params[0])}/revoke`, {
+    method: "POST",
+    actor: ctx.user?.username || "dashboard-admin",
+    body,
+  });
+  sendJson(res, 200, result);
+}
+
+function filterRegistrationDevices(devices, user) {
+  if (!user) return devices;
+  const hosts = user.scopes?.hosts || [];
+  const agents = user.scopes?.agents || [];
+  const groups = user.scopes?.groups || [];
+  return devices.filter((device) => (!hosts.length || hosts.includes(device.hostId) || hosts.includes(device.actualHostname) || hosts.includes(device.expectedHostname))
+    && (!agents.length || agents.includes(device.agentId))
+    && (!groups.length || groups.includes(device.groupId)));
+}
 function mapRegistrationDevice(device) {
   return {
     deviceRecordId: device.deviceRecordId || "",
+    ciId: device.ciId || "",
     agentId: device.agentId || "",
     hostId: device.hostId || "",
     staffId: device.staffId || "",
@@ -565,6 +2041,7 @@ function mapRegistrationDevice(device) {
     expectedHostname: device.expectedHostname || "",
     actualHostname: device.actualHostname || "",
     policyId: device.policyId || "",
+    groupId: device.groupId || "",
     agentVersion: device.agentVersion || "",
     status: device.status || "Unknown",
     certificateThumbprint: device.certificateThumbprint || "",
@@ -573,18 +2050,20 @@ function mapRegistrationDevice(device) {
     updatedAt: device.updatedAt || null,
     enrolledAt: device.enrolledAt || null,
     tokenExpiresAt: device.enrollmentTokenExpiresAt || null,
+    revokedAt: device.revokedAt || null,
+    revokeReason: device.revokeReason || "",
   };
 }
 
-async function dynamicConfigSummary(_ctx, res) {
+async function dynamicConfigSummary(ctx, res) {
   const started = Date.now();
   try {
     const [policies, agents] = await Promise.all([
       dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
       dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
     ]);
-    const policyRows = Array.isArray(policies) ? policies : [];
-    const agentRows = Array.isArray(agents) ? agents : [];
+    const policyRows = filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user);
+    const agentRows = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user);
     const activePolicies = policyRows.filter((policy) => policy.enabled !== false).length;
     const groups = countBy(agentRows, (agent) => agent.group_id || "unknown");
     sendJson(res, 200, {
@@ -612,23 +2091,211 @@ async function dynamicConfigSummary(_ctx, res) {
   }
 }
 
-async function dynamicConfigPolicies(_ctx, res) {
+async function dynamicConfigPolicies(ctx, res) {
   const policies = await dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(policies) ? policies : [] });
+  sendJson(res, 200, { items: filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user) });
 }
 
-async function dynamicConfigAgents(_ctx, res) {
+async function dynamicConfigAgents(ctx, res) {
   const agents = await dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(agents) ? agents : [] });
+  sendJson(res, 200, { items: filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user) });
 }
 
-async function dynamicConfigAudit(_ctx, res) {
+async function dynamicConfigStatus(ctx, res) {
+  const [policies, agents] = await Promise.all([
+    dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
+    dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
+  ]);
+  const policyRows = filterDynamicPolicies(Array.isArray(policies) ? policies : [], ctx.user);
+  const items = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user).map((agent) => mapDynamicConfigStatus(agent, policyRows));
+  const states = countBy(items, (item) => item.state);
+  sendJson(res, 200, {
+    totals: {
+      agents: items.length,
+      applied: stateCount(states, "applied") + stateCount(states, "rendered"),
+      pending: stateCount(states, "pending_agent_poll") + stateCount(states, "sent_waiting_ack"),
+      failed: stateCount(states, "apply_failed"),
+    },
+    states,
+    items,
+  });
+}
+
+function filterDynamicAgents(agents, user) {
+  if (!user) return agents;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  return agents.filter((agent) => (!hostScope.length || hostScope.includes(agent.host_id) || hostScope.includes(agent.computer))
+    && (!agentScope.length || agentScope.includes(agent.agent_id))
+    && (!groupScope.length || groupScope.includes(agent.group_id)));
+}
+
+function filterDynamicPolicies(policies, user) {
+  if (!user) return policies;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  const restricted = hostScope.length || agentScope.length || groupScope.length;
+  return policies.filter((policy) => {
+    const target = policy.target || { type: "default" };
+    if (target.type === "agent") return !hostScope.length && !groupScope.length && (!agentScope.length || agentScope.includes(target.agent_id));
+    if (target.type === "group") return !hostScope.length && !agentScope.length && (!groupScope.length || groupScope.includes(target.group_id));
+    return !restricted;
+  });
+}
+
+function filterDynamicAudit(items, user) {
+  if (!user) return items;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  return items.filter((item) => (!hostScope.length || hostScope.includes(item.host_id) || hostScope.includes(item.computer))
+    && (!agentScope.length || agentScope.includes(item.agent_id))
+    && (!groupScope.length || groupScope.includes(item.group_id)));
+}
+
+function assertDynamicTargetScope(user, targetType, targetValue) {
+  if (!user) return;
+  const hostScope = user.scopes?.hosts || [];
+  const agentScope = user.scopes?.agents || [];
+  const groupScope = user.scopes?.groups || [];
+  if (targetType === "default" && (hostScope.length || agentScope.length || groupScope.length)) {
+    const error = new Error("Default-fleet assignment requires unrestricted host, agent, and group scope");
+    error.statusCode = 403;
+    throw error;
+  }
+  if (targetType === "agent") assertScopedValue(user, "agents", targetValue);
+  if (targetType === "group") assertScopedValue(user, "groups", targetValue);
+}
+
+function mapDynamicConfigStatus(agent, policies) {
+  const assigned = selectAssignedPolicy(agent, policies);
+  const assignedPolicyId = assigned?.policy_id || "";
+  const assignedVersion = Number(assigned?.version || 0);
+  const reportedPolicyId = agent.reported_policy_id
+    || agent.current_policy_id
+    || (["applied", "rendered"].includes(agent.last_ack_status) ? agent.last_policy_id : "")
+    || "";
+  const reportedVersion = Number(agent.reported_version
+    ?? agent.current_version
+    ?? (["applied", "rendered"].includes(agent.last_ack_status) ? agent.last_version : 0)
+    ?? 0);
+  const ackMatchesAssignment = Boolean(assignedPolicyId)
+    && agent.last_policy_id === assignedPolicyId
+    && Number(agent.last_version || 0) === assignedVersion;
+  const reportedMatchesAssignment = Boolean(assignedPolicyId)
+    && reportedPolicyId === assignedPolicyId
+    && reportedVersion === assignedVersion;
+  const deliveryMatchesAssignment = agent.desired_policy_id === assignedPolicyId
+    && Number(agent.desired_version || 0) === assignedVersion;
+  const ackStatus = String(agent.last_ack_status || "not_acknowledged").toLowerCase();
+
+  let state = "pending_agent_poll";
+  if (!assigned) state = "no_active_policy";
+  else if (ackMatchesAssignment && ackStatus === "apply_failed") state = "apply_failed";
+  else if (reportedMatchesAssignment && ackStatus === "rendered") state = "rendered";
+  else if (reportedMatchesAssignment) state = "applied";
+  else if (deliveryMatchesAssignment && agent.delivery_status === "sent_waiting_ack") state = "sent_waiting_ack";
+
+  return {
+    agentId: agent.agent_id || "",
+    hostId: agent.host_id || "",
+    groupId: agent.group_id || "",
+    agentVersion: agent.agent_version || "",
+    assignedPolicyId,
+    assignedVersion,
+    reportedPolicyId,
+    reportedVersion,
+    state,
+    deliveryStatus: agent.delivery_status || "not_polled",
+    lastPollAt: agent.last_poll_at || null,
+    lastDeliveryAt: agent.last_delivery_at || null,
+    lastAckAt: agent.last_ack_at || null,
+    lastAckStatus: agent.last_ack_status || "not_acknowledged",
+    lastAckMessage: agent.last_ack_message || "",
+  };
+}
+
+function selectAssignedPolicy(agent, policies) {
+  let selected = null;
+  let selectedSpecificity = -1;
+  for (const policy of policies) {
+    if (policy.enabled === false || policy.rollout?.enabled === false) continue;
+    const target = policy.target || { type: "default" };
+    let specificity = -1;
+    if (target.type === "agent" && target.agent_id === agent.agent_id) specificity = 2;
+    else if (target.type === "group" && target.group_id === agent.group_id) specificity = 1;
+    else if (!target.type || target.type === "default") specificity = 0;
+    if (specificity < 0) continue;
+    if (specificity > selectedSpecificity
+      || (specificity === selectedSpecificity && Number(policy.version || 0) > Number(selected?.version || 0))) {
+      selected = policy;
+      selectedSpecificity = specificity;
+    }
+  }
+  return selected;
+}
+
+function stateCount(states, state) {
+  return Number(states.find((item) => item.key === state)?.count || 0);
+}
+
+async function dynamicConfigAudit(ctx, res) {
   const audit = await dynamicConfigRequest("/api/v1/dynamic-config/audit", { admin: true });
-  sendJson(res, 200, { items: Array.isArray(audit) ? audit : [] });
+  sendJson(res, 200, { items: filterDynamicAudit(Array.isArray(audit) ? audit : [], ctx.user) });
+}
+
+async function dynamicConfigCatalog(_ctx, res) {
+  sendJson(res, 200, {
+    items: DYNAMIC_LOG_TYPES.map((item) => ({ ...item })),
+    defaults: ["windows-application", "windows-system", "windows-security", "sysmon", "powershell", "wmi"],
+    fields: DYNAMIC_LOG_FIELDS.map((item) => ({ ...item })),
+    fieldDefaults: DYNAMIC_LOG_FIELDS.map((item) => item.id),
+    retainedInternalFields: ["agent_id", "host_id", "raw_log", "idempotency_key"],
+  });
+}
+
+async function dynamicConfigPreview(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  const policy = buildDynamicPolicy({ ...body, draft: true });
+  const selectedTypeIds = Array.isArray(body.logTypes)
+    ? [...new Set(body.logTypes.map((item) => String(item || "").trim().toLowerCase()))]
+    : [];
+  const selectedLogTypes = DYNAMIC_LOG_TYPES
+    .filter((item) => selectedTypeIds.includes(item.id))
+    .map((item) => ({ id: item.id, name: item.name }));
+  const selectedFields = policy.config.vector.selected_fields.map((field) => {
+    const catalogField = DYNAMIC_LOG_FIELDS.find((item) => item.field === field);
+    return {
+      id: catalogField?.id || field,
+      field,
+      name: catalogField?.name || field,
+      required: catalogField?.required === true,
+    };
+  });
+
+  sendJson(res, 200, {
+    previewOnly: true,
+    summary: {
+      name: policy.name,
+      state: "disabled draft",
+      target: policy.target,
+      logTypes: selectedLogTypes,
+      channels: policy.config.vector.channels,
+      selectedFields,
+      retainedInternalFields: ["agent_id", "host_id", "raw_log", "idempotency_key"],
+      sensors: policy.config.sensors,
+      rollout: policy.rollout,
+    },
+    policy,
+  });
 }
 
 async function dynamicConfigUpsertPolicy(ctx, res) {
-  const policy = buildDynamicPolicy(ctx.body || {});
+  const body = await readJsonBody(ctx.req);
+  const policy = buildDynamicPolicy(body);
+  assertDynamicTargetScope(ctx.user, policy.target?.type || "default", policy.target?.agent_id || policy.target?.group_id || "");
   const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
     method: "POST",
     admin: true,
@@ -637,34 +2304,106 @@ async function dynamicConfigUpsertPolicy(ctx, res) {
   sendJson(res, 200, saved);
 }
 
+async function dynamicConfigAssignPolicy(ctx, res) {
+  const body = await readJsonBody(ctx.req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    badRequest("assignment body must be a JSON object");
+  }
+
+  const policyId = optionalPolicyText(body.policyId, "policyId", 160);
+  if (!policyId) badRequest("policyId is required");
+  const targetType = String(body.targetType || "").trim().toLowerCase();
+  if (!["default", "group", "agent"].includes(targetType)) {
+    badRequest("targetType must be one of: default, group, agent");
+  }
+  const targetValue = optionalPolicyText(body.targetValue, "targetValue", 255);
+  if ((targetType === "group" || targetType === "agent") && !targetValue) {
+    badRequest("targetValue is required for group/agent assignment");
+  }
+  assertDynamicTargetScope(ctx.user, targetType, targetValue);
+  const [policies, agents] = await Promise.all([
+    dynamicConfigRequest("/api/v1/dynamic-config/policies", { admin: true }),
+    dynamicConfigRequest("/api/v1/dynamic-config/agents", { admin: true }),
+  ]);
+  const policy = (Array.isArray(policies) ? policies : []).find((item) => item.policy_id === policyId);
+  if (!policy) badRequest("selected Dynamic Logs draft does not exist");
+  if (policy.enabled !== false || policy.rollout?.enabled !== false) {
+    badRequest("only a disabled Dynamic Logs draft can be assigned");
+  }
+
+  const agentRows = filterDynamicAgents(Array.isArray(agents) ? agents : [], ctx.user);
+  if (targetType === "agent" && !agentRows.some((agent) => agent.agent_id === targetValue)) {
+    badRequest("selected target agent does not exist");
+  }
+  if (targetType === "group" && !agentRows.some((agent) => agent.group_id === targetValue)) {
+    badRequest("selected target group does not exist");
+  }
+
+  const target = targetType === "group"
+    ? { type: "group", group_id: targetValue }
+    : targetType === "agent"
+      ? { type: "agent", agent_id: targetValue }
+      : { type: "default" };
+  const assigned = {
+    ...policy,
+    version: boundedPolicyInteger(policy.version, "policy.version", 1, Number.MAX_SAFE_INTEGER - 1, 1) + 1,
+    enabled: true,
+    target,
+    rollout: {
+      enabled: true,
+      percent: 100,
+      min_agent_version: "0.1.0",
+    },
+    updated_at: new Date().toISOString(),
+  };
+  const saved = await dynamicConfigRequest("/api/v1/dynamic-config/policies", {
+    method: "POST",
+    admin: true,
+    body: assigned,
+  });
+  sendJson(res, 200, {
+    status: "assigned",
+    applyMode: "next_agent_poll",
+    sourcePolicyId: policyId,
+    target,
+    policy: saved,
+  });
+}
+
 function buildDynamicPolicy(input) {
-  const targetType = String(input.targetType || "default");
-  const targetValue = String(input.targetValue || "").trim();
+  if (!input || typeof input !== "object" || Array.isArray(input)) badRequest("policy body must be a JSON object");
+  const targetType = String(input.targetType || "default").trim().toLowerCase();
+  if (!["default", "group", "agent"].includes(targetType)) {
+    badRequest("targetType must be one of: default, group, agent");
+  }
+  const targetValue = optionalPolicyText(input.targetValue, "targetValue", 255);
   if ((targetType === "group" || targetType === "agent") && !targetValue) {
     badRequest("targetValue is required for group/agent policy");
   }
 
-  const policyId = String(input.policyId || "").trim() || `policy-${targetType}-${targetValue || "default"}-${Date.now()}`;
-  const version = Math.max(1, Number.parseInt(input.version || "1", 10));
+  const draft = input.draft === true;
+  const policyId = optionalPolicyText(input.policyId, "policyId", 160)
+    || `policy-${draft ? "draft" : targetType}-${targetValue || "default"}-${Date.now()}`;
+  const requestedName = optionalPolicyText(input.name, "name", 200);
+  if (draft && !requestedName) badRequest("name is required for a Dynamic Logs draft");
+  const name = requestedName || policyId;
+  const version = boundedPolicyInteger(input.version, "version", 1, Number.MAX_SAFE_INTEGER, 1);
   const target = targetType === "group"
     ? { type: "group", group_id: targetValue }
     : targetType === "agent"
       ? { type: "agent", agent_id: targetValue }
       : { type: "default" };
 
-  const channels = String(input.channels || "Application,System,Security,Microsoft-Windows-Sysmon/Operational")
-    .split(/[,\n]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
+  const selection = dynamicLogSelection(input);
+  const selectedFields = dynamicFieldSelection(input);
   return {
     policy_id: policyId,
     version,
-    name: String(input.name || policyId),
-    enabled: input.enabled !== false,
+    name,
+    enabled: draft ? false : input.enabled !== false,
     target,
     rollout: {
-      enabled: input.rolloutEnabled !== false,
+      enabled: draft ? false : input.rolloutEnabled !== false,
       percent: clampNumber(input.rolloutPercent, 1, 100, 100),
       min_agent_version: String(input.minAgentVersion || "0.1.0"),
     },
@@ -672,13 +2411,14 @@ function buildDynamicPolicy(input) {
       config_schema_version: 1,
       vector: {
         enabled: input.vectorEnabled !== false,
-        channels,
-        batch_max_events: clampNumber(input.batchMaxEvents, 1, 100000, 1000),
+        channels: selection.channels,
+        selected_fields: selectedFields,
+        batch_max_events: clampNumber(input.batchMaxEvents, 1, 50000, 1000),
         batch_timeout_secs: clampNumber(input.batchTimeoutSecs, 1, 3600, 10),
       },
       shipper: {
         enabled: input.shipperEnabled !== false,
-        gateway_url: String(input.gatewayUrl || "https://soc-gateway.yourcorporate.com/api/v1/telemetry"),
+        gateway_url: String(input.gatewayUrl || "https://hosteye.iahn.hanoi.vn/api/v1/telemetry"),
         normal_jitter_window_seconds: clampNumber(input.normalJitterWindowSeconds, 0, 86400, 300),
         recovery_jitter_window_seconds: clampNumber(input.recoveryJitterWindowSeconds, 0, 86400, 1800),
         base_backoff_seconds: clampNumber(input.baseBackoffSeconds, 1, 3600, 2),
@@ -686,13 +2426,99 @@ function buildDynamicPolicy(input) {
         max_spool_size_mb: clampNumber(input.maxSpoolSizeMb, 1, 102400, 8192),
       },
       sensors: {
-        sysmon_enabled: input.sysmonEnabled !== false,
-        powershell_enabled: input.powershellEnabled !== false,
-        network_events_enabled: input.networkEventsEnabled !== false,
+        sysmon_enabled: selection.sensors.has("sysmon"),
+        powershell_enabled: selection.sensors.has("powershell"),
+        network_events_enabled: selection.sensors.has("network"),
       },
     },
     updated_at: new Date().toISOString(),
   };
+}
+
+function dynamicFieldSelection(input) {
+  if (!Object.hasOwn(input, "selectedFields")) {
+    return DYNAMIC_LOG_FIELDS.map((item) => item.field);
+  }
+  if (!Array.isArray(input.selectedFields)) {
+    badRequest("selectedFields must be an array of supported field identifiers");
+  }
+  if (!input.selectedFields.length) {
+    badRequest("selectedFields must contain at least one supported field");
+  }
+
+  const ids = [];
+  for (const raw of input.selectedFields) {
+    const id = String(raw || "").trim().toLowerCase();
+    if (!id) badRequest("selectedFields must not contain empty identifiers");
+    if (ids.includes(id)) badRequest(`selectedFields must not contain duplicates: ${id}`);
+    if (!DYNAMIC_LOG_FIELDS.some((item) => item.id === id)) {
+      badRequest(`unsupported selected field: ${id}`);
+    }
+    ids.push(id);
+  }
+
+  const missingRequired = DYNAMIC_LOG_FIELDS
+    .filter((item) => item.required && !ids.includes(item.id))
+    .map((item) => item.id);
+  if (missingRequired.length) {
+    badRequest(`selectedFields must include required fields: ${missingRequired.join(", ")}`);
+  }
+  return ids.map((id) => DYNAMIC_LOG_FIELDS.find((item) => item.id === id).field);
+}
+
+function dynamicLogSelection(input) {
+  if (Object.hasOwn(input, "logTypes") && !Array.isArray(input.logTypes)) {
+    badRequest("logTypes must be an array of supported log type identifiers");
+  }
+  if (Array.isArray(input.logTypes)) {
+    if (!input.logTypes.length) badRequest("logTypes must contain at least one supported log type");
+    const ids = [];
+    for (const raw of input.logTypes) {
+      const id = String(raw || "").trim().toLowerCase();
+      if (!id || ids.includes(id)) continue;
+      if (!DYNAMIC_LOG_TYPES.some((item) => item.id === id)) {
+        badRequest(`unsupported log type: ${id || "empty"}`);
+      }
+      ids.push(id);
+    }
+    if (!ids.length) badRequest("logTypes must contain at least one supported log type");
+    const selected = DYNAMIC_LOG_TYPES.filter((item) => ids.includes(item.id));
+    return {
+      channels: [...new Set(selected.flatMap((item) => item.channels))],
+      sensors: new Set(selected.flatMap((item) => item.sensors || [])),
+    };
+  }
+
+  const channels = String(input.channels || "Application,System,Security,Microsoft-Windows-Sysmon/Operational,Microsoft-Windows-PowerShell/Operational,Microsoft-Windows-WMI-Activity/Operational")
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (!channels.length) badRequest("channels must contain at least one Windows Event Log channel");
+  return {
+    channels: [...new Set(channels)],
+    sensors: new Set([
+      ...(input.sysmonEnabled !== false ? ["sysmon"] : []),
+      ...(input.powershellEnabled !== false ? ["powershell"] : []),
+      ...(input.networkEventsEnabled !== false ? ["network"] : []),
+    ]),
+  };
+}
+
+function optionalPolicyText(value, name, maxLength) {
+  if (value === undefined || value === null || String(value).trim() === "") return "";
+  const text = String(value).trim();
+  if (text.length > maxLength) badRequest(`${name} must be at most ${maxLength} characters`);
+  return text;
+}
+
+function boundedPolicyInteger(value, name, min, max, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (!/^\d+$/.test(String(value))) badRequest(`${name} must be an integer between ${min} and ${max}`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    badRequest(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
 }
 
 async function dynamicConfigRequest(path, options = {}) {
@@ -737,12 +2563,18 @@ function clampNumber(value, min, max, fallback) {
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(min, Math.min(max, parsed));
 }
-async function registrationRequest(path) {
+async function registrationRequest(path, options = {}) {
   const base = config.registrationUrl.replace(/\/$/, "");
   let response;
   try {
     response = await fetch(`${base}${path}`, {
-      headers: { "x-hosteye-admin-token": config.registrationAdminToken },
+      method: options.method || "GET",
+      headers: {
+        "x-hosteye-admin-token": config.registrationAdminToken,
+        ...(options.actor ? { "x-hosteye-actor": options.actor } : {}),
+        ...(options.body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
   } catch (cause) {
     const error = new Error(`Registration service is not reachable: ${cause?.message || cause}`);
@@ -759,178 +2591,10 @@ async function registrationRequest(path) {
   }
   return text ? JSON.parse(text) : null;
 }
-
-async function jitterSummary(ctx, res) {
-  const where = timeWhere(ctx.url);
-  const rows = await queryRows(`
-    SELECT
-      count() AS samples,
-      uniqExact(computer) AS hosts,
-      avg(planned_jitter_ms) AS avgJitterMs,
-      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
-      max(planned_jitter_ms) AS maxJitterMs,
-      avg(batch_size) AS avgBatchSize,
-      max(spool_depth_bytes) AS maxSpoolDepthBytes,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-  `);
-
-  const worstRows = await queryRows(`
-    SELECT
-      computer,
-      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
-      max(spool_depth_bytes) AS spoolDepthBytes,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-    GROUP BY computer
-    ORDER BY p95JitterMs DESC, spoolDepthBytes DESC
-    LIMIT 1
-  `);
-
-  sendJson(res, 200, {
-    ...(rows[0] || {}),
-    worstHost: worstRows[0] || null,
-  });
-}
-
-async function jitterHosts(ctx, res) {
-  const where = timeWhere(ctx.url);
-  const limit = limitParam(ctx.url, 100, 500);
-  const rows = await queryRows(`
-    SELECT
-      computer,
-      anyLast(agent_id) AS agentId,
-      count() AS samples,
-      avg(planned_jitter_ms) AS avgJitterMs,
-      min(planned_jitter_ms) AS minJitterMs,
-      max(planned_jitter_ms) AS maxJitterMs,
-      quantile(0.95)(planned_jitter_ms) AS p95JitterMs,
-      avg(batch_size) AS avgBatchSize,
-      max(batch_size) AS maxBatchSize,
-      max(spool_depth_bytes) AS spoolDepthBytes,
-      max(pending_file_count) AS pendingFileCount,
-      max(send_duration_ms) AS maxSendDurationMs,
-      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
-      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
-      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
-      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
-      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-    GROUP BY computer
-    ORDER BY lastSeen DESC
-    LIMIT ${limit}
-  `);
-
-  sendJson(res, 200, {
-    items: rows.map((row) => ({
-      ...row,
-      statusLevel: jitterStatus(row),
-      statusLabel: jitterStatusLabel(jitterStatus(row)),
-    })),
-  });
-}
-
-async function chunksSummary(ctx, res) {
-  const where = timeWhere(ctx.url);
-  const rows = await queryRows(`
-    SELECT
-      count() AS chunks,
-      uniqExact(computer) AS hosts,
-      sum(batch_size) AS eventsSent,
-      avg(batch_size) AS avgBatchSize,
-      max(spool_depth_bytes) AS maxSpoolDepthBytes,
-      sum(if(success = 1, 1, 0)) AS okChunks,
-      sum(if(success = 0, 1, 0)) AS failedChunks,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-  `);
-
-  const latestRows = await queryRows(`
-    SELECT
-      computer,
-      argMax(spool_file, metric_timestamp) AS spoolFile,
-      argMax(status_code, metric_timestamp) AS statusCode,
-      argMax(success, metric_timestamp) AS success,
-      argMax(batch_size, metric_timestamp) AS batchSize,
-      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
-      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-    GROUP BY computer
-    ORDER BY lastSeen DESC
-    LIMIT 1
-  `);
-
-  sendJson(res, 200, {
-    ...(rows[0] || {}),
-    latestChunk: latestRows[0] || null,
-  });
-}
-
-async function chunksHosts(ctx, res) {
-  const where = timeWhere(ctx.url);
-  const limit = limitParam(ctx.url, 100, 500);
-  const rows = await queryRows(`
-    SELECT
-      computer,
-      argMax(agent_id, metric_timestamp) AS agentId,
-      argMax(spool_file, metric_timestamp) AS lastChunk,
-      argMax(line_offset, metric_timestamp) AS lineOffset,
-      argMax(next_line_offset, metric_timestamp) AS nextLineOffset,
-      argMax(byte_offset, metric_timestamp) AS byteOffset,
-      argMax(next_byte_offset, metric_timestamp) AS nextByteOffset,
-      argMax(batch_size, metric_timestamp) AS batchSize,
-      argMax(batch_bytes, metric_timestamp) AS batchBytes,
-      argMax(compressed_bytes, metric_timestamp) AS compressedBytes,
-      argMax(status_code, metric_timestamp) AS statusCode,
-      argMax(success, metric_timestamp) AS success,
-      argMax(data_loss, metric_timestamp) AS dataLoss,
-      argMax(planned_jitter_ms, metric_timestamp) AS plannedJitterMs,
-      argMax(jitter_window_ms, metric_timestamp) AS jitterWindowMs,
-      argMax(scheduled_send_at, metric_timestamp) AS scheduledSendAt,
-      argMax(actual_send_at, metric_timestamp) AS actualSendAt,
-      argMax(send_started_at, metric_timestamp) AS sendStartedAt,
-      argMax(send_completed_at, metric_timestamp) AS sendCompletedAt,
-      argMax(jitter_delay_ms, metric_timestamp) AS jitterDelayMs,
-      argMax(backoff_delay_ms, metric_timestamp) AS backoffDelayMs,
-      argMax(next_retry_at, metric_timestamp) AS nextRetryAt,
-      argMax(lease_id, metric_timestamp) AS leaseId,
-      argMax(lease_expires_at, metric_timestamp) AS leaseExpiresAt,
-      argMax(lease_ttl_seconds, metric_timestamp) AS leaseTtlSeconds,
-      argMax(max_batch_mb, metric_timestamp) AS maxBatchMb,
-      argMax(max_upload_rate_kbps, metric_timestamp) AS maxUploadRateKbps,
-      argMax(send_duration_ms, metric_timestamp) AS sendDurationMs,
-      argMax(spool_depth_bytes, metric_timestamp) AS spoolDepthBytes,
-      argMax(pending_file_count, metric_timestamp) AS pendingFileCount,
-      count() AS chunks,
-      sum(batch_size) AS eventsSent,
-      max(metric_timestamp) AS lastSeen
-    FROM default.shipper_runtime_metrics
-    ${where.sql}
-    GROUP BY computer
-    ORDER BY lastSeen DESC
-    LIMIT ${limit}
-  `);
-
-  sendJson(res, 200, {
-    items: rows.map((row) => ({
-      ...row,
-      statusLevel: chunkStatus(row),
-      statusLabel: chunkStatusLabel(chunkStatus(row)),
-    })),
-  });
-}
-
 async function hostsHeatmap(ctx, res) {
   const top = limitParam(ctx.url, 10, 25, "top");
   const bucket = bucketFunction(ctx.url.searchParams.get("bucket") || "minute");
-  const where = timeWhere(ctx.url, ["computer != ''"]);
+  const where = timeWhere(ctx.url);
 
   const hosts = await queryRows(`
     SELECT computer, count() AS totalEvents
@@ -992,29 +2656,12 @@ async function hostsHeatmapCell(ctx, res) {
     `computer = ${sqlString(host)}`,
     `kafka_timestamp >= ${startExpr}`,
     `kafka_timestamp < ${endExpr}`,
+    ...scopePredicates(),
   ];
-
-  const channel = ctx.url.searchParams.get("channel");
-  const eventId = ctx.url.searchParams.get("eventId");
-  const q = ctx.url.searchParams.get("q");
-  if (channel) predicates.push(`channel = ${sqlString(channel)}`);
-  if (eventId) predicates.push(`event_id = ${uintParam(eventId, "eventId")}`);
-  if (q) {
-    const search = sqlString(q);
-    predicates.push(`(
-      positionCaseInsensitive(message, ${search}) > 0
-      OR positionCaseInsensitive(command_line, ${search}) > 0
-      OR positionCaseInsensitive(process_path, ${search}) > 0
-      OR positionCaseInsensitive(raw_log, ${search}) > 0
-    )`);
-  }
-
   const where = `WHERE ${predicates.join(" AND ")}`;
   const limit = limitParam(ctx.url, 200, 500);
 
-  const chunkWhere = `WHERE computer = ${sqlString(host)} AND metric_timestamp >= ${startExpr} AND metric_timestamp < ${endExpr}`;
-
-  const [summaryRows, byChannel, byEventId, byEventType, recentLogs, chunks] = await Promise.all([
+  const [summaryRows, byChannel, byEventId, byEventType, recentLogs] = await Promise.all([
     queryRows(`SELECT count() AS totalEvents FROM default.windows_system_logs ${where}`),
     queryRows(`
       SELECT channel, count() AS events
@@ -1047,53 +2694,19 @@ async function hostsHeatmapCell(ctx, res) {
         channel,
         event_id AS eventId,
         ${eventTypeExpression()} AS eventType,
-        ${fieldExpr('user_name', 'User')} AS userName,
-        ${processImageExpr()} AS processPath,
-        left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
-        ${fieldExpr('source_ip', 'SourceIp')} AS sourceIp,
-        ${fieldExpr('destination_ip', 'DestinationIp')} AS destinationIp,
-        ${fieldExpr('dns_query', 'QueryName')} AS dnsQuery,
-        ${fieldExpr('target_filename', 'TargetFilename')} AS targetFilename,
-        ${fieldExpr('target_object', 'TargetObject')} AS targetObject,
+        user_name AS userName,
+        process_path AS processPath,
+        left(command_line, 800) AS commandLine,
+        source_ip AS sourceIp,
+        destination_ip AS destinationIp,
+        dns_query AS dnsQuery,
+        target_filename AS targetFilename,
+        target_object AS targetObject,
         left(message, 500) AS message
       FROM default.windows_system_logs
       ${where}
       ORDER BY kafka_timestamp DESC
       LIMIT ${limit}
-    `),
-    queryRows(`
-      SELECT
-        metric_timestamp AS sentAt,
-        agent_id AS agentId,
-        spool_file AS spoolFile,
-        line_offset AS lineOffset,
-        next_line_offset AS nextLineOffset,
-        byte_offset AS byteOffset,
-        next_byte_offset AS nextByteOffset,
-        batch_size AS batchSize,
-        batch_bytes AS batchBytes,
-        compressed_bytes AS compressedBytes,
-        planned_jitter_ms AS plannedJitterMs,
-        jitter_window_ms AS jitterWindowMs,
-        lease_id AS leaseId,
-        lease_expires_at AS leaseExpiresAt,
-        lease_ttl_seconds AS leaseTtlSeconds,
-        max_batch_mb AS maxBatchMb,
-        max_upload_rate_kbps AS maxUploadRateKbps,
-        retry_attempt AS retryAttempt,
-        planned_backoff_ms AS plannedBackoffMs,
-        spool_depth_bytes AS spoolDepthBytes,
-        spool_file_count AS spoolFileCount,
-        pending_file_count AS pendingFileCount,
-        status_code AS statusCode,
-        send_duration_ms AS sendDurationMs,
-        success,
-        data_loss AS dataLoss,
-        message
-      FROM default.shipper_runtime_metrics
-      ${chunkWhere}
-      ORDER BY metric_timestamp DESC
-      LIMIT 100
     `),
   ]);
 
@@ -1108,39 +2721,409 @@ async function hostsHeatmapCell(ctx, res) {
       byEventType,
     },
     recentLogs,
-    chunks,
   });
 }
 
-async function logsSearch(ctx, res) {
-  const q = requiredString(ctx.url, "q");
-  const where = timeWhere(ctx.url, [
-    `(
-      positionCaseInsensitive(message, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(command_line, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(process_path, ${sqlString(q)}) > 0
-      OR positionCaseInsensitive(raw_log, ${sqlString(q)}) > 0
-    )`,
-  ]);
+async function alertsList(ctx, res) {
   const limit = limitParam(ctx.url, 100, 500);
-  const rows = await queryRows(`
-    SELECT
-      kafka_timestamp AS time,
-      computer,
-      channel,
-      event_id AS eventId,
-      level,
-      ${fieldExpr('user_name', 'User')} AS userName,
-      ${processImageExpr()} AS processPath,
-      left(${fieldExpr('command_line', 'CommandLine')}, 800) AS commandLine,
-      left(message, 500) AS message,
-      idempotency_key AS idempotencyKey
-    FROM default.windows_system_logs
-    ${where.sql}
-    ORDER BY kafka_timestamp DESC
-    LIMIT ${limit}
-  `);
-  sendJson(res, 200, { items: rows });
+  const offset = offsetParam(ctx.url, 100000);
+  const fetchLimit = Math.min(limit + offset, 5000);
+  const filters = alertListFilters(ctx.url);
+  const eventPredicates = [`(${eventAlertPredicate()})`];
+  const failedPredicates = ["channel = 'Security'", "event_id = 4625"];
+  if (filters.severity) eventPredicates.push(`(${eventAlertSeverityExpr()}) = ${sqlString(filters.severity)}`);
+  if (filters.status && filters.status !== "new") {
+    eventPredicates.push("0");
+    failedPredicates.push("0");
+  }
+  if (filters.q) {
+    eventPredicates.push(alertEventKeywordPredicate(filters.q));
+    failedPredicates.push(alertFailedLogonKeywordPredicate(filters.q));
+  }
+  const failedSeverityHaving = alertFailedLogonSeverityHaving(filters.severity);
+  const eventWhere = alertTimeWhere(ctx.url, eventPredicates);
+  const failedWhere = alertTimeWhere(ctx.url, failedPredicates);
+
+  const [eventRows, eventSummaryRows, failedRows, failedSummaryRows] = await Promise.all([
+    queryRows(`
+      SELECT
+        concat('event:', idempotency_key) AS alertId,
+        kafka_timestamp AS detectedAt,
+        ${eventAlertSeverityExpr()} AS severity,
+        ${eventAlertRuleExpr()} AS ruleId,
+        ${eventAlertTitleExpr()} AS title,
+        'new' AS status,
+        computer,
+        agent_id AS agentId,
+        host_id AS hostId,
+        channel,
+        event_id AS eventId,
+        user_name AS userName,
+        source_ip AS sourceIp,
+        process_path AS processPath,
+        left(message, 500) AS message,
+        1 AS evidenceCount,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      ${eventWhere.sql}
+      ORDER BY detectedAt DESC
+      LIMIT ${fetchLimit}
+    `),
+    queryRows(`
+      SELECT ${eventAlertSeverityExpr()} AS severity, count() AS total
+      FROM default.windows_system_logs
+      ${eventWhere.sql}
+      GROUP BY severity
+    `),
+    queryRows(`
+      SELECT
+        concat(
+          'HE-AUTH-001:',
+          hex(cityHash64(concat(computer, '|', toString(windowStart), '|', user_name, '|', source_ip)))
+        ) AS alertId,
+        max(kafka_timestamp) AS detectedAt,
+        if(count() >= 20, 'high', 'medium') AS severity,
+        'HE-AUTH-001' AS ruleId,
+        'Repeated failed logons' AS title,
+        'new' AS status,
+        computer,
+        anyLast(agent_id) AS agentId,
+        anyLast(host_id) AS hostId,
+        'Security' AS channel,
+        4625 AS eventId,
+        user_name AS userName,
+        source_ip AS sourceIp,
+        '' AS processPath,
+        concat(toString(count()), ' failed logons within 5 minutes') AS message,
+        count() AS evidenceCount,
+        '' AS idempotencyKey
+      FROM
+      (
+        SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+        FROM default.windows_system_logs
+        ${failedWhere.sql}
+      )
+      GROUP BY windowStart, computer, user_name, source_ip
+      HAVING evidenceCount >= 5${failedSeverityHaving}
+      ORDER BY detectedAt DESC
+      LIMIT ${fetchLimit}
+    `),
+    queryRows(`
+      SELECT severity, count() AS total
+      FROM
+      (
+        SELECT if(count() >= 20, 'high', 'medium') AS severity
+        FROM
+        (
+          SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+          FROM default.windows_system_logs
+          ${failedWhere.sql}
+        )
+        GROUP BY windowStart, computer, user_name, source_ip
+        HAVING count() >= 5${failedSeverityHaving}
+      )
+      GROUP BY severity
+    `),
+  ]);
+
+  const summary = { total: 0, critical: 0, high: 0, medium: 0, low: 0 };
+  for (const row of [...eventSummaryRows, ...failedSummaryRows]) {
+    const severity = String(row.severity || "low").toLowerCase();
+    const count = Number(row.total || 0);
+    if (Object.hasOwn(summary, severity)) summary[severity] += count;
+    summary.total += count;
+  }
+
+  const items = [...eventRows, ...failedRows]
+    .map((row) => ({
+      ...row,
+      eventId: Number(row.eventId || 0),
+      evidenceCount: Number(row.evidenceCount || 0),
+    }))
+    .sort((left, right) => dateValue(right.detectedAt) - dateValue(left.detectedAt))
+    .slice(offset, offset + limit);
+
+  sendJson(res, 200, {
+    items,
+    summary,
+    total: summary.total,
+    limit,
+    offset,
+    hasMore: offset + items.length < summary.total,
+    filters: {
+      q: filters.q || "",
+      severity: filters.severity || "",
+      status: filters.status || "",
+      host: filters.host || "",
+      from: eventWhere.from.toISOString(),
+      to: eventWhere.to.toISOString(),
+    },
+  });
+}
+
+
+async function alertDetail(ctx, res) {
+  let alertId;
+  try { alertId = decodeURIComponent(ctx.params[0] || ""); }
+  catch { badRequest("alertId must be URL encoded"); }
+  if (!alertId || alertId.length > 512) badRequest("alertId is invalid");
+  const limit = limitParam(ctx.url, 50, 200);
+
+  if (alertId.startsWith("event:")) {
+    const key = alertId.slice(6);
+    const rows = await queryRows(`
+      SELECT concat('event:', idempotency_key) AS alertId, kafka_timestamp AS detectedAt,
+        ${eventAlertSeverityExpr()} AS severity, ${eventAlertRuleExpr()} AS ruleId,
+        ${eventAlertTitleExpr()} AS title, 'new' AS status,
+        computer, agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, user_id AS userId,
+        source_ip AS sourceIp, destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 2000) AS commandLine, left(script_block_text, 4000) AS scriptBlockText,
+        hashes, left(message, 2000) AS message, left(raw_log, 4000) AS rawLog,
+        left(event_data_json, 4000) AS eventDataJson, 1 AS evidenceCount,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      WHERE idempotency_key = ${sqlString(key)} AND (${eventAlertPredicate()})
+        ${scopePredicates().map((predicate) => `AND ${predicate}`).join("\n        ")}
+      ORDER BY kafka_timestamp DESC LIMIT 1
+    `);
+    if (!rows.length) return sendJson(res, 404, { message: "Alert not found" });
+    const alert = normalizeAlertDetail(rows[0]);
+    const evidence = await queryRows(`
+      SELECT if(idempotency_key = ${sqlString(key)}, 'primary', 'context') AS relation,
+        kafka_timestamp AS time, idempotency_key AS idempotencyKey, computer,
+        agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, source_ip AS sourceIp,
+        destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 1200) AS commandLine, left(message, 1200) AS message,
+        left(raw_log, 3000) AS rawLog
+      FROM default.windows_system_logs
+      WHERE computer = ${sqlString(alert.computer)}
+        AND kafka_timestamp >= ${sqlClickHouseDate(alert.detectedAt)} - INTERVAL 5 MINUTE
+        AND kafka_timestamp <= ${sqlClickHouseDate(alert.detectedAt)} + INTERVAL 5 MINUTE
+      ORDER BY relation = 'primary' DESC,
+        abs(dateDiff('millisecond', kafka_timestamp, ${sqlClickHouseDate(alert.detectedAt)})) ASC
+      LIMIT ${limit}
+    `);
+    return sendJson(res, 200, { alert, evidence: evidence.map(normalizeAlertEvidence),
+      evidenceTotal: evidence.length, context: { type: "event", windowMinutes: 5 } });
+  }
+
+  if (alertId.startsWith("HE-AUTH-001:")) {
+    const where = alertTimeWhere(ctx.url, ["channel = 'Security'", "event_id = 4625"]);
+    const rows = await queryRows(`
+      SELECT * FROM (
+        SELECT concat('HE-AUTH-001:', hex(cityHash64(concat(computer, '|', toString(windowStart),
+          '|', user_name, '|', source_ip)))) AS alertId,
+          windowStart, windowStart + INTERVAL 5 MINUTE AS windowEnd,
+          min(kafka_timestamp) AS firstSeen, max(kafka_timestamp) AS detectedAt,
+          if(count() >= 20, 'high', 'medium') AS severity, 'HE-AUTH-001' AS ruleId,
+          'Repeated failed logons' AS title, 'new' AS status, computer,
+          anyLast(agent_id) AS agentId, anyLast(host_id) AS hostId, 'Security' AS channel,
+          4625 AS eventId, anyLast(provider_name) AS providerName, anyLast(level) AS level,
+          user_name AS userName, anyLast(user_id) AS userId, source_ip AS sourceIp,
+          concat(toString(count()), ' failed logons within 5 minutes') AS message,
+          count() AS evidenceCount, '' AS idempotencyKey
+        FROM (SELECT *, toStartOfFiveMinutes(kafka_timestamp) AS windowStart
+          FROM default.windows_system_logs ${where.sql})
+        GROUP BY windowStart, computer, user_name, source_ip HAVING evidenceCount >= 5
+      ) WHERE alertId = ${sqlString(alertId)} LIMIT 1
+    `);
+    if (!rows.length) return sendJson(res, 404, { message: "Alert not found" });
+    const alert = normalizeAlertDetail(rows[0]);
+    const evidence = await queryRows(`
+      SELECT 'evidence' AS relation, kafka_timestamp AS time, idempotency_key AS idempotencyKey,
+        computer, agent_id AS agentId, host_id AS hostId, channel, event_id AS eventId,
+        provider_name AS providerName, level, user_name AS userName, source_ip AS sourceIp,
+        destination_ip AS destinationIp, process_path AS processPath,
+        left(command_line, 1200) AS commandLine, left(message, 1200) AS message,
+        left(raw_log, 3000) AS rawLog
+      FROM default.windows_system_logs WHERE channel = 'Security' AND event_id = 4625
+        AND computer = ${sqlString(alert.computer)} AND user_name = ${sqlString(alert.userName)}
+        AND source_ip = ${sqlString(alert.sourceIp)}
+        AND kafka_timestamp >= ${sqlClickHouseDate(alert.windowStart)}
+        AND kafka_timestamp < ${sqlClickHouseDate(alert.windowEnd)}
+      ORDER BY kafka_timestamp ASC LIMIT ${limit}
+    `);
+    return sendJson(res, 200, { alert, evidence: evidence.map(normalizeAlertEvidence),
+      evidenceTotal: Number(alert.evidenceCount || evidence.length),
+      context: { type: "failed-logon-window", windowMinutes: 5 } });
+  }
+  sendJson(res, 404, { message: "Alert not found" });
+}
+
+function normalizeAlertDetail(row) {
+  return { ...row, eventId: Number(row.eventId || 0), evidenceCount: Number(row.evidenceCount || 0) };
+}
+function normalizeAlertEvidence(row) {
+  return { ...row, eventId: Number(row.eventId || 0) };
+}
+
+function eventAlertPredicate() {
+  return `
+    (channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id IN (8, 25))
+    OR (channel = 'Security' AND event_id IN (4720, 4726))
+    OR (
+      channel = 'Microsoft-Windows-PowerShell/Operational'
+      AND event_id = 4104
+      AND (
+        positionCaseInsensitive(script_block_text, 'encodedcommand') > 0
+        OR positionCaseInsensitive(script_block_text, 'downloadstring') > 0
+        OR positionCaseInsensitive(script_block_text, 'invoke-expression') > 0
+        OR positionCaseInsensitive(script_block_text, 'frombase64string') > 0
+      )
+    )
+    OR (
+      positionCaseInsensitive(channel, 'Defender') > 0
+      AND level IN ('Critical', 'Error', 'Warning')
+    )
+  `;
+}
+
+function eventAlertSeverityExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'critical',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'high',
+      channel = 'Security' AND event_id = 4726, 'high',
+      channel = 'Security' AND event_id = 4720, 'medium',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'high',
+      level = 'Critical', 'critical',
+      level = 'Error', 'high',
+      'medium'
+    )
+  `;
+}
+
+function eventAlertRuleExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'HE-PROC-001',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'HE-PROC-002',
+      channel = 'Security' AND event_id = 4720, 'HE-ID-001',
+      channel = 'Security' AND event_id = 4726, 'HE-ID-002',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'HE-PS-001',
+      'HE-DEF-001'
+    )
+  `;
+}
+
+function eventAlertTitleExpr() {
+  return `
+    multiIf(
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 25, 'Process tampering detected',
+      channel = 'Microsoft-Windows-Sysmon/Operational' AND event_id = 8, 'Remote thread creation detected',
+      channel = 'Security' AND event_id = 4720, 'User account created',
+      channel = 'Security' AND event_id = 4726, 'User account deleted',
+      channel = 'Microsoft-Windows-PowerShell/Operational' AND event_id = 4104, 'Suspicious PowerShell content',
+      'Microsoft Defender detection'
+    )
+  `;
+}
+
+
+function alertListFilters(url) {
+  return {
+    q: optionalString(url, "q", 200),
+    host: optionalString(url, "host", 255),
+    severity: optionalEnum(url, "severity", ["critical", "high", "medium", "low"]),
+    status: optionalEnum(url, "status", ["new", "acknowledged", "resolved"]),
+  };
+}
+
+function alertEventKeywordPredicate(q) {
+  const value = sqlString(q);
+  return `(
+    positionCaseInsensitive(${eventAlertRuleExpr()}, ${value}) > 0
+    OR positionCaseInsensitive(${eventAlertTitleExpr()}, ${value}) > 0
+    OR positionCaseInsensitive(computer, ${value}) > 0
+    OR positionCaseInsensitive(user_name, ${value}) > 0
+    OR positionCaseInsensitive(source_ip, ${value}) > 0
+    OR positionCaseInsensitive(process_path, ${value}) > 0
+    OR positionCaseInsensitive(message, ${value}) > 0
+  )`;
+}
+
+function alertFailedLogonKeywordPredicate(q) {
+  return `positionCaseInsensitive(concat(
+    computer, ' ', user_name, ' ', source_ip,
+    ' HE-AUTH-001 Repeated failed logons failed logons within 5 minutes'
+  ), ${sqlString(q)}) > 0`;
+}
+
+function alertFailedLogonSeverityHaving(severity) {
+  if (severity === "high") return " AND count() >= 20";
+  if (severity === "medium") return " AND count() < 20";
+  if (severity === "critical" || severity === "low") return " AND 0";
+  return "";
+}
+
+async function logsSearch(ctx, res) {
+  const q = optionalString(ctx.url, "q", 200);
+  const keywordPredicate = q ? [`(
+    positionCaseInsensitive(message, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(command_line, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(process_path, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(raw_log, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(user_name, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(dns_query, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(target_filename, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(target_object, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(source_ip, ${sqlString(q)}) > 0
+    OR positionCaseInsensitive(destination_ip, ${sqlString(q)}) > 0
+  )`] : [];
+  const where = timeWhere(ctx.url, keywordPredicate);
+  const limit = limitParam(ctx.url, 100, 500);
+  const offset = offsetParam(ctx.url, 100000);
+
+  const [countRows, rows] = await Promise.all([
+    queryRows(`
+      SELECT count() AS total
+      FROM default.windows_system_logs
+      ${where.sql}
+    `),
+    queryRows(`
+      SELECT
+        kafka_timestamp AS time,
+        computer,
+        channel,
+        event_id AS eventId,
+        level,
+        provider_name AS providerName,
+        user_name AS userName,
+        process_path AS processPath,
+        left(command_line, 800) AS commandLine,
+        source_ip AS sourceIp,
+        destination_ip AS destinationIp,
+        dns_query AS dnsQuery,
+        target_filename AS targetFilename,
+        target_object AS targetObject,
+        left(message, 500) AS message,
+        idempotency_key AS idempotencyKey
+      FROM default.windows_system_logs
+      ${where.sql}
+      ORDER BY kafka_timestamp DESC
+      LIMIT ${limit}
+      OFFSET ${offset}
+    `),
+  ]);
+
+  const total = Number(countRows[0]?.total || 0);
+  sendJson(res, 200, {
+    items: rows,
+    total,
+    limit,
+    offset,
+    hasMore: offset + rows.length < total,
+    filters: {
+      q: q || "",
+      host: ctx.url.searchParams.get("host") || "",
+      channel: ctx.url.searchParams.get("channel") || "",
+      eventId: ctx.url.searchParams.get("eventId") || "",
+      from: where.from.toISOString(),
+      to: where.to.toISOString(),
+    },
+  });
 }
 
 async function logsRaw(ctx, res) {
@@ -1149,6 +3132,7 @@ async function logsRaw(ctx, res) {
     SELECT *
     FROM default.windows_system_logs
     WHERE idempotency_key = ${sqlString(key)}
+      ${scopePredicates().map((predicate) => `AND ${predicate}`).join("\n      ")}
     ORDER BY kafka_timestamp DESC
     LIMIT 1
   `);
@@ -1169,11 +3153,20 @@ async function queryRows(sql) {
     headers.authorization = `Basic ${Buffer.from(`${config.username}:${config.password}`).toString("base64")}`;
   }
 
-  const response = await fetch(config.clickhouseUrl, {
-    method: "POST",
-    headers,
-    body,
-  });
+  let response;
+  try {
+    response = await fetch(config.clickhouseUrl, {
+      method: "POST",
+      headers,
+      body,
+    });
+  } catch (cause) {
+    const error = new Error("ClickHouse is not reachable");
+    error.statusCode = 503;
+    error.detail = `${config.clickhouseUrl} - ${cause?.message || cause}`;
+    throw error;
+  }
+
   const text = await response.text();
 
   if (!response.ok) {
@@ -1190,22 +3183,20 @@ async function queryRows(sql) {
     .map((line) => JSON.parse(line));
 }
 
-function fieldExpr(column, ...jsonKeys) {
-  const fallbacks = jsonKeys.map((key) => `nullIf(JSONExtractString(event_data_json, ${sqlString(key)}), '')`);
-  return `coalesce(nullIf(${column}, ''), ${fallbacks.join(", ")}, '')`;
-}
-
-function processImageExpr() {
-  return fieldExpr("process_path", "Image", "NewProcessName", "ApplicationPath", "SourceImage");
-}
-
-function uintFieldExpr(column, jsonKey) {
-  return `if(${column} != 0, ${column}, toUInt32OrZero(JSONExtractString(event_data_json, ${sqlString(jsonKey)})))`;
+async function queryRowsOptionalTable(sql, tableName) {
+  try {
+    return await queryRows(sql);
+  } catch (error) {
+    const detail = String(error?.detail || "");
+    if (error?.statusCode === 502 && (detail.includes("UNKNOWN_TABLE") || detail.includes(`Table default.${tableName} does not exist`))) return [];
+    throw error;
+  }
 }
 
 function timeWhere(url, extraPredicates = []) {
   const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
   const host = url.searchParams.get("host");
   const channel = url.searchParams.get("channel");
   const eventId = url.searchParams.get("eventId");
@@ -1213,6 +3204,7 @@ function timeWhere(url, extraPredicates = []) {
     `kafka_timestamp >= ${sqlDate(from)}`,
     `kafka_timestamp <= ${sqlDate(to)}`,
     ...extraPredicates,
+    ...scopePredicates(),
   ];
 
   if (host) predicates.push(`computer = ${sqlString(host)}`);
@@ -1221,7 +3213,6 @@ function timeWhere(url, extraPredicates = []) {
 
   return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
 }
-
 function eventTypeExpression() {
   return `
     multiIf(
@@ -1262,6 +3253,14 @@ function bucketFunction(bucket) {
   return "toStartOfMinute";
 }
 
+function bucketParam(url, fallback = "second") {
+  const value = url.searchParams.get("bucket") || fallback;
+  if (!["second", "minute", "hour", "day"].includes(value)) {
+    badRequest("bucket must be one of: second, minute, hour, day");
+  }
+  return value;
+}
+
 function bucketDurationMs(bucket) {
   if (bucket === "hour") return 60 * 60 * 1000;
   if (bucket === "day") return 24 * 60 * 60 * 1000;
@@ -1286,13 +3285,79 @@ function heatLevel(value, max) {
   return 1;
 }
 
-function hostStatus(lastSeen) {
-  if (!lastSeen) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
-  const normalized = String(lastSeen).includes("T") ? lastSeen : String(lastSeen).replace(" ", "T");
-  const time = new Date(normalized).getTime();
-  if (Number.isNaN(time)) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+function alertTimeWhere(url, extraPredicates = []) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const predicates = [
+    `kafka_timestamp >= ${sqlDate(from)}`,
+    `kafka_timestamp <= ${sqlDate(to)}`,
+    ...extraPredicates,
+    ...scopePredicates(),
+  ];
+  const host = optionalString(url, "host", 255);
+  if (host) predicates.push(`computer = ${sqlString(host)}`);
+  return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
+}
+function operationalTimeWhere(url, timestampColumn, extraPredicates = [], columns = {}) {
+  const from = dateParam(url, "from", new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
+  const to = dateParam(url, "to", new Date());
+  if (from > to) badRequest("from must be earlier than or equal to to");
+  const hostColumn = columns.hostColumn === undefined ? "computer" : columns.hostColumn;
+  const agentColumn = columns.agentColumn === undefined ? "agent_id" : columns.agentColumn;
+  const predicates = [
+    `${timestampColumn} >= ${sqlDate(from)}`,
+    `${timestampColumn} <= ${sqlDate(to)}`,
+    ...extraPredicates,
+    ...scopePredicates({ hostColumn, agentColumn }),
+  ];
+  const host = url.searchParams.get("host");
+  if (host && hostColumn) predicates.push(`${hostColumn} = ${sqlString(host)}`);
+  return { sql: `WHERE ${predicates.join(" AND ")}`, from, to };
+}
 
-  const ageSeconds = Math.max(0, Math.floor((Date.now() - time) / 1000));
+function scopePredicates(columns = {}) {
+  const user = requestContext.getStore()?.user;
+  if (!user) return [];
+  const hostColumn = columns.hostColumn === undefined ? "computer" : columns.hostColumn;
+  const agentColumn = columns.agentColumn === undefined ? "agent_id" : columns.agentColumn;
+  const predicates = [];
+  const hosts = user.scopes?.hosts || [];
+  const agents = user.scopes?.agents || [];
+  if (hostColumn && hosts.length) predicates.push(`${hostColumn} IN (${hosts.map(sqlString).join(", ")})`);
+  if (agentColumn && agents.length) predicates.push(`${agentColumn} IN (${agents.map(sqlString).join(", ")})`);
+  return predicates;
+}
+
+function scopedWhere(columns = {}) {
+  const predicates = scopePredicates(columns);
+  return predicates.length ? `WHERE ${predicates.join(" AND ")}` : "";
+}
+
+function dateValue(value) {
+  if (!value) return 0;
+  const normalized = String(value).includes("T") ? String(value) : String(value).replace(" ", "T");
+  const parsed = new Date(normalized).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function latestDate(...values) {
+  let latest = null;
+  let latestValue = 0;
+  for (const value of values) {
+    const timestamp = dateValue(value);
+    if (timestamp >= latestValue && timestamp > 0) {
+      latest = value;
+      latestValue = timestamp;
+    }
+  }
+  return latest;
+}
+
+function hostStatus(lastSeen) {
+  const timestamp = dateValue(lastSeen);
+  if (!timestamp) return { level: "unknown", label: hostLevelLabel("unknown"), ageSeconds: null };
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (ageSeconds <= 5 * 60) return { level: "online", label: hostLevelLabel("online"), ageSeconds };
   if (ageSeconds <= 60 * 60) return { level: "active", label: hostLevelLabel("active"), ageSeconds };
   if (ageSeconds <= 24 * 60 * 60) return { level: "delayed", label: hostLevelLabel("delayed"), ageSeconds };
@@ -1305,6 +3370,40 @@ function hostLevelLabel(level) {
   if (level === "delayed") return "Delayed <= 24h";
   if (level === "stale") return "Stale > 24h";
   return "Unknown";
+}
+
+function collectionStatus(row, activityLevel) {
+  const lifecycle = `${row.agentStatus || ""} ${row.enrollmentStatus || ""}`.toLowerCase();
+  if (/disabled|revoked|decommissioned/.test(lifecycle)) {
+    return { level: "disabled", label: collectionLevelLabel("disabled") };
+  }
+
+  const ack = String(row.lastAckStatus || "").toLowerCase();
+  const statusCode = Number(row.statusCode || 0);
+  const uploadFailed = statusCode >= 400
+    || (statusCode > 0 && row.success === false)
+    || row.dataLoss === true
+    || /fail|reject|denied|invalid/.test(ack);
+  if (uploadFailed) return { level: "failed", label: collectionLevelLabel("failed") };
+
+  if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) {
+    return { level: "delayed", label: collectionLevelLabel("delayed") };
+  }
+
+  const hasCollectionSignal = Boolean(row.lastLogSeen || row.lastMetricSeen || row.lastChunk || Number(row.totalEvents || 0));
+  if (!hasCollectionSignal) return { level: "unknown", label: collectionLevelLabel("unknown") };
+  if (activityLevel === "stale") return { level: "stale", label: collectionLevelLabel("stale") };
+  if (activityLevel === "unknown") return { level: "unknown", label: collectionLevelLabel("unknown") };
+  return { level: "ok", label: collectionLevelLabel("ok") };
+}
+
+function collectionLevelLabel(level) {
+  if (level === "ok") return "Healthy";
+  if (level === "delayed") return "Backlogged";
+  if (level === "failed") return "Upload failed";
+  if (level === "stale") return "No recent activity";
+  if (level === "disabled") return "Disabled";
+  return "No collection data";
 }
 
 function jitterStatus(row) {
@@ -1325,10 +3424,276 @@ function jitterStatusLabel(level) {
   return "Silent";
 }
 
+function sumNullable(items, field) {
+  return items.reduce((sum, item) => sum + Number(item[field] || 0), 0);
+}
+
+function parseCounterMap(value) {
+  try {
+    const parsed = JSON.parse(String(value || "{}"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function logLossRatio(item, url) {
+  const channel = String(url.searchParams.get("channel") || "").trim();
+  const eventId = String(url.searchParams.get("eventId") || "").trim();
+  const agent = String(url.searchParams.get("agent") || "").trim();
+  if (agent && agent !== String(item.agentId || "")) {
+    return { ratioExcluded: true, ratioCoverage: "unavailable", ratioMessage: "Agent does not match the selected filter." };
+  }
+  if (item.coverage !== "measured") return {};
+  const dimensionFilter = Boolean(channel || eventId);
+  let collected = Number(item.collectedEventCount || 0);
+  let dropped = Number(item.droppedEventCount || 0);
+  if (dimensionFilter) {
+    if (Object.keys(item.collectedBySource || {}).length === 0) {
+      return { ratioCollectedEventCount: null, ratioDroppedEventCount: null, lossRatioPercent: null, ratioCoverage: "unavailable", ratioMessage: "Endpoint has not reported UC-15 channel/Event ID counters." };
+    }
+    collected = 0;
+    dropped = 0;
+    for (const [key, value] of Object.entries(item.collectedBySource)) {
+      const [keyChannel, keyEventId] = key.split("\u001f");
+      if ((!channel || channel === keyChannel) && (!eventId || eventId === keyEventId)) collected += Number(value || 0);
+    }
+    for (const [key, value] of Object.entries(item.droppedBySource)) {
+      const [keyChannel, keyEventId] = key.split("\u001f");
+      if ((!channel || channel === keyChannel) && (!eventId || eventId === keyEventId)) dropped += Number(value || 0);
+    }
+  }
+  const partial = dimensionFilter && Number(item.unattributedDroppedEventCount || 0) > 0;
+  return {
+    ratioCollectedEventCount: collected,
+    ratioDroppedEventCount: dropped,
+    lossRatioPercent: collected > 0 ? Number((dropped * 100 / collected).toFixed(4)) : (dropped === 0 ? 0 : null),
+    ratioCoverage: partial ? "partial" : "measured",
+    ratioMessage: partial
+      ? "Some dropped chunks could not be decoded, so the filtered ratio is a lower bound."
+      : (dimensionFilter ? "Ratio uses Shipper counters for the selected channel/Event ID." : "Ratio uses cumulative Shipper collected and quota-dropped counters."),
+  };
+}
+
+function weightedLossRatio(items) {
+  const included = items.filter((item) => !item.ratioExcluded && item.ratioCoverage !== "unavailable");
+  const collected = included.reduce((sum, item) => sum + Number(item.ratioCollectedEventCount || 0), 0);
+  const dropped = included.reduce((sum, item) => sum + Number(item.ratioDroppedEventCount || 0), 0);
+  return collected > 0 ? Number((dropped * 100 / collected).toFixed(4)) : (dropped === 0 && included.length ? 0 : null);
+}
+
+function logLossCause(row) {
+  const dropped = Number(row.droppedEventCount || 0);
+  const pending = Number(row.pendingEventCount || 0);
+  const queueUsed = Number(row.queueUsedBytes || 0);
+  const maxSpool = Number(row.maxSpoolBytes || 0);
+  const pressure = maxSpool > 0 ? queueUsed / maxSpool : 0;
+  const statusCode = Number(row.transportStatusCode || 0);
+  const ack = String(row.transportMetricType || "").toLowerCase();
+  const errorType = String(row.latestErrorType || "").toLowerCase();
+  const transportMessage = String(row.transportMessage || "").trim();
+  const observedAt = latestDate(row.latestErrorSeen, row.transportLastSeen, row.metricLastSeen, row.lastSeen);
+
+  if (dropped > 0 || Number(row.transportDataLoss || 0) === 1) {
+    return causeResult("quota_eviction", "failed", `HostEyeShipper recorded ${dropped} event(s) removed while enforcing the spool quota.`, observedAt);
+  }
+  if (["spool_write_failed", "ingest_write_failed"].includes(errorType)) {
+    return causeResult("spool_write_failure", "failed", `Agent reported ${errorType}.`, observedAt);
+  }
+  if (["source_read_failed", "collector_read_failed"].includes(errorType)) {
+    return causeResult("source_read_failure", "failed", `Agent reported ${errorType}.`, observedAt);
+  }
+  if (["checksum_invalid", "event_count_mismatch", "missing_fields", "schema_invalid", "conflict_409"].includes(errorType)) {
+    return causeResult("chunk_rejected", "failed", `Gateway rejected or quarantined a chunk: ${errorType}.`, observedAt);
+  }
+  if (statusCode === 401 || statusCode === 403) {
+    return causeResult("identity_rejected", "failed", `Gateway returned HTTP ${statusCode}; verify the client certificate and endpoint identity.`, observedAt);
+  }
+  if (statusCode >= 500) {
+    return causeResult("gateway_failure", "failed", transportMessage || `Gateway returned HTTP ${statusCode}.`, observedAt);
+  }
+  if (statusCode >= 400) {
+    return causeResult("upload_rejected", "failed", transportMessage || `Gateway returned HTTP ${statusCode}.`, observedAt);
+  }
+  if (statusCode === 0 && Number(row.transportSuccess || 0) === 0 && row.transportLastSeen) {
+    return causeResult("transport_unreachable", "failed", transportMessage || "The Shipper could not obtain an HTTP response from the upload path.", observedAt);
+  }
+  if (pressure >= 1) {
+    return causeResult("spool_full", "failed", `Spool usage reached ${Math.round(pressure * 100)}% of its configured limit.`, observedAt);
+  }
+  if (pressure >= 0.8) {
+    return causeResult("spool_pressure", "delayed", `Spool usage reached ${Math.round(pressure * 100)}% with ${pending} event(s) waiting.`, observedAt);
+  }
+  if (row.lastSeen && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000) {
+    return causeResult("endpoint_silent", "delayed", "No recent Agent, Shipper, gateway, or registration evidence was observed for more than 15 minutes.", row.lastSeen);
+  }
+  if (pending > 0 || ack === "retrying") {
+    return causeResult("retry_backlog", "delayed", `${pending} event(s) remain in durable spool awaiting retry.`, observedAt);
+  }
+  if (row.coverage !== "measured") {
+    return causeResult("insufficient_evidence", "unknown", "This endpoint has not reported the counters and transport evidence required to determine a cause.", observedAt);
+  }
+  return causeResult("no_active_loss", "ok", "No loss or delivery failure is present in the latest measured evidence.", observedAt);
+}
+
+function causeResult(code, level, evidence, observedAt) {
+  return { causeCode: code, causeLabel: causeLabel(code), causeLevel: level, causeEvidence: evidence, causeObservedAt: observedAt || null };
+}
+
+function causeLabel(code) {
+  return ({
+    quota_eviction: "Spool quota removed unsent data",
+    spool_write_failure: "Spool write failure",
+    source_read_failure: "Log source read failure",
+    chunk_rejected: "Chunk rejected or quarantined",
+    identity_rejected: "Endpoint identity rejected",
+    gateway_failure: "Gateway/server failure",
+    upload_rejected: "Upload rejected",
+    transport_unreachable: "Upload path unreachable",
+    spool_full: "Spool full",
+    spool_pressure: "Spool under pressure",
+    endpoint_silent: "Agent/Shipper silent",
+    retry_backlog: "Waiting for retry",
+    insufficient_evidence: "Insufficient evidence",
+    no_active_loss: "No active loss cause",
+  })[code] || code || "Unknown";
+}
+
+function retryBacklogStatus(row) {
+  const decision = String(row.admissionDecision || "").toLowerCase();
+  const pending = Number(row.pendingEventCount || 0);
+  const retryCount = Number(row.retryCount || 0);
+  const retryAfter = Number(row.retryAfterSeconds || 0);
+  const observedAt = latestDate(row.metricLastSeen, row.transportLastSeen, row.serverLastSeen);
+
+  if (retryAfter > 0 || decision === "ng") {
+    return {
+      retryStatus: "backpressure",
+      retryStatusLabel: "Waiting for admission/backpressure",
+      retryStatusLevel: "delayed",
+      retryEvidence: row.admissionMessage || `Control plane requested a retry after ${retryAfter} second(s).`,
+      retryObservedAt: observedAt,
+    };
+  }
+  if (Number(row.transportSuccess || 0) === 1) {
+    return {
+      retryStatus: "resending",
+      retryStatusLabel: "Connected and resending",
+      retryStatusLevel: "ok",
+      retryEvidence: `${pending} event(s) remain after the latest successful upload; retry count ${retryCount}.`,
+      retryObservedAt: observedAt,
+    };
+  }
+  return {
+    retryStatus: "waiting_connection",
+    retryStatusLabel: "Waiting for connection to resend",
+    retryStatusLevel: "failed",
+    retryEvidence: row.transportMessage || `${pending} event(s) remain in durable spool; retry count ${retryCount}.`,
+    retryObservedAt: observedAt,
+  };
+}
+
+function readLossAlertThresholds() {
+  const defaults = {
+    ...DEFAULT_LOSS_ALERT_THRESHOLDS,
+    version: 1,
+    updatedAt: null,
+    updatedBy: "system-default",
+  };
+  if (!existsSync(config.lossAlertThresholdsFile)) return { policy: defaults, source: "default" };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(config.lossAlertThresholdsFile, "utf8"));
+  } catch (error) {
+    const failure = new Error("Stored log-loss alert thresholds are not valid JSON");
+    failure.detail = error.message;
+    throw failure;
+  }
+  const values = normalizeLossAlertThresholdValues(parsed, 500);
+  return {
+    policy: {
+      ...values,
+      version: Number.isSafeInteger(Number(parsed.version)) && Number(parsed.version) > 0 ? Number(parsed.version) : 1,
+      updatedAt: parsed.updatedAt || null,
+      updatedBy: parsed.updatedBy || "unknown",
+    },
+    source: "file",
+  };
+}
+
+function normalizeLossAlertThresholdValues(input, statusCode) {
+  const fail = (message) => {
+    const error = new Error(message);
+    error.statusCode = statusCode;
+    throw error;
+  };
+  if (!input || typeof input !== "object" || Array.isArray(input)) fail("Threshold policy must be a JSON object");
+  const numberValue = (name, min, max, integer = false) => {
+    const value = Number(input[name]);
+    if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+      fail(`${name} must be ${integer ? "an integer " : "a number "}between ${min} and ${max}`);
+    }
+    return value;
+  };
+  return {
+    lossRatioPercent: numberValue("lossRatioPercent", 0, 100),
+    backlogEvents: numberValue("backlogEvents", 1, 1000000000, true),
+    disconnectMinutes: numberValue("disconnectMinutes", 0, 1440, true),
+    interruptionMinutes: numberValue("interruptionMinutes", 5, 1440, true),
+  };
+}
+
+function persistLossAlertThresholds(policy) {
+  mkdirSync(dirname(config.lossAlertThresholdsFile), { recursive: true });
+  const temporary = `${config.lossAlertThresholdsFile}.tmp-${process.pid}`;
+  writeFileSync(temporary, `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  renameSync(temporary, config.lossAlertThresholdsFile);
+}
+
+function logLossRiskStateLabel(state) {
+  return ({
+    disconnected: "Upload disconnected",
+    interrupted: "Collection interrupted",
+    at_risk: "At risk of loss",
+    backlog: "Retry backlog",
+    normal: "Normal",
+    unknown: "Insufficient evidence",
+  })[state] || "Insufficient evidence";
+}
+
+function logLossRiskState(row) {
+  const flags = [];
+  const transportDisconnected = Number(row.transportStatusCode || 0) === 0
+    && Number(row.transportSuccess || 0) === 0 && Boolean(row.transportLastSeen);
+  const interrupted = Boolean(row.lastSeen) && Date.now() - dateValue(row.lastSeen) > 15 * 60 * 1000;
+  const atRisk = Number(row.atRiskEventCount || 0) > 0 || Number(row.droppedEventCount || 0) > 0;
+  const backlog = Number(row.pendingEventCount || 0) > 0;
+  if (transportDisconnected) flags.push("disconnected");
+  if (interrupted) flags.push("interrupted");
+  if (atRisk) flags.push("at_risk");
+  if (backlog) flags.push("backlog");
+  if (!flags.length) flags.push(row.coverage === "measured" ? "normal" : "unknown");
+
+  const state = ["disconnected", "interrupted", "at_risk", "backlog", "normal", "unknown"]
+    .find((candidate) => flags.includes(candidate)) || "unknown";
+  const label = logLossRiskStateLabel(state);
+  return { state, label, flags };
+}
+
+function logLossStatus(row) {
+  if (row.coverage !== "measured") return { level: "unknown", label: "No endpoint counters" };
+  if (Number(row.droppedEventCount || 0) > 0) return { level: "failed", label: "Loss recorded" };
+  if (Number(row.atRiskEventCount || 0) > 0) return { level: "delayed", label: "At risk" };
+  if (Number(row.pendingEventCount || 0) > 0) return { level: "bursty", label: "Waiting to send" };
+  return { level: "ok", label: "No measured loss" };
+}
+
 function chunkStatus(row) {
-  if (Number(row.success || 0) !== 1 || Number(row.statusCode || 0) >= 400) return "failed";
+  const statusCode = Number(row.statusCode || 0);
+  if (statusCode >= 400 || (statusCode > 0 && Number(row.success || 0) !== 1)) return "failed";
   if (Number(row.dataLoss || 0) === 1) return "failed";
   if (Number(row.spoolDepthBytes || 0) >= 1024 * 1024 * 1024 || Number(row.pendingFileCount || 0) >= 20) return "delayed";
+  if (!row.lastSeen) return "silent";
   return "ok";
 }
 
@@ -1368,6 +3733,34 @@ function parseDate(value, name) {
   return date;
 }
 
+function optionalString(url, name, maxLength) {
+  const raw = url.searchParams.get(name);
+  if (raw === null || !raw.trim()) return null;
+  const value = raw.trim();
+  if (value.length > maxLength) badRequest(`${name} must be at most ${maxLength} characters`);
+  return value;
+}
+
+
+function optionalEnum(url, name, values) {
+  const raw = optionalString(url, name, 64);
+  if (!raw) return null;
+  const value = raw.toLowerCase();
+  if (!values.includes(value)) badRequest(`${name} must be one of: ${values.join(", ")}`);
+  return value;
+}
+
+function offsetParam(url, max) {
+  const raw = url.searchParams.get("offset");
+  if (!raw) return 0;
+  if (!/^\d+$/.test(raw)) badRequest("offset must be a non-negative integer");
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+    badRequest(`offset must be between 0 and ${max}`);
+  }
+  return value;
+}
+
 function requiredString(url, name) {
   const value = url.searchParams.get(name);
   if (!value || !value.trim()) badRequest(`${name} is required`);
@@ -1377,15 +3770,21 @@ function requiredString(url, name) {
 function limitParam(url, fallback, max, name = "limit") {
   const raw = url.searchParams.get(name);
   if (!raw) return fallback;
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value) || value < 1) badRequest(`${name} must be a positive integer`);
+  if (!/^\d+$/.test(raw)) badRequest(`${name} must be a positive integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) badRequest(`${name} must be a positive integer`);
   return Math.min(value, max);
 }
 
 function uintParam(value, name) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isInteger(parsed) || parsed < 0) badRequest(`${name} must be a non-negative integer`);
+  if (!/^\d+$/.test(String(value))) badRequest(`${name} must be a non-negative integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) badRequest(`${name} must be a non-negative integer`);
   return parsed;
+}
+
+function sqlClickHouseDate(value) {
+  return `parseDateTime64BestEffort(${sqlString(value)}, 3)`;
 }
 
 function sqlDate(date) {
@@ -1413,6 +3812,25 @@ async function readJsonBody(req) {
     badRequest("Request body must be valid JSON");
   }
 }
+function sendCsv(res, filename, headers, rows) {
+  const lines = [headers, ...rows].map((row) => row.map(csvCell).join(","));
+  const body = "\uFEFF" + lines.join("\r\n") + "\r\n";
+  res.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="${filename}"`,
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
+  res.end(body);
+}
+
+function csvCell(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  let text = String(value);
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+}
 function sendJson(res, status, payload) {
   const body = JSON.stringify(payload, jsonReplacer);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -1425,14 +3843,73 @@ function jsonReplacer(_key, value) {
 
 function setCors(res) {
   res.setHeader("access-control-allow-origin", config.corsOrigin);
-  res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  res.setHeader("access-control-allow-methods", "GET,POST,PUT,OPTIONS");
   res.setHeader("access-control-allow-headers", "content-type,authorization");
+  res.setHeader("cache-control", "no-store");
+  res.setHeader("content-security-policy", "default-src 'none'; frame-ancestors 'none'");
+  res.setHeader("cross-origin-resource-policy", "same-origin");
+  res.setHeader("referrer-policy", "no-referrer");
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("x-frame-options", "DENY");
+}
+
+function loginClientKey(req) {
+  const cloudflareIp = String(req.headers["cf-connecting-ip"] || "").trim();
+  const forwardedIp = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return cloudflareIp || forwardedIp || req.socket.remoteAddress || "unknown";
+}
+
+function enforceLoginRateLimit(clientKey, res) {
+  const now = Date.now();
+  const windowMs = config.loginAttemptWindowMinutes * 60 * 1000;
+  const current = loginAttempts.get(clientKey);
+  if (!current || now - current.startedAt >= windowMs) {
+    loginAttempts.delete(clientKey);
+    return;
+  }
+  if (current.count < config.loginAttemptLimit) return;
+
+  const retryAfterSeconds = Math.max(1, Math.ceil((current.startedAt + windowMs - now) / 1000));
+  res.setHeader("retry-after", String(retryAfterSeconds));
+  tooManyRequests("Too many login attempts. Try again later.");
+}
+
+function recordFailedLogin(clientKey) {
+  const now = Date.now();
+  const windowMs = config.loginAttemptWindowMinutes * 60 * 1000;
+  const current = loginAttempts.get(clientKey);
+  if (!current || now - current.startedAt >= windowMs) {
+    loginAttempts.set(clientKey, { count: 1, startedAt: now });
+    return;
+  }
+  current.count += 1;
 }
 
 function badRequest(message) {
   const error = new Error(message);
   error.statusCode = 400;
   throw error;
+}
+
+function tooManyRequests(message) {
+  const error = new Error(message);
+  error.statusCode = 429;
+  throw error;
+}
+
+function boolFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  return ["1", "true", "yes", "on"].includes(String(raw).toLowerCase());
+}
+
+function validateDashboardAuthConfig(value) {
+  if (!value.dashboardAuthRequired || existsSync(value.dashboardUsersFile)) return;
+  const password = String(value.bootstrapAdminPassword || "");
+  const forbidden = new Set(["hosteye-admin-demo", "change-this-before-deployment"]);
+  if (password.length < 16 || forbidden.has(password)) {
+    throw new Error("HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD must be set to a unique value of at least 16 characters before the first authenticated start");
+  }
 }
 
 function intFromEnv(name, fallback) {
@@ -1459,12 +3936,3 @@ function loadDotEnv() {
     }
   }
 }
-
-
-
-
-
-
-
-
-

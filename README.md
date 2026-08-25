@@ -6,8 +6,8 @@ SOC log pipeline demo for Windows endpoint telemetry.
 
 - `DockerAllInOne`: single-container build (nginx + ClickHouse + Vector + dashboard API/UI) used for the live lab deployment behind one HTTP port.
 - `HostEyeDashboard`: HostEye dashboard web UI (static assets served by a small Node `server.js`).
-- `VectorDashboardApi`: read-only HTTP API that powers the dashboard by querying ClickHouse (this is the API served in the all-in-one container).
-- `HostEyeDashboardApi`: standalone dashboard API package (alternate to `VectorDashboardApi`).
+- `VectorDashboardApi`: legacy read-only ClickHouse API retained for compatibility tests.
+- `HostEyeDashboardApi`: authenticated Dashboard API used by the multi-container and all-in-one deployments.
 - `HostEyeDemoLab`: PowerShell automation to spin up, reset, and test a Windows demo lab that ships telemetry to the gateway.
 - `VectorBuild`: Windows endpoint installer assets, Vector config, Sysmon config, and SOCShipper.
 - `VectorServer`: update server and certificate helper scripts.

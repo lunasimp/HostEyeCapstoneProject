@@ -189,9 +189,48 @@ async fn get_agent_config(
             .ok_or_else(|| ApiError::not_found("no enabled policy matched this agent"))?
     };
 
-    if request.current_policy_id.as_deref() == Some(policy.policy_id.as_str())
-        && request.current_version == Some(policy.version)
-    {
+    let is_current = request.current_policy_id.as_deref() == Some(policy.policy_id.as_str())
+        && request.current_version == Some(policy.version);
+    let now = Utc::now();
+    let snapshot = {
+        let mut guard = app.state.write().map_err(|_| ApiError::internal("state lock poisoned"))?;
+        let agent = guard.agents.entry(agent_id.clone()).or_insert_with(|| AgentState {
+            agent_id: agent_id.clone(),
+            host_id: request.host_id.clone(),
+            group_id: request.group_id.clone(),
+            agent_version: request.agent_version.clone(),
+            reported_policy_id: request.current_policy_id.clone(),
+            reported_version: request.current_version,
+            desired_policy_id: policy.policy_id.clone(),
+            desired_version: policy.version,
+            delivery_status: if is_current { "up_to_date" } else { "sent_waiting_ack" }.to_string(),
+            last_poll_at: Some(now),
+            last_delivery_at: if is_current { None } else { Some(now) },
+            last_ack_at: None,
+            last_policy_id: String::new(),
+            last_version: 0,
+            last_seen_at: now,
+            last_ack_status: "not_acknowledged".to_string(),
+            last_ack_message: String::new(),
+        });
+        agent.host_id = request.host_id.clone();
+        agent.group_id = request.group_id.clone();
+        agent.agent_version = request.agent_version.clone();
+        agent.reported_policy_id = request.current_policy_id.clone();
+        agent.reported_version = request.current_version;
+        agent.desired_policy_id = policy.policy_id.clone();
+        agent.desired_version = policy.version;
+        agent.delivery_status = if is_current { "up_to_date" } else { "sent_waiting_ack" }.to_string();
+        agent.last_poll_at = Some(now);
+        if !is_current {
+            agent.last_delivery_at = Some(now);
+        }
+        agent.last_seen_at = now;
+        guard.clone()
+    };
+    save_state(&app.store_path, &snapshot).await?;
+
+    if is_current {
         return Ok((StatusCode::NOT_MODIFIED, "").into_response());
     }
 
@@ -239,6 +278,15 @@ async fn ack_config(
         agent_id: ack.agent_id.clone(),
         host_id: ack.host_id.clone(),
         group_id: ack.group_id.clone(),
+        agent_version: String::new(),
+        reported_policy_id: successful_ack(&ack.status).then(|| ack.policy_id.clone()),
+        reported_version: successful_ack(&ack.status).then_some(ack.version),
+        desired_policy_id: ack.policy_id.clone(),
+        desired_version: ack.version,
+        delivery_status: ack_delivery_status(&ack.status).to_string(),
+        last_poll_at: None,
+        last_delivery_at: None,
+        last_ack_at: Some(ack.applied_at),
         last_policy_id: ack.policy_id.clone(),
         last_version: ack.version,
         last_seen_at: ack.applied_at,
@@ -251,6 +299,14 @@ async fn ack_config(
         let current = guard.agents.entry(ack.agent_id.clone()).or_insert(agent.clone());
         current.host_id = ack.host_id;
         current.group_id = ack.group_id;
+        if successful_ack(&ack.status) {
+            current.reported_policy_id = Some(ack.policy_id.clone());
+            current.reported_version = Some(ack.version);
+        }
+        current.desired_policy_id = ack.policy_id.clone();
+        current.desired_version = ack.version;
+        current.delivery_status = ack_delivery_status(&ack.status).to_string();
+        current.last_ack_at = Some(ack.applied_at);
         current.last_policy_id = ack.policy_id;
         current.last_version = ack.version;
         current.last_seen_at = ack.applied_at;
@@ -262,6 +318,19 @@ async fn ack_config(
     save_state(&app.store_path, &snapshot).await?;
     let guard = app.state.read().map_err(|_| ApiError::internal("state lock poisoned"))?;
     Ok(Json(guard.agents.get(&agent_id).cloned().unwrap_or(agent)))
+}
+
+fn successful_ack(status: &str) -> bool {
+    matches!(status, "applied" | "rendered")
+}
+
+fn ack_delivery_status(status: &str) -> &str {
+    match status {
+        "applied" => "applied",
+        "rendered" => "rendered",
+        "apply_failed" => "apply_failed",
+        _ => "acknowledged",
+    }
 }
 
 async fn load_state(path: &PathBuf) -> Result<ControlPlaneState> {

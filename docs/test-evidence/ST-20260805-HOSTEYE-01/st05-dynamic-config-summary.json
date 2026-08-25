@@ -1,0 +1,40 @@
+﻿{
+    "run_id":  "ST-20260805-HOSTEYE-01",
+    "captured_at_utc":  "2026-08-05T05:50:15.7995434Z",
+    "agent_id":  "st05-config-agent-20260805",
+    "host_id":  "st05-config-host-20260805",
+    "group_id":  "group-report5",
+    "policy_id":  "policy-default-windows-baseline",
+    "policy_version":  1,
+    "signature_algorithm":  "ed25519",
+    "key_id":  "hosteye-demo-ed25519-v1",
+    "config_sha256":  "212411df417e43eba7326567fbca151f5437e5fd1a32f726b11d165339f4cbda",
+    "state":  {
+                  "policy_id":  "policy-default-windows-baseline",
+                  "version":  1
+              },
+    "agent_ack":  {
+                      "agent_id":  "st05-config-agent-20260805",
+                      "host_id":  "st05-config-host-20260805",
+                      "group_id":  "group-report5",
+                      "last_policy_id":  "policy-default-windows-baseline",
+                      "last_version":  1,
+                      "last_seen_at":  "2026-08-05T05:49:14.246467971Z",
+                      "last_ack_status":  "applied",
+                      "last_ack_message":  "Atomic apply completed; backup=/out/backups/20260805054914; files=/out/applied-policy.json,/out/vector-dynamic.toml"
+                  },
+    "generated_files":  [
+                            {
+                                "Name":  "applied-policy.json",
+                                "Length":  1459
+                            },
+                            {
+                                "Name":  "state.json",
+                                "Length":  68
+                            },
+                            {
+                                "Name":  "vector-dynamic.toml",
+                                "Length":  802
+                            }
+                        ]
+}

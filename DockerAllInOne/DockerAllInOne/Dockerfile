@@ -25,8 +25,7 @@ COPY --from=vector-bin /usr/local/bin/vector /usr/local/bin/vector
 WORKDIR /opt/hosteye
 
 COPY HostEyeDashboard /opt/hosteye/HostEyeDashboard
-COPY VectorDashboardApi /opt/hosteye/VectorDashboardApi
-COPY VectorBuild /opt/hosteye/artifacts/VectorBuild
+COPY HostEyeDashboardApi /opt/hosteye/HostEyeDashboardApi
 COPY VectorServer /opt/hosteye/artifacts/VectorServer
 
 COPY Vector-HA-Cluster/clickhouse-init /docker-entrypoint-initdb.d

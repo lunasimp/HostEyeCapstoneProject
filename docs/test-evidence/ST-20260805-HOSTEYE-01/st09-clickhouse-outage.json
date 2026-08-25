@@ -1,0 +1,13 @@
+﻿{
+  "run_id": "ST-20260805-HOSTEYE-01",
+  "captured_at_utc": "2026-08-05T05:59:33.510Z",
+  "scenario": "Dashboard API with unreachable ClickHouse",
+  "expected_http_status": 503,
+  "actual_http_status": 503,
+  "pass": true,
+  "response": {
+    "message": "ClickHouse is not reachable"
+  },
+  "server_stdout": "HostEye Dashboard API listening on http://localhost:5099\nClickHouse: http://127.0.0.1:65534 database=default",
+  "server_stderr": ""
+}

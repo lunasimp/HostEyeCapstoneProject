@@ -1,0 +1,6 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-03",
+    "status":  503,
+    "body":  "{\"message\":\"ClickHouse is not reachable\",\"detail\":\"http://127.0.0.1:65530 - fetch failed\"}",
+    "passed":  true
+}

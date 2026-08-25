@@ -1,7 +1,7 @@
 *
 !HostEyeDashboard/**
+!HostEyeDashboardApi/**
 !VectorDashboardApi/**
-!VectorBuild/**
 !VectorServer/**
 !Vector-HA-Cluster/clickhouse-init/**
 !Vector-HA-Cluster/clickhouse-config/**

@@ -1,18 +1,20 @@
 services:
   # ===========================================================================
-  # 1. Táº¦NG CÃ‚N Báº°NG Táº¢I & CHá»T CHáº¶N BIÃŠN BIÃŠN Máº NG (LOAD BALANCER LAYER)
+  # 1. TẦNG CÂN BẰNG TẢI & CHỐT CHẶN BIÊN BIÊN MẠNG (LOAD BALANCER LAYER)
   # ===========================================================================
   nginx-lb:
     image: nginx:alpine
     container_name: nginx-load-balancer
     ports:
-      - "80:80"   # Há»©ng luá»“ng chuyá»ƒn hÆ°á»›ng (HTTP Redirect)
-      - "443:443" # ðŸ” Sá»¬A Lá»–I CHÃ Máº NG: Má»Ÿ cá»•ng HTTPS cÃ´ng cá»™ng Ä‘Ã³n nháº­n luá»“ng mTLS tá»« Agent
+      - "80:80"   # Hứng luồng chuyển hướng (HTTP Redirect)
+      - "443:443" # 🔐 SỬA LỖI CHÍ MẠNG: Mở cổng HTTPS công cộng đón nhận luồng mTLS từ Agent
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./certs:/etc/nginx/certs:ro # PhÃ¢n phá»‘i chá»©ng chá»‰ mTLS an toÃ n vÃ o Nginx
+      - ./certs:/etc/nginx/certs:ro # Phân phối chứng chỉ mTLS an toàn vào Nginx
     depends_on:
       - control-plane
+      - hosteye-registration
+      - hosteye-dynamic-config
       - collector-a
       - collector-b
       - collector-c
@@ -29,14 +31,14 @@ services:
       - soc-network
 
   # ===========================================================================
-  # 2. Táº¦NG TIáº¾P NHáº¬N PHI TRáº NG THÃI & LÃ€M Sáº CH PII (VECTOR GATEWAY CLUSTER)
+  # 2. TẦNG TIẾP NHẬN PHI TRẠNG THÁI & LÀM SẠCH PII (VECTOR GATEWAY CLUSTER)
   # ===========================================================================
   vector-gateway-1:
     image: timberio/vector:0.35.0-alpine
     container_name: vector-gateway-1
     volumes:
       - ./vector-gateway.toml:/etc/vector/vector.toml:ro
-      - ./soc_vault:/var/log/soc_vault # ðŸ” VÃ Lá»– Há»”NG Váº¤N Äá»€ 6: Ãnh xáº¡ kho log thÃ´ gá»‘c (Cold Storage) an toÃ n xuá»‘ng Ä‘Ä©a cá»©ng váº­t lÃ½
+      - ./soc_vault:/var/log/soc_vault # 🔐 VÁ LỖ HỔNG VẤN ĐỀ 6: Ánh xạ kho log thô gốc (Cold Storage) an toàn xuống đĩa cứng vật lý
     command: ["--config", "/etc/vector/vector.toml"]
     networks:
       - soc-network
@@ -46,29 +48,22 @@ services:
     container_name: vector-gateway-2
     volumes:
       - ./vector-gateway.toml:/etc/vector/vector.toml:ro
-      - ./soc_vault:/var/log/soc_vault # Äáº£m báº£o tÃ­nh sáºµn sÃ ng cao Ä‘á»“ng bá»™ Ä‘Ä©a lÆ°u trá»¯ phÃ¡p chá»©ng
+      - ./soc_vault:/var/log/soc_vault # Đảm bảo tính sẵn sàng cao đồng bộ đĩa lưu trữ pháp chứng
     command: ["--config", "/etc/vector/vector.toml"]
     networks:
       - soc-network
 
   control-plane:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: control_server
     container_name: hosteye-control-plane
-    working_dir: /app
-    command: ["node", "control-server.js"]
     environment:
       PORT: "8080"
       CLICKHOUSE_URL: "http://clickhouse:8123"
-      MAX_BODY_BYTES: "26214400"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      CONFIG_ARTIFACT_DIR: "/var/lib/hosteye/agent_config"
       PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
       DEFAULT_COLLECTOR_ID: "collector-a"
       DEFAULT_COLLECTOR_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-a"
-      AGENT_CONFIG_VERSION: "1.0.0"
-      AGENT_CONFIG_POLICY_ID: "hosteye-default-ingest-policy"
-      AGENT_CONFIG_KEY_ID: "hosteye-hmac-demo-v1"
-      AGENT_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
       ADMISSION_LEASE_TTL_SECONDS: "30"
       ADMISSION_MAX_BATCH_MB: "5"
@@ -76,29 +71,72 @@ services:
       CONTROL_SEND_AFTER_MS: "${CONTROL_SEND_AFTER_MS:-0}"
       CONTROL_COLLECTOR_SLOT_MS: "${CONTROL_COLLECTOR_SLOT_MS:-1000}"
       ALLOW_DEFAULT_COLLECTOR_FALLBACK: "${ALLOW_DEFAULT_COLLECTOR_FALLBACK:-false}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8080:8080"
-    volumes:
-      - ../VectorIngestAckGateway:/app:ro
-      - ./leases:/var/lib/hosteye/leases
-      - ../VectorBuild:/var/lib/hosteye/agent_config:ro
     depends_on:
       - clickhouse
     networks:
       - soc-network
 
+  hosteye-registration:
+    build:
+      context: ../HostEyeRegistration
+    container_name: hosteye-registration
+    environment:
+      PORT: "5054"
+      HOSTEYE_REGISTRATION_STORE: "/app/data/registration-state.json"
+      HOSTEYE_CA_CERTIFICATE: "/app/data/ca/company_ca.crt"
+      HOSTEYE_CA_PRIVATE_KEY: "/app/data/ca/company_ca.key"
+      HOSTEYE_REGISTRATION_ADMIN_TOKEN: "${HOSTEYE_REGISTRATION_ADMIN_TOKEN:-hosteye-registration-admin-demo}"
+      HOSTEYE_BOOTSTRAP_SIGNING_KEY: "${HOSTEYE_BOOTSTRAP_SIGNING_KEY:-hosteye-bootstrap-demo-signing-key-change-me}"
+      HOSTEYE_CONTROL_URL: "http://127.0.0.1:8080/api/v1/control/bootstrap"
+      HOSTEYE_ADMISSION_URL: "http://127.0.0.1:8080/api/v1/admission/request"
+      HOSTEYE_TELEMETRY_URL: "http://127.0.0.1:8088/api/v1/telemetry/collector-a"
+      HOSTEYE_CONFIG_URL: "http://127.0.0.1:5063/api/v1/dynamic-config/agent-config"
+      NODE_ENV: "production"
+    ports:
+      - "127.0.0.1:5054:5054"
+    volumes:
+      - hosteye_registration_data:/app/data
+    networks:
+      - soc-network
+    restart: unless-stopped
+
+  hosteye-dynamic-config:
+    build:
+      context: ../HostEyeDynamicConfig
+    container_name: hosteye-dynamic-config
+    environment:
+      HOSTEYE_DYNAMIC_CONFIG_PORT: "5063"
+      HOSTEYE_DYNAMIC_CONFIG_STORE: "/app/data/dynamic-config-state.json"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
+      HOSTEYE_DYNAMIC_CONFIG_SIGNATURE_ALGORITHM: "ed25519"
+      HOSTEYE_DYNAMIC_CONFIG_ED25519_KEY_ID: "hosteye-demo-ed25519-v1"
+      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKENS: "hosteye-admin-demo=policy:read,policy:write,agent:read,audit:read;hosteye-readonly=policy:read"
+      HOSTEYE_DYNAMIC_CONFIG_REQUIRE_AGENT_IDENTITY: "true"
+      HOSTEYE_DYNAMIC_CONFIG_AGENT_IDENTITY_SECRET: "hosteye-agent-identity-demo-secret"
+      NODE_ENV: "production"
+    ports:
+      - "127.0.0.1:5063:5063"
+    volumes:
+      - hosteye_dynamic_config_data:/app/data
+    networks:
+      - soc-network
+    restart: unless-stopped
+
   collector-a:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-a
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-a"
       COLLECTOR_PUBLIC_URL: "https://hosteye.iahn.hanoi.vn/api/v1/telemetry/collector-a"
       CONTROL_PLANE_URL: "http://control-plane:8080"
+      REGISTRATION_URL: "http://hosteye-registration:5054"
+      REGISTRATION_ADMIN_TOKEN: "${HOSTEYE_REGISTRATION_ADMIN_TOKEN:-hosteye-registration-admin-demo}"
+      REQUIRE_ENROLLED_IDENTITY: "${HOSTEYE_REQUIRE_ENROLLED_IDENTITY:-false}"
       VECTOR_URL: "http://vector-gateway-1:8686/"
       REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
       RAW_CHUNK_TOPIC: "raw-chunk-jobs"
@@ -106,21 +144,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8088:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -130,10 +160,10 @@ services:
       - soc-network
 
   collector-b:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-b
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-b"
@@ -146,21 +176,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8089:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -170,10 +192,10 @@ services:
       - soc-network
 
   collector-c:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-c
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-c"
@@ -186,21 +208,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8090:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -210,10 +224,10 @@ services:
       - soc-network
 
   collector-d:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-d
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-d"
@@ -226,21 +240,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8091:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -250,10 +256,10 @@ services:
       - soc-network
 
   collector-e:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-e
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-e"
@@ -266,21 +272,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8092:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -290,10 +288,10 @@ services:
       - soc-network
 
   collector-f:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-f
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-f"
@@ -306,21 +304,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8093:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -330,10 +320,10 @@ services:
       - soc-network
 
   collector-g:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-g
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-g"
@@ -346,21 +336,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8094:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -370,10 +352,10 @@ services:
       - soc-network
 
   collector-h:
-    image: node:20-alpine
+    build:
+      context: ../HostEyeBackend
+      target: data_server
     container_name: hosteye-collector-h
-    working_dir: /app
-    command: ["node", "data-server.js"]
     environment:
       PORT: "8088"
       COLLECTOR_ID: "collector-h"
@@ -386,21 +368,13 @@ services:
       CLICKHOUSE_URL: "http://clickhouse:8123"
       MAX_BODY_BYTES: "26214400"
       RAW_CHUNK_DIR: "/var/lib/hosteye/raw_chunks"
-      LEASE_STORE_DIR: "/var/lib/hosteye/leases"
-      PUBLIC_BASE_URL: "https://hosteye.iahn.hanoi.vn"
+      REQUIRED_SCHEMA_VERSION: "1.0.0"
       ADMISSION_MAX_ACTIVE_UPLOADS: "64"
-      ADMISSION_LEASE_TTL_SECONDS: "30"
-      ADMISSION_MAX_BATCH_MB: "5"
-      ADMISSION_MAX_UPLOAD_RATE_KBPS: "1024"
       COLLECTOR_UPLOAD_SLOT_MS: "${COLLECTOR_UPLOAD_SLOT_MS:-1000}"
-      REQUIRE_UPLOAD_LEASE: "true"
-      NODE_ENV: "production"
     ports:
       - "127.0.0.1:8095:8088"
     volumes:
-      - ../VectorIngestAckGateway:/app:ro
       - ./raw_chunks:/var/lib/hosteye/raw_chunks
-      - ./leases:/var/lib/hosteye/leases
     depends_on:
       - clickhouse
       - redpanda-broker
@@ -409,9 +383,36 @@ services:
     networks:
       - soc-network
 
+  raw-chunk-worker:
+    build:
+      context: ../HostEyeBackend
+      target: worker_server
+    container_name: hosteye-raw-chunk-worker
+    environment:
+      REDPANDA_PROXY_URL: "http://redpanda-broker:8082"
+      RAW_CHUNK_TOPIC: "raw-chunk-jobs"
+      RAW_WORKER_GROUP: "${RAW_WORKER_GROUP:-raw-chunk-worker-v3}"
+      RAW_WORKER_INSTANCE: "${RAW_WORKER_INSTANCE:-hosteye-raw-chunk-worker-1}"
+      RAW_WORKER_AUTO_OFFSET_RESET: "${RAW_WORKER_AUTO_OFFSET_RESET:-earliest}"
+      RAW_WORKER_CHECKPOINT_PATH: "/var/lib/hosteye/raw_chunks/.worker-offsets.json"
+      CLICKHOUSE_URL: "http://clickhouse:8123"
+      VECTOR_URL: "http://vector-gateway-1:8686/"
+    volumes:
+      - ./raw_chunks:/var/lib/hosteye/raw_chunks
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
+      clickhouse:
+        condition: service_started
+      vector-gateway-1:
+        condition: service_started
+      vector-gateway-2:
+        condition: service_started
+    networks:
+      - soc-network
 
   # ===========================================================================
-  # 3. Táº¦NG Äá»†M TRUNG GIAN GIáº¢M CHáº¤N XUNG Lá»°C (MESSAGE BROKER LAYER)
+  # 3. TẦNG ĐỆM TRUNG GIAN GIẢM CHẤN XUNG LỰC (MESSAGE BROKER LAYER)
   # ===========================================================================
   redpanda-broker:
     image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
@@ -423,10 +424,24 @@ services:
       - --memory 1G
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda-broker:9092,external://localhost:19092
+      - --pandaproxy-addr internal://0.0.0.0:8082
+      - --advertise-pandaproxy-addr internal://redpanda-broker:8082
     ports:
       - "19092:19092"
     volumes:
-      - ./redpanda_data:/var/lib/redpanda/data # Äáº£m báº£o hÃ ng Ä‘á»£i khÃ´ng bá»‹ máº¥t cáº¥u trÃºc khi reset háº¡ táº§ng
+      - ./redpanda_data:/var/lib/redpanda/data # Đảm bảo hàng đợi không bị mất cấu trúc khi reset hạ tầng
+    networks:
+      - soc-network
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v23.2.1
+    depends_on:
+      - redpanda-broker
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        until rpk cluster info --brokers redpanda-broker:9092 >/dev/null 2>&1; do sleep 1; done;
+        rpk topic create raw-chunk-jobs --brokers redpanda-broker:9092 || true
     networks:
       - soc-network
 
@@ -435,7 +450,7 @@ services:
   # ===========================================================================
   clickhouse:
     image: clickhouse/clickhouse-server:latest
-    container_name: local-clickhouse
+    container_name: hosteye-clickhouse
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -463,26 +478,6 @@ services:
     networks:
       - soc-network
 
-  hosteye-dynamic-config:
-    build:
-      context: ../HostEyeDynamicConfig
-    container_name: hosteye-dynamic-config
-    environment:
-      HOSTEYE_DYNAMIC_CONFIG_PORT: "5063"
-      HOSTEYE_DYNAMIC_CONFIG_STORE: "/app/data/dynamic-config-state.json"
-      HOSTEYE_DYNAMIC_CONFIG_SIGNING_KEY: "hosteye-dynamic-config-demo-key"
-      HOSTEYE_DYNAMIC_CONFIG_SIGNATURE_ALGORITHM: "ed25519"
-      HOSTEYE_DYNAMIC_CONFIG_ED25519_KEY_ID: "hosteye-demo-ed25519-v1"
-      HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKENS: "hosteye-admin-demo=policy:read,policy:write,agent:read,audit:read;hosteye-readonly=policy:read"
-      HOSTEYE_DYNAMIC_CONFIG_REQUIRE_AGENT_IDENTITY: "true"
-      HOSTEYE_DYNAMIC_CONFIG_AGENT_IDENTITY_SECRET: "hosteye-agent-identity-demo-secret"
-    ports:
-      - "5063:5063"
-    volumes:
-      - hosteye_dynamic_config_data:/app/data
-    networks:
-      - soc-network
-    restart: unless-stopped
   dashboard-api:
     image: node:20-alpine
     container_name: hosteye-dashboard-api
@@ -494,17 +489,28 @@ services:
       CLICKHOUSE_DATABASE: "default"
       CLICKHOUSE_USERNAME: "default"
       CLICKHOUSE_PASSWORD: ""
-      CORS_ORIGIN: "*"
+      CORS_ORIGIN: "${HOSTEYE_DASHBOARD_CORS_ORIGIN:-http://localhost:5174}"
       HOSTEYE_DYNAMIC_CONFIG_URL: "http://hosteye-dynamic-config:5063"
       HOSTEYE_DYNAMIC_CONFIG_ADMIN_TOKEN: "hosteye-admin-demo"
+      HOSTEYE_REGISTRATION_URL: "http://hosteye-registration:5054"
+      HOSTEYE_REGISTRATION_ADMIN_TOKEN: "${HOSTEYE_REGISTRATION_ADMIN_TOKEN:-hosteye-registration-admin-demo}"
+      HOSTEYE_DASHBOARD_AUTH_REQUIRED: "true"
+      HOSTEYE_DASHBOARD_USERS_FILE: "/var/lib/hosteye-dashboard/dashboard-users.json"
+      HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME: "${HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_USERNAME:-admin}"
+      HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD: "${HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD:?Set HOSTEYE_DASHBOARD_BOOTSTRAP_ADMIN_PASSWORD in Vector-HA-Cluster/.env}"
+      HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES: "${HOSTEYE_DASHBOARD_SESSION_TTL_MINUTES:-480}"
+      HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_LIMIT: "${HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_LIMIT:-5}"
+      HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_WINDOW_MINUTES: "${HOSTEYE_DASHBOARD_LOGIN_ATTEMPT_WINDOW_MINUTES:-15}"
       NODE_ENV: "production"
     ports:
-      - "5055:5055"
+      - "127.0.0.1:5055:5055"
     volumes:
       - ../HostEyeDashboardApi:/app:ro
+      - hosteye_dashboard_auth_data:/var/lib/hosteye-dashboard
     depends_on:
       - clickhouse
       - hosteye-dynamic-config
+      - hosteye-registration
     networks:
       - soc-network
 
@@ -516,9 +522,10 @@ services:
     environment:
       PORT: "5174"
       HOSTEYE_API_TARGET: "http://hosteye-dashboard-api:5055"
+      HOSTEYE_PUBLIC_HOST: "${HOSTEYE_DASHBOARD_PUBLIC_HOST:-hosteye.csp.vn}"
       NODE_ENV: "production"
     ports:
-      - "5174:5174"
+      - "127.0.0.1:5174:5174"
     volumes:
       - ../HostEyeDashboard:/app:ro
     networks:
@@ -531,4 +538,5 @@ networks:
 volumes:
   clickhouse_data:
   hosteye_dynamic_config_data:
-
+  hosteye_dashboard_auth_data:
+  hosteye_registration_data:

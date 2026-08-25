@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="vi">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>HostEye SOC Dashboard</title>
-    <link rel="stylesheet" href="./styles.css?v=20260626-pages">
+    <title>HostEye Dashboard</title>
+    <link rel="stylesheet" href="./styles.css?v=20260805-nav">
   </head>
   <body>
     <div class="app-shell">
@@ -14,17 +14,38 @@
         </a>
 
         <nav class="nav-list" aria-label="Dashboard sections">
-          <a href="#overview" class="nav-item active">Overview</a>
-          <a href="#hosts" class="nav-item">Hosts</a>
-          <a href="#process" class="nav-item">Process</a>
-          <a href="#network" class="nav-item">Network & DNS</a>
-          <a href="#registry" class="nav-item">Registry & File</a>
-          <a href="#powershell" class="nav-item">PowerShell</a>
-          <a href="#jitter" class="nav-item">Jitter</a>
-          <a href="#chunks" class="nav-item">Chunks</a>
-          <a href="#heatmap" class="nav-item">Heatmap</a>
-          <a href="#enrollment" class="nav-item">Enrollment</a>
-          <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
+          <details class="nav-group">
+            <summary>Monitor</summary>
+            <div class="nav-menu">
+              <a href="#overview" class="nav-item active">Overview</a>
+              <a href="#hosts" class="nav-item">Hosts</a>
+              <a href="#heatmap" class="nav-item">Heatmap</a>
+            </div>
+          </details>
+          <details class="nav-group">
+            <summary>Analyze</summary>
+            <div class="nav-menu">
+              <a href="#alerts" class="nav-item">Alerts</a>
+              <a href="#search" class="nav-item">Log Search</a>
+              <a href="#process" class="nav-item">Process</a>
+              <a href="#network" class="nav-item">Network & DNS</a>
+              <a href="#registry" class="nav-item">Registry & File</a>
+              <a href="#powershell" class="nav-item">PowerShell</a>
+            </div>
+          </details>
+          <details class="nav-group">
+            <summary>Operate</summary>
+            <div class="nav-menu nav-menu-right">
+              <a href="#jitter" class="nav-item">Jitter</a>
+              <a href="#chunks" class="nav-item">Chunks</a>
+              <a href="#fleet-loss" class="nav-item">Fleet Loss Admin</a>
+              <a href="#log-loss" class="nav-item">Log Loss</a>
+              <a href="#agent-errors" class="nav-item">Agent Errors</a>
+              <a href="#enrollment" class="nav-item">Enrollment</a>
+              <a href="#dynamic-config" class="nav-item">Dynamic Config</a>
+              <a href="#users" class="nav-item">User Management</a>
+            </div>
+          </details>
         </nav>
 
         <div class="top-actions">
@@ -35,6 +56,7 @@
               <option value="6h">Last 6 hours</option>
               <option value="24h">Last 24 hours</option>
               <option value="30d" selected>Last 30 days</option>
+              <option value="all">All time</option>
             </select>
           </label>
 
@@ -56,11 +78,12 @@
           </div>
 
           <div class="user-chip">
-            <span>U</span>
+            <span id="currentUserAvatar">?</span>
             <div>
-              <strong>user1</strong>
-              <small>// analyst</small>
+              <strong id="currentUserName">Guest</strong>
+              <small id="currentUserRole">// not signed in</small>
             </div>
+            <button id="logoutBtn" class="chip-action" type="button" hidden>Logout</button>
           </div>
         </div>
       </header>
@@ -72,7 +95,7 @@
         </section>
 
         <section class="kpi-grid page-view" id="kpis" data-page="overview">
-          <article class="kpi"><span>Total events</span><strong id="kpiEvents">-</strong></article>
+          <article class="kpi"><span id="kpiEventsLabel">Events in selected range</span><strong id="kpiEvents">-</strong></article>
           <article class="kpi"><span>Total hosts</span><strong id="kpiHosts">-</strong></article>
           <article class="kpi"><span>Event IDs</span><strong id="kpiEventIds">-</strong></article>
           <article class="kpi"><span>Last seen</span><strong id="kpiLastSeen">-</strong></article>
@@ -83,7 +106,7 @@
             <span class="section-icon">00</span>
             <span>
               <strong>Host Inventory</strong>
-              <small>last seen and production grouping</small>
+              <small>agent activity and collection health</small>
             </span>
             <b>^</b>
           </button>
@@ -91,7 +114,7 @@
             <div id="hostLevelCards" class="host-level-grid"></div>
             <article class="panel hosts-panel">
               <div class="panel-title">
-                <h3>All hosts / last telemetry seen</h3>
+                <h3>Endpoint collection status</h3>
                 <div class="panel-actions">
                   <label class="inline-control">
                     <span>Level</span>
@@ -115,7 +138,7 @@
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">01</span>
             <span>
-              <strong>SOC Overview</strong>
+              <strong>HostEye Overview</strong>
               <small>4 panels</small>
             </span>
             <b>^</b>
@@ -257,14 +280,15 @@
           </button>
           <div class="section-body">
             <div class="kpi-grid compact-kpis">
-              <article class="kpi"><span>Metric hosts</span><strong id="jitterHosts">-</strong></article>
-              <article class="kpi"><span>Avg jitter</span><strong id="jitterAvg">-</strong></article>
-              <article class="kpi"><span>P95 jitter</span><strong id="jitterP95">-</strong></article>
-              <article class="kpi"><span>Worst host</span><strong id="jitterWorst">-</strong></article>
+              <article class="kpi"><span id="jitterHostsLabel">Metric hosts</span><strong id="jitterHosts">-</strong></article>
+              <article class="kpi"><span id="jitterAvgLabel">Avg jitter</span><strong id="jitterAvg">-</strong></article>
+              <article class="kpi"><span id="jitterP95Label">P95 jitter</span><strong id="jitterP95">-</strong></article>
+              <article class="kpi"><span id="jitterWorstLabel">Worst host</span><strong id="jitterWorst">-</strong></article>
             </div>
+            <p class="metric-note" id="jitterEvidenceNote">Loading Shipper jitter evidence...</p>
             <div class="grid two">
               <article class="panel">
-                <div class="panel-title"><h3>Planned jitter by host</h3></div>
+                <div class="panel-title"><h3 id="jitterChartTitle">Planned jitter by host</h3></div>
                 <div id="jitterChart" class="bar-chart"></div>
               </article>
               <article class="panel">
@@ -291,9 +315,10 @@
               <article class="kpi"><span>Events sent</span><strong id="chunkEvents">-</strong></article>
               <article class="kpi"><span>Failed</span><strong id="chunkFailed">-</strong></article>
             </div>
+            <p class="metric-note" id="chunkEvidenceNote">Loading durable chunk evidence...</p>
             <div class="grid two">
               <article class="panel">
-                <div class="panel-title"><h3>Spool depth by host</h3></div>
+                <div class="panel-title"><h3 id="chunkChartTitle">Spool depth by host</h3></div>
                 <div id="chunkSpoolChart" class="bar-chart"></div>
               </article>
               <article class="panel">
@@ -304,112 +329,523 @@
           </div>
         </section>
 
-        <section id="enrollment" class="dashboard-section section-card is-open page-view" data-page="enrollment" hidden>
+        <section id="fleet-loss" class="dashboard-section section-card is-open page-view" data-page="fleet-loss" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
             <span class="section-icon">09</span>
             <span>
-              <strong>Enrollment & C_i Artifacts</strong>
-              <small>new installer requests and per-device builds</small>
+              <strong>Fleet-wide log-loss monitoring</strong>
+              <small>Admin view across all Agents and hosts using measured evidence only</small>
             </span>
             <b>^</b>
           </button>
           <div class="section-body">
+            <form id="fleetLossFilterForm" class="panel-actions fleet-loss-filter-form">
+              <label class="inline-control"><span>Monitored risk state</span><select id="fleetLossRiskState"><option value="">All at-risk hosts</option><option value="disconnected">Upload disconnected</option><option value="interrupted">Collection interrupted</option><option value="at_risk">Log-loss risk</option><option value="backlog">Retry backlog</option><option value="normal">Normal</option><option value="unknown">Insufficient evidence</option></select></label>
+              <label class="inline-control"><span>Priority host count</span><select id="fleetLossTop"><option value="10">Top 10</option><option value="25">Top 25</option><option value="50">Top 50</option></select></label>
+              <button class="button secondary" type="submit">Apply</button>
+              <button class="button ghost" id="fleetLossReset" type="button">Reset</button>
+            </form>
+            <p class="metric-note" id="fleetLossCoverage">Loading fleet evidence coverage...</p>
             <div class="kpi-grid compact-kpis">
-              <article class="kpi"><span>Pending</span><strong id="enrollPending">-</strong></article>
-              <article class="kpi"><span>Building</span><strong id="enrollBuilding">-</strong></article>
-              <article class="kpi"><span>Artifact ready</span><strong id="enrollReady">-</strong></article>
-              <article class="kpi"><span>Active</span><strong id="enrollActive">-</strong></article>
+              <article class="kpi"><span>Total hosts in scope</span><strong id="fleetLossHosts">-</strong></article>
+              <article class="kpi"><span>Affected hosts</span><strong id="fleetLossAffectedHosts">-</strong></article>
+              <article class="kpi"><span>Measured loss ratio</span><strong id="fleetLossRatio">-</strong></article>
+              <article class="kpi"><span>Quota-dropped logs</span><strong id="fleetLossDropped">-</strong></article>
+              <article class="kpi"><span>Logs at risk</span><strong id="fleetLossAtRisk">-</strong></article>
             </div>
-            <div class="grid two">
-              <article class="panel enrollment-panel">
-                <div class="panel-title">
-                  <h3>New installation requests</h3>
-                  <div class="panel-actions">
-                    <label class="inline-control">
-                      <span>Status</span>
-                      <select id="enrollmentStatusFilter">
-                        <option value="">All</option>
-                        <option value="pending_approval">Pending approval</option>
-                        <option value="building">Building</option>
-                        <option value="artifact_ready">Artifact ready</option>
-                        <option value="active">Active</option>
-                        <option value="revoked">Revoked</option>
-                        <option value="failed">Failed</option>
-                      </select>
-                    </label>
-                  </div>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Measured hosts</span><strong id="fleetLossMeasured">-</strong></article>
+              <article class="kpi"><span>Logs pending upload</span><strong id="fleetLossPending">-</strong></article>
+              <article class="kpi"><span>Disconnected</span><strong id="fleetLossDisconnected">-</strong></article>
+              <article class="kpi"><span>Interrupted</span><strong id="fleetLossInterrupted">-</strong></article>
+              <article class="kpi"><span>Backlogged</span><strong id="fleetLossBacklog">-</strong></article>
+            </div>
+            <article class="panel loss-threshold-panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Log-loss alert thresholds</h3>
+                  <span>The persisted Admin policy supplies defaults for alerts, interruption history, and host details.</span>
                 </div>
-                <div id="enrollmentDevicesTable" class="table-shell"></div>
-              </article>
-              <article class="panel enrollment-panel">
-                <div class="panel-title">
-                  <h3>C_i artifact queue</h3>
-                  <div class="panel-actions">
-                    <button id="buildNextArtifactBtn" class="small-action" type="button">Build next</button>
-                  </div>
+              </div>
+              <form id="lossThresholdForm" class="filter-grid">
+                <label class="inline-control"><span>Log-loss ratio (%)</span><input id="thresholdLossRatio" type="number" min="0" max="100" step="0.01" required></label>
+                <label class="inline-control"><span>Backlog events</span><input id="thresholdBacklogEvents" type="number" min="1" max="1000000000" step="1" required></label>
+                <label class="inline-control"><span>Disconnection (minutes)</span><input id="thresholdDisconnectMinutes" type="number" min="0" max="1440" step="1" required></label>
+                <label class="inline-control"><span>Interruption (minutes)</span><input id="thresholdInterruptionMinutes" type="number" min="5" max="1440" step="1" required></label>
+                <div class="threshold-actions">
+                  <button class="button secondary" id="lossThresholdSave" type="submit">Save policy</button>
+                  <button class="button ghost" id="lossThresholdReload" type="button">Reload</button>
                 </div>
-                <div id="enrollmentArtifactsTable" class="table-shell"></div>
+              </form>
+              <output id="lossThresholdStatus" class="metric-note" aria-live="polite">Loading threshold policy...</output>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Primary state distribution</h3><span>Each host has one primary state by priority; risk flags may overlap.</span></div>
+              </div>
+              <div id="fleetLossRiskDistribution" class="host-level-grid"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Priority hosts</h3><span id="fleetLossFocusMeta">Ordered by disconnection, interruption, log loss, backlog, and latest evidence.</span></div>
+              </div>
+              <div id="fleetLossTopHosts" class="table-shell"></div>
+            </article>
+          </div>
+        </section>
+        <section id="log-loss" class="dashboard-section section-card is-open page-view" data-page="log-loss" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">08</span>
+            <span>
+              <strong>Log-loss statistics</strong>
+              <small>direct Shipper and gateway counters without inference</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <form id="lossFilterForm" class="panel-actions loss-filter-form">
+              <label class="inline-control"><span>Agent ID</span><input id="lossAgentFilter" type="text" placeholder="All Agents"></label>
+              <label class="inline-control"><span>Find host</span><input id="lossMachineFilter" type="search" maxlength="255" placeholder="Hostname, Agent ID, Host ID"></label>
+              <label class="inline-control"><span>Risk state</span><select id="lossRiskStateFilter"><option value="">All</option><option value="normal">Normal</option><option value="interrupted">Interrupted</option><option value="backlog">Backlogged</option><option value="disconnected">Disconnected</option><option value="at_risk">Log-loss risk</option><option value="unknown">Insufficient evidence</option></select></label>
+              <label class="inline-control"><span>Channel</span><input id="lossChannelFilter" type="text" placeholder="All channels"></label>
+              <label class="inline-control"><span>Event ID</span><input id="lossEventIdFilter" type="number" min="0" placeholder="All Event IDs"></label>
+              <label class="inline-control"><span>Interruption threshold</span><input id="lossInterruptionThreshold" type="number" min="5" max="1440" step="1" value="15"></label>
+              <label class="inline-control"><span>Log-loss alert threshold (%)</span><input id="lossAlertThreshold" type="number" min="0" max="100" step="0.01" value="1"></label>
+              <button class="button secondary" type="submit">Apply</button>
+              <button class="button ghost" id="lossFilterReset" type="button">Reset</button>
+              <button class="button ghost" id="lossExport" type="button">Export CSV</button>
+              <output id="lossExportStatus" class="metric-note" aria-live="polite"></output>
+            </form>
+            <p class="metric-note" id="logLossCoverage">Loading measurement coverage...</p>
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Quota loss ratio</span><strong id="lossRatio">-</strong></article>
+              <article class="kpi"><span>Collected into spool</span><strong id="lossCollected">-</strong></article>
+              <article class="kpi"><span>Sent and ACKed</span><strong id="lossSent">-</strong></article>
+              <article class="kpi"><span>Pending upload</span><strong id="lossPending">-</strong></article>
+              <article class="kpi"><span>Dropped by quota</span><strong id="lossDropped">-</strong></article>
+            </div>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Loss and interruption causes</h3>
+                  <span>Classified from observed counters, transport status, and Agent errors; no inference without evidence.</span>
+                </div>
+              </div>
+              <div id="lossCauseSummary" class="kpi-grid compact-kpis"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Log-loss alerts</h3>
+                  <span>Alerts for loss thresholds, upload disconnection, and endpoint evidence interruptions.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossAlertCoverage">Loading alerts...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>Total alerts</span><strong id="lossAlertTotal">-</strong></article>
+                <article class="kpi severity-card critical"><span>Critical</span><strong id="lossAlertCritical">-</strong></article>
+                <article class="kpi severity-card high"><span>High</span><strong id="lossAlertHigh">-</strong></article>
+                <article class="kpi"><span>Affected hosts</span><strong id="lossAlertHosts">-</strong></article>
+              </div>
+              <div id="lossAlertTable" class="table-shell"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Collection interruption history</h3>
+                  <span>Silence intervals above the threshold are calculated from observed operational evidence and do not prove the Agent stopped.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossInterruptionCoverage">Loading interruption history...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>Total interruptions</span><strong id="lossInterruptionCount">-</strong></article>
+                <article class="kpi"><span>Ongoing</span><strong id="lossInterruptionOngoing">-</strong></article>
+                <article class="kpi"><span>Recovered</span><strong id="lossInterruptionRecovered">-</strong></article>
+                <article class="kpi"><span>Affected hosts</span><strong id="lossInterruptionHosts">-</strong></article>
+              </div>
+              <div id="lossInterruptionTable" class="table-shell"></div>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Retry backlog status</h3>
+                  <span>Latest durable spool counters and retry state reported by HostEyeShipper.</span>
+                </div>
+              </div>
+              <p class="metric-note" id="lossRetryCoverage">Loading retry status...</p>
+              <div class="kpi-grid compact-kpis">
+                <article class="kpi"><span>Backlogged hosts</span><strong id="lossRetryHosts">-</strong></article>
+                <article class="kpi"><span>Pending logs</span><strong id="lossRetryEvents">-</strong></article>
+                <article class="kpi"><span>Spool size</span><strong id="lossRetryBytes">-</strong></article>
+                <article class="kpi"><span>Resending</span><strong id="lossRetryResending">-</strong></article>
+                <article class="kpi"><span>Waiting to retry</span><strong id="lossRetryWaiting">-</strong></article>
+              </div>
+              <div id="lossRetryTable" class="table-shell"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Statistics by host</h3>
+                  <span>Windows-generated counts remain empty until a reliable source counter is available.</span>
+                </div>
+              </div>
+              <div id="logLossHostsTable" class="table-shell"></div>
+            </article>
+
+            <div id="lossDetailModal" class="alert-detail-backdrop" hidden>
+              <article class="alert-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="lossDetailTitle">
+                <header class="alert-detail-header">
+                  <div>
+                    <span class="detail-eyebrow">Host log-loss evidence</span>
+                    <h3 id="lossDetailTitle">Host log-loss details</h3>
+                  </div>
+                  <button id="lossDetailClose" class="secondary-btn" type="button" aria-label="Close log-loss details">Close</button>
+                </header>
+                <div id="lossDetailContent" class="alert-detail-content">
+                  <div class="empty-state">Select a host to view detailed evidence</div>
+                </div>
               </article>
             </div>
           </div>
         </section>
 
+        <section id="enrollment" class="dashboard-section section-card is-open page-view" data-page="enrollment" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">08</span>
+            <span><strong>Endpoint Enrollment</strong><small>one-time token, C_i identity, client certificate, and lifecycle</small></span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Devices</span><strong id="enrollmentDeviceCount">-</strong></article>
+              <article class="kpi"><span>Pending</span><strong id="enrollmentPendingCount">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="enrollmentActiveCount">-</strong></article>
+              <article class="kpi"><span>Revoked</span><strong id="enrollmentRevokedCount">-</strong></article>
+            </div>
+            <div class="grid enrollment-layout">
+              <article class="panel enrollment-create-panel">
+                <div class="panel-title">
+                  <div><h3>Create one-time enrollment token</h3><span>Optionally bind the token to an expected Windows hostname.</span></div>
+                  <span id="enrollmentCreateStatus">Ready</span>
+                </div>
+                <form id="enrollmentTokenForm" class="enrollment-form">
+                  <label><span>Expected hostname</span><input id="enrollmentHostname" maxlength="63" placeholder="WIN-ENDPOINT-01" title="Enter the literal Windows computer name shown by $env:COMPUTERNAME; do not enter the variable expression itself."></label>
+                  <label><span>Owner</span><input id="enrollmentOwner" maxlength="255" placeholder="Infrastructure team"></label>
+                  <label><span>Group</span><input id="enrollmentGroup" maxlength="128" value="default"></label>
+                  <label><span>Policy</span><input id="enrollmentPolicy" maxlength="255" value="policy-default-windows-baseline"></label>
+                  <label><span>Validity (minutes)</span><input id="enrollmentTtl" type="number" min="5" max="10080" value="60"></label>
+                  <button class="refresh-btn" type="submit">Generate token</button>
+                </form>
+                <section id="enrollmentTokenResult" class="enrollment-token-result" hidden>
+                  <strong>Token is shown once</strong>
+                  <code id="enrollmentTokenValue"></code>
+                  <p>C_i: <b id="enrollmentCiValue"></b> | expires <span id="enrollmentTokenExpiry"></span></p>
+                  <pre id="enrollmentInstallCommand"></pre>
+                </section>
+              </article>
+              <article class="panel enrollment-explanation">
+                <div class="panel-title"><h3>Trust chain</h3><span>what the enrollment establishes</span></div>
+                <ol class="enrollment-steps">
+                  <li><b>1</b><span>Administrator issues a bounded, one-time token.</span></li>
+                  <li><b>2</b><span>Windows generates the machine-key CSR locally.</span></li>
+                  <li><b>3</b><span>Registration binds C_i, Agent, Host and certificate serial.</span></li>
+                  <li><b>4</b><span>Installer verifies signed bootstrap before starting services.</span></li>
+                  <li><b>5</b><span>Gateway rejects revoked or mismatched enrolled identities.</span></li>
+                </ol>
+              </article>
+            </div>
+            <article class="panel">
+              <div class="panel-title"><h3>Enrolled endpoint identities</h3><span id="enrollmentServiceStatus">loading</span></div>
+              <div id="enrollmentDevicesTable" class="table-shell enrollment-table"></div>
+            </article>
+          </div>
+        </section>
+
         <section id="dynamic-config" class="dashboard-section section-card is-open page-view" data-page="dynamic-config" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
-            <span class="section-icon">10</span>
+            <span class="section-icon">08</span>
             <span>
-              <strong>Dynamic Config</strong>
-              <small>policy rollout by default, group, or agent</small>
+              <strong>Dynamic Configuration</strong>
+              <small>policy, agent state, and audit from control plane</small>
             </span>
             <b>^</b>
           </button>
           <div class="section-body">
             <div class="kpi-grid compact-kpis">
               <article class="kpi"><span>Policies</span><strong id="dynamicPolicyCount">-</strong></article>
-              <article class="kpi"><span>Active</span><strong id="dynamicActivePolicies">-</strong></article>
+              <article class="kpi"><span>Active</span><strong id="dynamicActivePolicyCount">-</strong></article>
               <article class="kpi"><span>Agents</span><strong id="dynamicAgentCount">-</strong></article>
               <article class="kpi"><span>Groups</span><strong id="dynamicGroupCount">-</strong></article>
             </div>
-            <div class="grid two">
-              <article class="panel dynamic-panel">
-                <div class="panel-title">
-                  <h3>Policy editor</h3>
-                  <span id="dynamicConfigStatus">Ready</span>
+            <article class="panel dynamic-log-builder">
+              <div class="panel-title">
+                <div>
+                  <h3>Create Dynamic Logs draft</h3>
+                  <span>Select endpoint log types and the normalized fields exported by the policy.</span>
                 </div>
-                <form id="dynamicPolicyForm" class="config-form">
-                  <label><span>Name</span><input id="dynamicPolicyName" type="text" value="Lab default telemetry"></label>
-                  <label><span>Target</span><select id="dynamicTargetType"><option value="default">Default</option><option value="group">Group</option><option value="agent">Agent</option></select></label>
-                  <label><span>Target value</span><input id="dynamicTargetValue" type="text" placeholder="lab-default or agent id"></label>
-                  <label class="wide"><span>Channels</span><textarea id="dynamicChannels" rows="3">Application,System,Security,Microsoft-Windows-Sysmon/Operational</textarea></label>
-                  <label><span>Batch events</span><input id="dynamicBatchMaxEvents" type="number" min="1" value="1000"></label>
-                  <label><span>Batch timeout</span><input id="dynamicBatchTimeoutSecs" type="number" min="1" value="10"></label>
-                  <label><span>Jitter window</span><input id="dynamicJitterWindowSecs" type="number" min="0" value="300"></label>
-                  <label><span>Spool quota MB</span><input id="dynamicSpoolQuotaMb" type="number" min="1" value="8192"></label>
-                  <div class="form-actions wide">
-                    <button id="saveDynamicPolicyBtn" class="small-action" type="submit">Save policy</button>
+                <span id="dynamicDraftStatus">Choose at least one log type</span>
+              </div>
+              <form id="dynamicLogForm">
+                <label class="dynamic-name-field">
+                  <span>Configuration name</span>
+                  <input id="dynamicPolicyName" type="text" maxlength="200" required placeholder="Windows endpoint monitoring baseline">
+                </label>
+                <fieldset class="dynamic-log-fieldset">
+                  <legend>Log types</legend>
+                  <div id="dynamicLogTypeOptions" class="dynamic-log-options">
+                    <div class="empty-state">Loading supported log types...</div>
                   </div>
-                </form>
-              </article>
-              <article class="panel dynamic-panel">
-                <div class="panel-title"><h3>Policies</h3></div>
+                </fieldset>
+                <fieldset class="dynamic-log-fieldset">
+                  <legend>Data fields</legend>
+                  <p class="dynamic-field-note">Required routing fields remain selected. Host identity and raw evidence are retained internally.</p>
+                  <div id="dynamicFieldOptions" class="dynamic-field-options">
+                    <div class="empty-state">Loading supported data fields...</div>
+                  </div>
+                </fieldset>
+                <div class="dynamic-builder-actions">
+                  <p>Preview is read-only. Drafts remain disabled until they are assigned and enabled.</p>
+                  <div class="dynamic-action-buttons">
+                    <button id="dynamicDraftPreview" class="secondary-btn" type="button">Preview configuration</button>
+                    <button id="dynamicDraftSave" class="refresh-btn" type="submit">Save draft</button>
+                  </div>
+                </div>
+              </form>
+              <section id="dynamicPreviewPanel" class="dynamic-preview" aria-live="polite" hidden>
+                <div class="dynamic-preview-header">
+                  <div>
+                    <strong>Configuration preview</strong>
+                    <span>No policy has been saved or sent to an endpoint.</span>
+                  </div>
+                  <span id="dynamicPreviewState">Disabled draft</span>
+                </div>
+                <div id="dynamicPreviewSummary" class="dynamic-preview-summary"></div>
+                <details>
+                  <summary>Canonical policy JSON</summary>
+                  <pre id="dynamicPreviewJson"></pre>
+                </details>
+              </section>
+            </article>
+            <article class="panel dynamic-assignment-panel">
+              <div class="panel-title">
+                <div>
+                  <h3>Assign and enable configuration</h3>
+                  <span>Target a disabled draft to an endpoint, endpoint group, or the default fleet.</span>
+                </div>
+                <span id="dynamicAssignmentStatus">Select a draft and target</span>
+              </div>
+              <form id="dynamicAssignmentForm" class="dynamic-assignment-grid">
+                <label>
+                  <span>Disabled draft</span>
+                  <select id="dynamicAssignmentPolicy" required>
+                    <option value="">Loading drafts...</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target scope</span>
+                  <select id="dynamicAssignmentTargetType">
+                    <option value="group" selected>Endpoint group</option>
+                    <option value="agent">Single endpoint agent</option>
+                    <option value="default">Default fleet</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Target</span>
+                  <select id="dynamicAssignmentTarget" required>
+                    <option value="">Loading targets...</option>
+                  </select>
+                </label>
+                <div class="dynamic-assignment-actions">
+                  <p>The control plane signs the assigned policy. Endpoints apply it on their next poll and report the result by ACK.</p>
+                  <button id="dynamicAssignmentSubmit" class="refresh-btn" type="submit">Assign and enable</button>
+                </div>
+              </form>
+            </article>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title"><h3>Policies</h3><span id="dynamicConfigStatus">loading</span></div>
                 <div id="dynamicPoliciesTable" class="table-shell"></div>
               </article>
-            </div>
-            <div class="grid two">
-              <article class="panel dynamic-panel">
-                <div class="panel-title"><h3>Agents</h3></div>
+              <article class="panel dynamic-status-panel">
+                <div class="panel-title">
+                  <h3>Endpoint configuration status</h3>
+                  <span>assignment, delivery, current version, and ACK</span>
+                </div>
                 <div id="dynamicAgentsTable" class="table-shell"></div>
               </article>
-              <article class="panel dynamic-panel">
-                <div class="panel-title"><h3>Audit</h3></div>
+              <article class="panel">
+                <div class="panel-title"><h3>Endpoint groups</h3></div>
+                <div id="dynamicGroupsTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title"><h3>Recent audit events</h3></div>
                 <div id="dynamicAuditTable" class="table-shell"></div>
               </article>
             </div>
           </div>
         </section>
+        <section id="alerts" class="dashboard-section section-card is-open page-view" data-page="alerts" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>Security Alerts</strong>
+              <small>rule-based detections generated from endpoint telemetry</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Total alerts</span><strong id="alertTotal">-</strong></article>
+              <article class="kpi severity-card critical"><span>Critical</span><strong id="alertCritical">-</strong></article>
+              <article class="kpi severity-card high"><span>High</span><strong id="alertHigh">-</strong></article>
+              <article class="kpi severity-card medium"><span>Medium</span><strong id="alertMedium">-</strong></article>
+            </div>
+            <article class="panel alert-filters-panel">
+              <form id="alertFilterForm" class="search-grid alert-filter-grid">
+                <label>
+                  <span>Keyword</span>
+                  <input id="alertKeyword" type="search" maxlength="200" placeholder="rule, message, user, IP...">
+                </label>
+                <label>
+                  <span>Severity</span>
+                  <select id="alertSeverity">
+                    <option value="">All severities</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Status</span>
+                  <select id="alertStatus">
+                    <option value="">All statuses</option>
+                    <option value="new">New</option>
+                    <option value="acknowledged">Acknowledged</option>
+                    <option value="resolved">Resolved</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Host</span>
+                  <input id="alertHost" type="text" maxlength="255" placeholder="WIN-ENDPOINT-01">
+                </label>
+                <label>
+                  <span>From</span>
+                  <input id="alertFrom" type="datetime-local">
+                </label>
+                <label>
+                  <span>To</span>
+                  <input id="alertTo" type="datetime-local">
+                </label>
+                <div class="search-actions">
+                  <button class="refresh-btn" type="submit">Apply</button>
+                  <button id="alertReset" class="secondary-btn" type="button">Reset</button>
+                </div>
+              </form>
+            </article>
+            <article class="panel alerts-panel">
+              <div class="panel-title">
+                <h3>Detected alerts</h3>
+                <div class="panel-actions">
+                  <span id="alertsMeta">Open this page to load alerts</span>
+                  <button id="alertsPrev" class="secondary-btn" type="button" disabled>Previous</button>
+                  <button id="alertsNext" class="secondary-btn" type="button" disabled>Next</button>
+                </div>
+              </div>
+              <div id="alertsTable" class="table-shell logs">
+                <div class="empty-state">No alert data loaded</div>
+              </div>
+            </article>
+
+            <div id="alertDetailModal" class="alert-detail-backdrop" hidden>
+              <article class="alert-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="alertDetailTitle">
+                <header class="alert-detail-header">
+                  <div>
+                    <span class="detail-eyebrow">Alert investigation</span>
+                    <h3 id="alertDetailTitle">Alert details</h3>
+                  </div>
+                  <button id="alertDetailClose" class="secondary-btn" type="button" aria-label="Close alert details">Close</button>
+                </header>
+                <div id="alertDetailContent" class="alert-detail-content">
+                  <div class="empty-state">Select an alert to inspect its evidence</div>
+                </div>
+              </article>
+            </div>
+          </div>
+        </section>
+
+        <section id="search" class="dashboard-section section-card is-open page-view" data-page="search" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>Log Search</strong>
+              <small>filter endpoint telemetry without requiring a keyword</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <article class="panel">
+              <form id="logSearchForm" class="search-grid">
+                <label>
+                  <span>Keyword</span>
+                  <input id="searchKeyword" type="search" maxlength="200" placeholder="message, process, DNS, IP...">
+                </label>
+                <label>
+                  <span>Host</span>
+                  <input id="searchHost" type="text" placeholder="WIN-ENDPOINT-01">
+                </label>
+                <label>
+                  <span>Channel</span>
+                  <input id="searchChannel" type="text" placeholder="Security">
+                </label>
+                <label>
+                  <span>Event ID</span>
+                  <input id="searchEventId" type="number" min="0" step="1" placeholder="4625">
+                </label>
+                <label>
+                  <span>From</span>
+                  <input id="searchFrom" type="datetime-local">
+                </label>
+                <label>
+                  <span>To</span>
+                  <input id="searchTo" type="datetime-local">
+                </label>
+                <label>
+                  <span>Rows</span>
+                  <select id="searchLimit">
+                    <option value="50">50</option>
+                    <option value="100" selected>100</option>
+                    <option value="250">250</option>
+                    <option value="500">500</option>
+                  </select>
+                </label>
+                <div class="search-actions">
+                  <button class="refresh-btn" type="submit">Search</button>
+                  <button id="searchReset" class="secondary-btn" type="button">Reset</button>
+                </div>
+              </form>
+            </article>
+            <article class="panel logs-panel">
+              <div class="panel-title">
+                <h3>Matching telemetry</h3>
+                <div class="panel-actions">
+                  <span id="searchMeta">Open this page to search logs</span>
+                  <button id="searchPrev" class="secondary-btn" type="button" disabled>Previous</button>
+                  <button id="searchNext" class="secondary-btn" type="button" disabled>Next</button>
+                </div>
+              </div>
+              <div id="searchResultsTable" class="table-shell logs">
+                <div class="empty-state">Use one or more filters, or search the selected time range.</div>
+              </div>
+            </article>
+          </div>
+        </section>
+
         <section id="heatmap" class="dashboard-section section-card is-open page-view" data-page="heatmap" hidden>
           <button class="section-toggle" type="button" aria-expanded="true">
-            <span class="section-icon">08</span>
+            <span class="section-icon">09</span>
             <span>
               <strong>Host Activity Over Time</strong>
               <small>click a cell for drilldown</small>
@@ -436,9 +872,94 @@
             </article>
           </div>
         </section>
+
+        <section id="agent-errors" class="dashboard-section section-card is-open page-view" data-page="agent-errors" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">09</span>
+            <span>
+              <strong>Agent Chunk Errors</strong>
+              <small>rejected chunk errors reported by Agents</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <div class="kpi-grid compact-kpis">
+              <article class="kpi"><span>Total errors (selected range)</span><strong id="agentErrTotal">-</strong></article>
+              <article class="kpi"><span>Agents with errors</span><strong id="agentErrAgents">-</strong></article>
+              <article class="kpi"><span>Checksum errors</span><strong id="agentErrChecksum">-</strong></article>
+              <article class="kpi"><span>Event count errors</span><strong id="agentErrEventCount">-</strong></article>
+            </div>
+            <p class="metric-note" id="agentErrorEvidenceNote">Loading rejected-chunk evidence...</p>
+            <div class="grid two">
+              <article class="panel">
+                <div class="panel-title">
+                  <h3>Error summary by Agent</h3>
+                  <span>click an Agent to view details</span>
+                </div>
+                <div id="agentErrorSummaryTable" class="table-shell"></div>
+              </article>
+              <article class="panel">
+                <div class="panel-title">
+                  <h3 id="agentErrorDetailTitle">Rejected chunk details</h3>
+                  <span id="agentErrorDetailMeta">Select an Agent on the left</span>
+                </div>
+                <div id="agentErrorDetailTable" class="table-shell"></div>
+              </article>
+            </div>
+          </div>
+        </section>
+        <section id="users" class="dashboard-section section-card is-open page-view" data-page="users" hidden>
+          <button class="section-toggle" type="button" aria-expanded="true">
+            <span class="section-icon">10</span>
+            <span>
+              <strong>User Management</strong>
+              <small>create, update, lock, and unlock Dashboard accounts</small>
+            </span>
+            <b>^</b>
+          </button>
+          <div class="section-body">
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Create account</h3><span>Passwords are hashed before persistent storage.</span></div>
+              </div>
+              <form id="userCreateForm" class="filter-grid user-form">
+                <label class="inline-control"><span>Username</span><input id="newUsername" minlength="3" maxlength="64" pattern="[A-Za-z0-9._-]+" required></label>
+                <label class="inline-control"><span>Display name</span><input id="newDisplayName" maxlength="100" required></label>
+                <label class="inline-control"><span>Role</span><select id="newUserRole"><option value="user">User</option><option value="viewer">Viewer</option><option value="admin">Admin</option></select></label>
+                <label class="inline-control"><span>Temporary password</span><input id="newUserPassword" type="password" minlength="10" maxlength="200" autocomplete="new-password" required></label>
+                <label class="inline-control user-span-two"><span>Permissions (comma separated; blank uses role defaults)</span><input id="newUserPermissions" placeholder="dashboard:view, telemetry:read"></label>
+                <label class="inline-control"><span>Host scope</span><input id="newUserScopeHosts" placeholder="HOST-A, HOST-B"></label>
+                <label class="inline-control"><span>Agent scope</span><input id="newUserScopeAgents" placeholder="agent-001"></label>
+                <label class="inline-control"><span>Group scope</span><input id="newUserScopeGroups" placeholder="workstations"></label>
+                <button class="button secondary" type="submit">Create account</button>
+              </form>
+              <output id="userManagementStatus" class="metric-note" aria-live="polite"></output>
+            </article>
+            <article class="panel">
+              <div class="panel-title">
+                <div><h3>Dashboard accounts</h3><span>Account state is persisted and active sessions are revoked after lock or password reset.</span></div>
+                <button id="userReload" class="button ghost" type="button">Reload</button>
+              </div>
+              <div id="usersTable" class="table-shell users-table"></div>
+            </article>
+          </div>
+        </section>
       </main>
     </div>
-    <script src="./app.js?v=20260708-dynamic-config"></script>
+
+    <div id="loginModal" class="login-backdrop" hidden>
+      <section class="login-dialog" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+        <p class="detail-eyebrow">[ HOSTEYE ACCESS ]</p>
+        <h2 id="loginTitle">Sign in to Dashboard</h2>
+        <p>Use an active HostEye account. Locked accounts and expired sessions are rejected.</p>
+        <form id="loginForm" class="login-form">
+          <label><span>Username</span><input id="loginUsername" autocomplete="username" required></label>
+          <label><span>Password</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
+          <button id="loginSubmit" class="refresh-btn" type="submit">Sign in</button>
+        </form>
+        <output id="loginStatus" class="metric-note" aria-live="polite"></output>
+      </section>
+    </div>
+    <script src="./app.js?v=20260814-operational-screens"></script>
   </body>
 </html>
-

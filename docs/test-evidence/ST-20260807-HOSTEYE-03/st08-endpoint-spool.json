@@ -1,0 +1,29 @@
+﻿{
+    "run_id":  "ST-20260807-HOSTEYE-03",
+    "captured_at_utc":  "2026-08-07T06:48:50.7351597Z",
+    "services":  [
+                     {
+                         "name":  "HostEyeAgent",
+                         "status":  "Running",
+                         "start_type":  "Manual"
+                     },
+                     {
+                         "name":  "HostEyeShipper",
+                         "status":  "Running",
+                         "start_type":  "Auto"
+                     }
+                 ],
+    "shipper_state":  {
+                          "last_success_utc":  "2026-07-29T06:39:47.445799100Z",
+                          "tracked_input_files":  46
+                      },
+    "spool":  {
+                  "chunk_files":  213460,
+                  "total_bytes":  10547107368,
+                  "oldest_local":  "2026-07-31T11:40:58",
+                  "newest_local":  "2026-08-06T00:10:23",
+                  "measurement_note":  "Count and byte sum measured recursively after Docker restart on 2026-08-07"
+              },
+    "test_result":  "PASSED_WITH_OBSERVATION",
+    "observation":  "Both services remain running and quota tests passed, but no authoritative upload has succeeded since 2026-07-29 and the durable spool remains backlogged."
+}

@@ -27,7 +27,7 @@ function Resolve-OpenSsl {
 $OpenSSL = Resolve-OpenSsl
 $CaCert = Join-Path $PSScriptRoot "certs\company_ca.crt"
 $CaKey = Join-Path $PSScriptRoot "certs\company_ca.key"
-$UpdaterPublic = Join-Path $RepoRoot "VectorBuild\certs\updater_public.pem"
+$UpdaterPublic = Join-Path $RepoRoot "HostEyeAgent\certs\updater_public.pem"
 if ([string]::IsNullOrWhiteSpace($OutputRoot)) {
     $OutputRoot = Join-Path $PSScriptRoot "issued_clients"
 }
@@ -81,7 +81,7 @@ if (Test-Path $RegisterScript) {
     & $RegisterScript -CertPath $CrtPath -EndpointId $EndpointId
 }
 if ($InstallToVectorBuild) {
-    $BuildCertDir = Join-Path $RepoRoot "VectorBuild\certs"
+    $BuildCertDir = Join-Path $RepoRoot "HostEyeAgent\certs"
     New-Item -ItemType Directory -Force -Path $BuildCertDir | Out-Null
     Copy-Item -LiteralPath (Join-Path $CertDir "client.crt") -Destination (Join-Path $BuildCertDir "client.crt") -Force
     Copy-Item -LiteralPath (Join-Path $CertDir "client.key") -Destination (Join-Path $BuildCertDir "client.key") -Force

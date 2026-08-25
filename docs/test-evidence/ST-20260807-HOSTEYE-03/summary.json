@@ -1,0 +1,150 @@
+{
+  "run_id": "ST-20260807-HOSTEYE-03",
+  "executed_at": "2026-08-07",
+  "branch": "uc/UC-37-user-authorization",
+  "commit": "68ae494d7d3c77357eb7cd44a1b31e8dd7156477",
+  "scope": "All HostEye use cases UC-01 through UC-40, testing implemented boundaries of partial use cases",
+  "formal_unit_tests_included": false,
+  "total": 12,
+  "passed": 6,
+  "passed_with_observation": 3,
+  "failed": 2,
+  "blocked": 1,
+  "overall": "NOT_READY_FOR_ACCEPTANCE",
+  "comparison_to_previous_run": {
+    "previous_run": "ST-20260807-HOSTEYE-02",
+    "improved": "The old lease-store EIO did not reproduce; current Control Plane heartbeat/bootstrap returned HTTP 200 and granted a lease.",
+    "new_blocker": "The current data plane cannot be built, so Collector health, durable ingest and idempotency cannot complete.",
+    "ui_measurement_change": "A repeatable one-pixel mobile overflow was measured in the rerun."
+  },
+  "cases": [
+    {
+      "id": "ST-01",
+      "name": "Core service health",
+      "mapped_use_cases": "UC-01, UC-02, UC-09-UC-17, UC-23-UC-34",
+      "status": "FAILED",
+      "evidence": "st01-health.json",
+      "actual": "5/6 required endpoints returned HTTP 200. Current-source Collector A was unavailable because no data-plane service could be launched on port 8088."
+    },
+    {
+      "id": "ST-02",
+      "name": "Enrollment, admission, upload lease and durable ingest",
+      "mapped_use_cases": "UC-02, UC-24, UC-29-UC-32",
+      "status": "FAILED",
+      "evidence": "st02-control-data-flow.json, st02-data-plane-build.txt",
+      "actual": "Current Control Plane heartbeat and bootstrap returned HTTP 200 and granted a lease. Durable ingest stopped because data_server and worker_server failed to compile (missing ClickHouse Row implementations and an idempotency lifetime error)."
+    },
+    {
+      "id": "ST-03",
+      "name": "Dashboard, search, raw detail, alerts and domain APIs",
+      "mapped_use_cases": "UC-01, UC-03-UC-08, UC-23",
+      "status": "PASSED",
+      "evidence": "st03-dashboard-system.json",
+      "actual": "30/30 authenticated API checks passed against 4,778,445 ClickHouse rows; the latest retained event remained 2026-08-05 15:26:53 and was explicitly marked stale."
+    },
+    {
+      "id": "ST-04",
+      "name": "Endpoint spool, quota and recovery evidence",
+      "mapped_use_cases": "UC-14-UC-22, UC-29-UC-32, UC-35",
+      "status": "PASSED_WITH_OBSERVATION",
+      "evidence": "st04-shipper-spool-tests.txt, st08-endpoint-spool.json",
+      "actual": "Quota tests passed 2/2 and both Windows Services run, but the spool holds 213,460 chunks / 10,547,107,368 bytes and last authoritative success is 2026-07-29."
+    },
+    {
+      "id": "ST-05",
+      "name": "Dynamic Config validation and observed signed apply state",
+      "mapped_use_cases": "UC-09-UC-13, UC-25-UC-28, UC-39-UC-40",
+      "status": "PASSED_WITH_OBSERVATION",
+      "evidence": "st05-dynamic-config-tests.txt, st03-dashboard-system.json",
+      "actual": "Selected-field validation passed 2/2; live API exposed policy, endpoint state and prior applied ACK. A new signed apply/rollback was not executed in this run."
+    },
+    {
+      "id": "ST-06",
+      "name": "ClickHouse outage handling",
+      "mapped_use_cases": "UC-01-UC-08, UC-14-UC-23, UC-33",
+      "status": "PASSED",
+      "evidence": "st06-clickhouse-outage.json",
+      "actual": "Isolated Dashboard API returned HTTP 503 with an explicit ClickHouse unavailable message and no fallback data."
+    },
+    {
+      "id": "ST-07",
+      "name": "Desktop and mobile Dashboard navigation",
+      "mapped_use_cases": "UC-01-UC-23, UC-33-UC-40",
+      "status": "PASSED_WITH_OBSERVATION",
+      "evidence": "st07-browser-qa.json",
+      "actual": "All nine desktop routes rendered without overflow or console errors. At the requested 390x844 viewport, the effective 375 px client showed repeatable 1 px horizontal overflow; Agent Errors returned 404 and some Vietnamese labels were malformed or lacked diacritics."
+    },
+    {
+      "id": "ST-08",
+      "name": "User account lifecycle",
+      "mapped_use_cases": "UC-36",
+      "status": "PASSED",
+      "evidence": "st03-dashboard-system.json, st00-dashboard-regression.txt",
+      "actual": "Create, login, lock, session revocation and unlock passed; password material is not returned."
+    },
+    {
+      "id": "ST-09",
+      "name": "Role and data-scope authorization",
+      "mapped_use_cases": "UC-37",
+      "status": "PASSED",
+      "evidence": "st03-dashboard-system.json, st00-dashboard-regression.txt",
+      "actual": "Scoped Viewer allowed the permitted host; outside-host, Alerts and User Management requests returned HTTP 403."
+    },
+    {
+      "id": "ST-10",
+      "name": "Log-loss, fleet monitoring, thresholds and CSV export",
+      "mapped_use_cases": "UC-14-UC-22, UC-33-UC-34",
+      "status": "PASSED",
+      "evidence": "st03-dashboard-system.json, st00-dashboard-regression.txt",
+      "actual": "Loss summary/hosts/interruptions/alerts/fleet/threshold APIs and authenticated CSV export returned successfully; no generated-event count was fabricated."
+    },
+    {
+      "id": "ST-11",
+      "name": "Full automated regression support",
+      "mapped_use_cases": "UC-01-UC-03, UC-06-UC-22, UC-33-UC-34, UC-36-UC-37",
+      "status": "PASSED",
+      "evidence": "st00-dashboard-regression.txt",
+      "actual": "73 tests passed, 3 optional Docker integration tests skipped, 0 failed."
+    },
+    {
+      "id": "ST-12",
+      "name": "Current-run duplicate chunk idempotency",
+      "mapped_use_cases": "UC-02, UC-31-UC-32",
+      "status": "BLOCKED",
+      "evidence": "st02-control-data-flow.json, st02-data-plane-build.txt",
+      "actual": "A lease was obtained, but duplicate upload could not be attempted because the current data plane did not compile or listen on port 8088. Historical idempotency evidence was not counted."
+    }
+  ],
+  "observations": [
+    {
+      "id": "OBS-01",
+      "severity": "High",
+      "description": "Current-source data_server and worker_server fail to compile, so Collector A, durable ingest, ACK and current-run idempotency are unavailable."
+    },
+    {
+      "id": "OBS-02",
+      "severity": "High",
+      "description": "HostEyeShipper backlog is 213,460 compressed chunks / 10,547,107,368 bytes; last authoritative upload success remains 2026-07-29."
+    },
+    {
+      "id": "OBS-03",
+      "severity": "Medium",
+      "description": "Dashboard telemetry is stale: 4,778,445 rows are queryable, but the latest retained event is 2026-08-05 15:26:53."
+    },
+    {
+      "id": "OBS-04",
+      "severity": "Medium",
+      "description": "Agent Chunk Errors UI calls a missing Dashboard API route and displays HTTP 404 Route not found."
+    },
+    {
+      "id": "OBS-05",
+      "severity": "Low",
+      "description": "The requested mobile viewport produced an effective 375 px client width and repeatable 1 px horizontal overflow on all nine routes."
+    },
+    {
+      "id": "OBS-06",
+      "severity": "Low",
+      "description": "Several Vietnamese headings lack diacritics and the Agent Errors localized error string contains encoding corruption."
+    }
+  ]
+}
